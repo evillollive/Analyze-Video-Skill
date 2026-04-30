@@ -139,7 +139,7 @@ cd /path/to/outputs/docx_build
 npm init -y 2>/dev/null && npm install docx 2>&1 | tail -3
 ```
 
-Write a `build.js` script to the docx_build directory. Use this structure as the foundation:
+The skill includes a reusable docx builder template at `scripts/build-docx.js` with helpers for headings, body text, images, and captions. At runtime, write a customized `build.js` script to the docx_build directory that requires the helpers and populates the content:
 
 ```javascript
 const { Document, Packer, Paragraph, TextRun, ImageRun } = require('docx');
@@ -147,64 +147,27 @@ const fs = require('fs');
 
 const OUT = '/path/to/outputs';
 
-// Helper functions
-function imgPara(filePath) {
-  return new Paragraph({
-    spacing: { before: 220, after: 0 },
-    children: [new ImageRun({
-      type: 'jpg',
-      data: fs.readFileSync(filePath),
-      transformation: { width: 480, height: 270 }, // 16:9 default; adjust if source is different ratio
-      altText: { title: 'frame', description: 'video frame', name: 'frame' }
-    })]
-  });
-}
+// Helper functions from scripts/build-docx.js — copy or require them:
+// imgPara(filePath, width, height, description) — embed a JPEG frame
+// cap(text) — italic caption paragraph
+// body(text) — body text paragraph
+// h1(text) — H1 heading
+// h2(text) — H2 heading
+// meta(text) — metadata line
+// title(text) — title paragraph
+// buildDoc(children) — build the full document and return a Buffer promise
 
-function cap(text) {
-  return new Paragraph({
-    spacing: { before: 60, after: 280 },
-    children: [new TextRun({ text, italics: true, size: 18, color: '777777', font: 'Arial' })]
-  });
-}
-
-function body(text) {
-  return new Paragraph({
-    spacing: { before: 0, after: 180 },
-    children: [new TextRun({ text, size: 22, font: 'Arial' })]
-  });
-}
-
-function h1(text) {
-  return new Paragraph({
-    spacing: { before: 440, after: 180 },
-    children: [new TextRun({ text, bold: true, size: 36, font: 'Arial', color: '1A1A1A' })]
-  });
-}
-
-function h2(text) {
-  return new Paragraph({
-    spacing: { before: 300, after: 120 },
-    children: [new TextRun({ text, bold: true, size: 24, font: 'Arial', color: '2D6A9F' })]
-  });
-}
-
-function meta(text) {
-  return new Paragraph({
-    spacing: { before: 0, after: 260 },
-    children: [new TextRun({ text, italics: true, size: 20, color: '888888', font: 'Arial' })]
-  });
-}
-
-// Build children array
+// Build children array with your analysis content
 const children = [
-  // Title
-  new Paragraph({
-    spacing: { before: 0, after: 120 },
-    children: [new TextRun({ text: 'Document Title Here', bold: true, size: 44, font: 'Arial', color: '0D0D0D' })]
-  }),
-  // ... add content here
+  // title('Video Title Here'),
+  // meta('Duration: X:XX | Source: ...'),
+  // h1('Section Title'),
+  // body('Analysis content...'),
+  // imgPara('/path/to/frame.jpg', 480, 270, 'description'),
+  // cap('Caption text'),
 ];
 
+// Use buildDoc() or construct manually:
 const doc = new Document({
   sections: [{
     properties: {

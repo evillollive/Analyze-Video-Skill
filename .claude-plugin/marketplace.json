@@ -1,0 +1,21 @@
+{
+  "name": "Analyze-Video-Skill",
+  "metadata": {
+    "description": "Turn /watch video output into polished Word documents with embedded frames, timestamped analysis, and captions."
+  },
+  "owner": {
+    "name": "evillollive"
+  },
+  "plugins": [
+    {
+      "name": "analyze-video",
+      "description": "After /watch processes one or more videos, write a detailed visual analysis with embedded still frames and export it as a Word document (.docx).",
+      "author": {
+        "name": "evillollive"
+      },
+      "source": "./",
+      "category": "productivity",
+      "homepage": "https://github.com/evillollive/Analyze-Video-Skill"
+    }
+  ]
+}

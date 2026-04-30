@@ -1,0 +1,16 @@
+# OS / editor / tooling
+.DS_Store
+__pycache__/
+*.pyc
+.venv/
+.idea/
+.vscode/
+
+# Node
+node_modules/
+
+# build artifact from scripts/build-skill.sh
+/dist/
+
+# local Claude Code settings
+.claude/settings.local.json
