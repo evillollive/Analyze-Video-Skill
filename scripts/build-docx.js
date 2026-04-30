@@ -1,0 +1,170 @@
+#!/usr/bin/env node
+/**
+ * build-docx.js — Template docx builder for /analyze-video.
+ *
+ * This is a reusable foundation that Claude fills in at runtime with the actual
+ * analysis content, frame paths, and captions. The skill writes a customized
+ * version of this script to a temporary docx_build directory, populates the
+ * `children` array with the real content, and runs it with `node build.js`.
+ *
+ * Usage (at runtime, after npm install docx):
+ *   node scripts/build-docx.js --out /path/to/output.docx --frames-dir /path/to/frames
+ *
+ * When invoked without arguments, prints the template to stdout for reference.
+ */
+
+const { Document, Packer, Paragraph, TextRun, ImageRun } = require('docx');
+const fs = require('fs');
+const path = require('path');
+
+// ---------------------------------------------------------------------------
+// Helper functions — used by the generated build script
+// ---------------------------------------------------------------------------
+
+/**
+ * Create a paragraph with an embedded JPEG image.
+ * @param {string} filePath — absolute path to a .jpg frame
+ * @param {number} [width=480] — display width in points
+ * @param {number} [height=270] — display height in points (default 16:9)
+ * @param {string} [description='video frame'] — alt text description
+ */
+function imgPara(filePath, width, height, description) {
+  width = width || 480;
+  height = height || 270;
+  description = description || 'video frame';
+  return new Paragraph({
+    spacing: { before: 220, after: 0 },
+    children: [new ImageRun({
+      type: 'jpg',
+      data: fs.readFileSync(filePath),
+      transformation: { width: width, height: height },
+      altText: { title: 'frame', description: description, name: 'frame' }
+    })]
+  });
+}
+
+/**
+ * Caption paragraph — italic, small, grey.
+ */
+function cap(text) {
+  return new Paragraph({
+    spacing: { before: 60, after: 280 },
+    children: [new TextRun({ text: text, italics: true, size: 18, color: '777777', font: 'Arial' })]
+  });
+}
+
+/**
+ * Body text paragraph.
+ */
+function body(text) {
+  return new Paragraph({
+    spacing: { before: 0, after: 180 },
+    children: [new TextRun({ text: text, size: 22, font: 'Arial' })]
+  });
+}
+
+/**
+ * H1 heading paragraph.
+ */
+function h1(text) {
+  return new Paragraph({
+    spacing: { before: 440, after: 180 },
+    children: [new TextRun({ text: text, bold: true, size: 36, font: 'Arial', color: '1A1A1A' })]
+  });
+}
+
+/**
+ * H2 heading paragraph.
+ */
+function h2(text) {
+  return new Paragraph({
+    spacing: { before: 300, after: 120 },
+    children: [new TextRun({ text: text, bold: true, size: 24, font: 'Arial', color: '2D6A9F' })]
+  });
+}
+
+/**
+ * Metadata line — italic, small.
+ */
+function meta(text) {
+  return new Paragraph({
+    spacing: { before: 0, after: 260 },
+    children: [new TextRun({ text: text, italics: true, size: 20, color: '888888', font: 'Arial' })]
+  });
+}
+
+/**
+ * Title paragraph.
+ */
+function title(text) {
+  return new Paragraph({
+    spacing: { before: 0, after: 120 },
+    children: [new TextRun({ text: text, bold: true, size: 44, font: 'Arial', color: '0D0D0D' })]
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Build the document
+// ---------------------------------------------------------------------------
+
+/**
+ * Build a docx buffer from a children array.
+ * @param {Array} children — array of Paragraph elements
+ * @returns {Promise<Buffer>}
+ */
+async function buildDoc(children) {
+  const doc = new Document({
+    sections: [{
+      properties: {
+        page: {
+          size: { width: 12240, height: 15840 }, // US Letter
+          margin: { top: 1440, right: 1440, bottom: 1440, left: 1440 }
+        }
+      },
+      children: children
+    }]
+  });
+  return Packer.toBuffer(doc);
+}
+
+// ---------------------------------------------------------------------------
+// CLI entry point — template / demo mode
+// ---------------------------------------------------------------------------
+
+if (require.main === module) {
+  const args = process.argv.slice(2);
+  const outIdx = args.indexOf('--out');
+  const outFile = outIdx !== -1 ? args[outIdx + 1] : null;
+
+  if (!outFile) {
+    console.log('build-docx.js — template docx builder for /analyze-video');
+    console.log('');
+    console.log('Usage: node build-docx.js --out /path/to/output.docx');
+    console.log('');
+    console.log('At runtime, the /analyze-video skill writes a customized version');
+    console.log('of this script that populates the children array with analysis');
+    console.log('content, frame images, and captions, then runs it.');
+    console.log('');
+    console.log('Available helpers: title(), h1(), h2(), body(), meta(), cap(), imgPara()');
+    process.exit(0);
+  }
+
+  // Demo: build an empty template document
+  const children = [
+    title('Video Analysis'),
+    meta('Generated by /analyze-video'),
+    h1('Section Title'),
+    body('Analysis content goes here.'),
+  ];
+
+  buildDoc(children).then(function(buf) {
+    fs.writeFileSync(outFile, buf);
+    console.log('Done: ' + outFile);
+  }).catch(function(err) {
+    console.error(err);
+    process.exit(1);
+  });
+}
+
+// Export helpers for use in generated scripts
+module.exports = { imgPara, cap, body, h1, h2, meta, title, buildDoc };

@@ -25,11 +25,41 @@ A [Cowork](https://claude.ai) skill that picks up where [/watch](https://github.
 
 ---
 
-## Installation
+## Install
 
-Download `analyze-video.skill` from the [releases](https://github.com/evillollive/Analyze-Video-Skill/releases) and install it in Cowork via **Settings > Plugins > Install from file**.
+| Surface | Install |
+|---------|---------|
+| **Claude Code** | `/plugin marketplace add evillollive/Analyze-Video-Skill` then `/plugin install analyze-video@Analyze-Video-Skill` |
+| **claude.ai** (web) | [Download `analyze-video.skill`](https://github.com/evillollive/Analyze-Video-Skill/releases/latest) → Settings → Capabilities → Skills → `+` |
+| **Codex** | `git clone https://github.com/evillollive/Analyze-Video-Skill.git ~/.codex/skills/analyze-video` |
+| **Manual / dev** | `git clone https://github.com/evillollive/Analyze-Video-Skill.git ~/.claude/skills/analyze-video` |
 
-Or clone this repo and load `SKILL.md` directly into your Claude Code setup.
+### Claude Code
+
+```
+/plugin marketplace add evillollive/Analyze-Video-Skill
+/plugin install analyze-video@Analyze-Video-Skill
+```
+
+Update later with `/plugin update analyze-video@Analyze-Video-Skill`.
+
+### claude.ai (web)
+
+1. [Download `analyze-video.skill`](https://github.com/evillollive/Analyze-Video-Skill/releases/latest) from the latest release.
+2. Go to Settings → Capabilities → Skills.
+3. Click `+` and drop the file in.
+
+### Codex
+
+```bash
+git clone https://github.com/evillollive/Analyze-Video-Skill.git ~/.codex/skills/analyze-video
+```
+
+### Manual (developer)
+
+```bash
+git clone https://github.com/evillollive/Analyze-Video-Skill.git ~/.claude/skills/analyze-video
+```
 
 ---
 
@@ -70,6 +100,36 @@ Rather than picking frames mechanically, the skill divides the video into N equa
 
 ---
 
+## Structure
+
+```
+.
+├── SKILL.md                   # skill contract — loaded by all surfaces
+├── scripts/
+│   ├── build-docx.js          # Node.js docx builder template with helpers
+│   └── build-skill.sh         # build dist/analyze-video.skill for claude.ai upload
+├── commands/                  # slash command shim (Claude Code only)
+├── hooks/                     # SessionStart Node.js check (Claude Code only)
+├── .claude-plugin/            # plugin.json + marketplace.json (Claude Code)
+├── .codex-plugin/             # codex packaging
+└── .github/workflows/         # release.yml — auto-builds .skill on tag push
+```
+
+---
+
+## Develop
+
+```bash
+# Build the claude.ai upload bundle:
+bash scripts/build-skill.sh      # → dist/analyze-video.skill
+```
+
+Releasing: tag `vX.Y.Z`, push the tag. The workflow builds `dist/analyze-video.skill` and attaches it to the GitHub release.
+
+See [CHANGELOG.md](CHANGELOG.md) for version history.
+
+---
+
 ## Pair with
 
 - [/watch](https://github.com/bradautomates/claude-video) — required prerequisite that downloads and processes the video
@@ -78,4 +138,4 @@ Rather than picking frames mechanically, the skill divides the video into N equa
 
 ## License
 
-MIT
+Apache-2.0

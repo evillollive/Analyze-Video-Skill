@@ -1,0 +1,12 @@
+{
+  "name": "analyze-video",
+  "version": "0.1.0",
+  "description": "After /watch processes one or more videos, write a detailed visual analysis with embedded still frames and export it as a Word document (.docx).",
+  "author": {
+    "name": "evillollive"
+  },
+  "homepage": "https://github.com/evillollive/Analyze-Video-Skill",
+  "repository": "https://github.com/evillollive/Analyze-Video-Skill",
+  "license": "Apache-2.0",
+  "keywords": ["video", "analysis", "docx", "document", "frames", "report", "watch", "word"]
+}
