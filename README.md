@@ -1,8 +1,6 @@
 # /analyze-video
 
-A Claude skill that turns one or more videos into a polished Word document with timestamp-based prose analysis and embedded still frames.
-
-This is the v2 merge of the older `/watch` and `/analyze-video` skills. It is now one self-contained skill: download, frame extraction, contact-sheet preview, transcription, intelligent frame selection, and `.docx` export, all in one workflow.
+A Claude skill that turns one or more videos into a polished Word document with timestamp-based prose analysis and embedded still frames. Download, frame extraction, contact-sheet preview, transcription, intelligent frame selection, and `.docx` export, all in one workflow.
 
 ## What it does
 
