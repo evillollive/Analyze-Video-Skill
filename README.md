@@ -24,8 +24,6 @@ Handles single videos and batches.
 
 Reading every extracted frame burns tens of thousands of image tokens per video. Instead, the script tiles each chunk's frames into a `contact_sheet.jpg`. AI reads the contact sheet, decides which frames matter, and reads only those at full resolution.
 
-**Typical token budget:** 20–30k per chunk instead of 50–80k.
-
 ## Why Auto-Chunking
 
 A 60-minute video would have one frame every 36 seconds, most of the video would be invisible to the agent. Auto-chunking splits long videos into 10-minute sections, each with its own ~80–100 frames, so coverage stays at roughly one frame every 7 seconds regardless of total length.
