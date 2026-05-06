@@ -18,9 +18,7 @@ Handles single videos and batches.
 
 ## Why the contact sheet
 
-Reading every extracted frame burns 50 to 80k image tokens per video. Instead, the script tiles all frames into one `contact_sheet.jpg`. Claude Reads the contact sheet once (~5 to 10k tokens), decides which frames matter, and Reads only those at full resolution.
-
-Typical token budget: 20 to 30k per video instead of 50 to 80k.
+Reading every extracted frame tens of tousands of image tokens per video. Instead, the script tiles all frames into one `contact_sheet.jpg`. AI reads the contact sheet once, decides which frames matter, and reads only those at full resolution.
 
 ## Requirements
 
