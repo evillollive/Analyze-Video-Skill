@@ -18,11 +18,19 @@ This is a v2 merge of the earlier `/watch` and `/analyze-video` skills into one 
 
 Reading every extracted frame burns 50 to 80k image tokens per video. Instead:
 
-1. The script tiles all frames into one `contact_sheet.jpg` (8 columns wide, row-major, chronological).
-2. You Read the contact sheet once (around 5 to 10k tokens) to see the whole video at a glance.
+1. The script tiles all frames into a `contact_sheet.jpg` per chunk (8 columns wide, row-major, chronological).
+2. You Read the contact sheet(s) once (~5 to 10k tokens each) to see the whole video at a glance.
 3. You decide which N frames matter for the document, and Read only those at full resolution.
 
-This typically lands at 20 to 30k tokens per video instead of 50 to 80k.
+This typically lands at 20 to 30k tokens per chunk instead of 50 to 80k.
+
+## Auto-chunking for long videos
+
+Videos longer than 12 minutes are automatically split into 10-minute chunks (5-second overlap so transitions don't fall in the gap). Each chunk gets its own contact sheet and frame set, giving roughly one frame every 7 seconds within a chunk instead of one frame every 36+ seconds across an unchunked hour-long video.
+
+Chunking is bypassed when the user passes `--start`/`--end` (focus mode is its own targeted scan).
+
+For very long videos (5+ chunks), the manifest sets `preview_cost_warning: true`. The Read-every-contact-sheet preview cost grows linearly with chunk count, so a 90-minute video has ~9 chunks and ~70k tokens of preview before any frame is selected. When this warning fires, briefly tell the user the cost and offer focus mode (`--start HH:MM:SS --end HH:MM:SS`) as a cheaper alternative.
 
 ## Step 0: Setup preflight
 
@@ -100,41 +108,64 @@ python3 "${CLAUDE_SKILL_DIR}/scripts/process.py" \
 ```
 
 Per-video outputs (in `$VIDEO_DIR`):
-- `manifest.json`: structured pipeline output, schema_version 1
+- `manifest.json`: structured pipeline output, schema_version 2
 - `report.md`: human-readable summary
-- `contact_sheet.jpg`: tiled overview of all frames
-- `frames/frame_NNNN.jpg`: individual frames
+- `chunks/chunk_N/contact_sheet.jpg`: tiled overview per chunk (always at least one chunk)
+- `chunks/chunk_N/frames/frame_NNNN.jpg`: individual frames per chunk
 - `download/video.<ext>`: source video
 - `audio.mp3`: only if Whisper was used
 
 The script's stdout is just the manifest path. All progress and warnings go to stderr.
 
-For batch mode: process videos sequentially, one at a time. Don't parallelize. Don't accumulate full frame dumps in context between videos. After each video completes, Read its `manifest.json` and `contact_sheet.jpg`, then move on.
+The manifest schema (v2) always has a `chunks: []` array, even for single-chunk videos. Iterate it uniformly. Top-level fields you care about:
+- `chunked`: boolean, true when auto-chunking activated
+- `chunk_count`: integer
+- `chunks[]`: each entry has `start_seconds`, `end_seconds`, `frames[]`, `contact_sheet`, `transcript`
+- `preview_cost_warning`: true when 5+ chunks (warn the user and offer focus mode)
+- `transcript`: full-video transcript at the top level for convenience (each chunk has its own filtered slice)
+
+For batch mode: process videos sequentially, one at a time. Don't parallelize. Don't accumulate full frame dumps in context between videos. After each video completes, Read its `manifest.json` and the contact sheet(s), then move on.
+
+To disable chunking explicitly, pass `--no-chunking`. Rarely needed.
 
 ## Step 4: Plan the analysis from each contact sheet
 
-For each video, after reading its manifest and contact sheet:
+For each video:
 
-1. Cross-reference the contact sheet against the transcript in `manifest.transcript.segments`.
-2. Identify distinct visual sections (intro, demo, outro, scene changes).
-3. Pick which N frames go in the document (where N is the user's answer from Step 2).
+1. If `manifest.preview_cost_warning` is true (5+ chunks), tell the user the chunk count and approximate preview cost first, and offer focus mode. If they want full coverage anyway, proceed.
+2. Read each `chunks[i].contact_sheet.absolute_path` (one Read per chunk). Each contact sheet covers up to ~10 minutes of video at 8 cols × N rows, row-major chronological.
+3. Cross-reference each contact sheet against `chunks[i].transcript.segments` (or the top-level full transcript).
+4. Identify distinct visual sections (intro, demo, outro, scene changes) across the whole video.
+5. Pick which N frames go in the document (where N is the user's answer from Step 2).
 
-**Frame selection algorithm:**
+**Frame selection across chunks:**
+
+For unchunked videos (chunk_count == 1), select N frames from the single chunk:
 
 ```
-total = len(manifest.frames)
+total = len(manifest.chunks[0].frames)
 N = user's chosen frame count
 step = total / N
 selected_indices = [max(1, round(step * i + step/2)) for i in range(N)]
 ```
 
-Then refine: if a selected index falls in the middle of a transcript segment with no visual change, shift it 1 to 2 positions toward the nearest transcript boundary or visible transition. Always include something from the opening and closing if distinct.
+For chunked videos, distribute N frames across chunks proportionally to chunk duration:
 
-The contact sheet is in row-major chronological order with 8 columns. Tile (row R, col C) corresponds to frame index `(R * 8) + C + 1`. Use this to locate visual transitions on the sheet.
+```
+for each chunk:
+    chunk_share = round(N * chunk.duration_seconds / video.duration_seconds)
+    select chunk_share frames from chunk.frames using the same step formula
+```
+
+Make sure every chunk gets at least 1 frame (rounding can otherwise zero out short final chunks).
+
+**Refine based on content:** if a selected frame falls in the middle of a transcript segment with no visual change, shift it 1 to 2 positions toward the nearest transcript boundary or visible transition. Always include something from the opening and closing if distinct.
+
+Each contact sheet tile is in row-major chronological order with 8 columns. Within a chunk, tile (row R, col C) corresponds to that chunk's frame index `(R * 8) + C + 1`. Use this to locate visual transitions visually.
 
 ## Step 5: Read selected full-res frames
 
-For each selected frame index, read the corresponding `frames/frame_NNNN.jpg` (use `manifest.frames[i].absolute_path`). Do all Reads for one video in a single parallel batch. For batch mode, only read frames for the video you're currently writing about, not all videos at once.
+For each selected frame, read its `absolute_path` from `chunks[i].frames[j].absolute_path`. Do all Reads for one video in a single parallel batch. For batch mode, only read frames for the video you're currently writing about, not all videos at once.
 
 ## Step 6: Write the analysis
 
@@ -226,7 +257,7 @@ Avoid captions that restate the section heading or summarize what the speaker sa
 - **Setup preflight failed** -> run installer; ask user for Whisper key if missing; or pass `--no-whisper`.
 - **Download fails** (yt-dlp error to stderr) -> tell the user plainly. Login-required and region-locked videos won't work. Don't keep retrying.
 - **No transcript** (no captions, no Whisper key, or Whisper failed) -> proceed frames-only; note this in the docx.
-- **Long video warning** (manifest.long_video_warning is true) -> acknowledge it. Offer to re-run focused via `--start`/`--end`.
+- **Preview cost warning** (`manifest.preview_cost_warning` is true; 5+ chunks) -> tell the user the chunk count and offer focus mode (`--start`/`--end`) as a cheaper alternative before reading every contact sheet.
 - **Whisper request fails** -> retry with the other backend (`--whisper openai` if Groq failed, vice versa).
 
 ## Token efficiency notes

@@ -20,6 +20,53 @@ from pathlib import Path
 
 
 MAX_FPS = 2.0
+HARD_MAX_FRAMES = 120  # was 100, bumped for the auto-chunking redesign
+
+# Auto-chunking thresholds. Videos longer than CHUNK_THRESHOLD_SECONDS get split
+# into CHUNK_DURATION_SECONDS-long chunks with CHUNK_OVERLAP_SECONDS overlap.
+# Each chunk gets its own frame extraction, contact sheet, and transcript slice.
+CHUNK_THRESHOLD_SECONDS = 12 * 60   # 720s, kicks in just above one chunk size
+CHUNK_DURATION_SECONDS = 10 * 60    # 600s per chunk
+CHUNK_OVERLAP_SECONDS = 5            # so transitions on chunk boundaries aren't lost
+
+
+def should_chunk(duration_seconds: float, focused: bool) -> bool:
+    """Auto-chunking activates for unfocused videos over the threshold.
+
+    A user-specified --start/--end range bypasses chunking; they already chose
+    a section.
+    """
+    return (not focused) and duration_seconds > CHUNK_THRESHOLD_SECONDS
+
+
+def compute_chunks(duration_seconds: float) -> list[tuple[float, float]]:
+    """Compute (start, end) tuples for each chunk in the video.
+
+    Returns a single (0, duration) tuple for short videos (no chunking).
+    For long videos, returns N chunks of CHUNK_DURATION_SECONDS each, with
+    CHUNK_OVERLAP_SECONDS overlap between consecutive chunks. A trailing
+    chunk shorter than 30s is absorbed into the previous one.
+    """
+    if duration_seconds <= CHUNK_THRESHOLD_SECONDS:
+        return [(0.0, duration_seconds)]
+
+    chunks: list[tuple[float, float]] = []
+    start = 0.0
+    while start < duration_seconds:
+        end = min(start + CHUNK_DURATION_SECONDS, duration_seconds)
+        chunks.append((start, end))
+        if end >= duration_seconds:
+            break
+        start = end - CHUNK_OVERLAP_SECONDS
+
+    # Absorb a short trailing chunk (under 60s) into the previous one to avoid
+    # awkward tiny tail chunks. The previous chunk ends up slightly longer
+    # than CHUNK_DURATION_SECONDS, which is fine.
+    if len(chunks) >= 2 and (chunks[-1][1] - chunks[-1][0]) < 60:
+        chunks[-2] = (chunks[-2][0], chunks[-1][1])
+        chunks.pop()
+
+    return chunks
 
 
 def _clamp_fps(fps: float, duration_seconds: float, max_frames: int) -> tuple[float, int]:
@@ -95,8 +142,12 @@ def get_metadata(video_path: str) -> dict:
     }
 
 
-def auto_fps(duration_seconds: float, max_frames: int = 100) -> tuple[float, int]:
-    """Pick fps that targets a sensible frame budget for full-video scans."""
+def auto_fps(duration_seconds: float, max_frames: int = 120) -> tuple[float, int]:
+    """Pick fps that targets a sensible frame budget for full-video scans.
+
+    Used for full-video runs and for each individual chunk (chunks are <= 600s
+    so they fall in the <=10 min bracket, getting up to 100 frames each).
+    """
     if duration_seconds <= 0:
         return 1.0, 1
 
@@ -106,15 +157,15 @@ def auto_fps(duration_seconds: float, max_frames: int = 100) -> tuple[float, int
         target = min(max_frames, 40)
     elif duration_seconds <= 180:  # 3 min
         target = min(max_frames, 60)
-    elif duration_seconds <= 600:  # 10 min
-        target = min(max_frames, 80)
+    elif duration_seconds <= 600:  # 10 min (also: standard chunk size)
+        target = min(max_frames, 100)
     else:
-        target = max_frames
+        target = max_frames  # 10-12 min unchunked path; > 12 min triggers chunking
 
     return _clamp_fps(target / duration_seconds, duration_seconds, max_frames)
 
 
-def auto_fps_focus(duration_seconds: float, max_frames: int = 100) -> tuple[float, int]:
+def auto_fps_focus(duration_seconds: float, max_frames: int = 120) -> tuple[float, int]:
     """Denser budget for user-specified ranges (they are zooming in for detail)."""
     if duration_seconds <= 0:
         return min(MAX_FPS, 2.0), 2
@@ -140,7 +191,7 @@ def extract(
     out_dir: Path,
     fps: float,
     resolution: int = 512,
-    max_frames: int = 100,
+    max_frames: int = 120,
     start_seconds: float | None = None,
     end_seconds: float | None = None,
 ) -> list[dict]:

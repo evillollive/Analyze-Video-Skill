@@ -1,17 +1,21 @@
 #!/usr/bin/env python3
-"""/analyze-video pipeline (one video).
+"""/analyze-video pipeline (one video, possibly chunked).
 
-Downloads the video, extracts auto-scaled frames, fetches a transcript
-(captions first, Whisper API as fallback), and tiles all frames into a
-single contact sheet.
+Downloads the video, fetches a transcript (captions first, Whisper API as
+fallback), and processes the video in one or more chunks. Each chunk gets its
+own frame extraction, contact sheet, and transcript slice.
 
-Writes everything to --out-dir, including:
-  - download/video.<ext>      : the source video
-  - frames/frame_NNNN.jpg     : extracted frames (chronological)
-  - contact_sheet.jpg         : tiled overview, one image, row-major
-  - audio.mp3                 : extracted audio (only if Whisper was used)
-  - manifest.json             : structured pipeline output for the skill
-  - report.md                 : human-readable summary
+Auto-chunking activates for unfocused videos longer than 12 minutes (split
+into 10-minute chunks with 5-second overlap). User-specified --start/--end
+ranges bypass chunking. Short videos process as a single chunk.
+
+Writes everything under --out-dir, including:
+  - download/video.<ext>                     : the source video
+  - audio.mp3                                : extracted audio (only if Whisper used)
+  - chunks/chunk_N/frames/frame_NNNN.jpg     : extracted frames per chunk
+  - chunks/chunk_N/contact_sheet.jpg         : tiled overview per chunk
+  - manifest.json                            : structured pipeline output (schema_version 2)
+  - report.md                                : human-readable summary
 
 The skill's SKILL.md handles multi-video orchestration, frame selection,
 analysis prose, and the .docx build. This script is one-video-at-a-time.
@@ -29,17 +33,25 @@ sys.path.insert(0, str(SCRIPT_DIR))
 
 from download import download, is_url  # noqa: E402
 from frames import (  # noqa: E402
+    HARD_MAX_FRAMES,
     MAX_FPS,
     auto_fps,
     auto_fps_focus,
+    compute_chunks,
     extract,
     format_time,
     get_metadata,
     make_contact_sheet,
     parse_time,
+    should_chunk,
 )
 from transcribe import filter_range, format_transcript, parse_vtt  # noqa: E402
 from whisper import load_api_key, transcribe_video  # noqa: E402
+
+
+# Soft-warn the skill when chunking produces this many or more contact sheets,
+# because the preview cost (one Read per chunk) becomes substantial.
+PREVIEW_COST_WARNING_CHUNKS = 5
 
 
 def _aspect_ratio_label(width: int | None, height: int | None) -> str | None:
@@ -57,12 +69,123 @@ def _aspect_ratio_label(width: int | None, height: int | None) -> str | None:
     return f"{round(ratio, 2)}:1"
 
 
+def _process_chunk(
+    *,
+    chunk_index: int,
+    chunk_count: int,
+    chunk_start: float,
+    chunk_end: float,
+    is_focus: bool,
+    video_path: str,
+    work: Path,
+    args,
+    max_frames: int,
+    full_transcript_segments: list[dict],
+    transcript_source: str | None,
+) -> dict:
+    """Extract frames + contact sheet + transcript slice for one chunk."""
+    chunk_dir = work / "chunks" / f"chunk_{chunk_index}"
+    chunk_frames_dir = chunk_dir / "frames"
+    chunk_sheet_path = chunk_dir / "contact_sheet.jpg"
+    chunk_duration = max(0.0, chunk_end - chunk_start)
+
+    if is_focus:
+        chunk_fps, chunk_target = auto_fps_focus(chunk_duration, max_frames=max_frames)
+    else:
+        chunk_fps, chunk_target = auto_fps(chunk_duration, max_frames=max_frames)
+    if args.fps is not None:
+        chunk_fps = min(args.fps, MAX_FPS)
+        chunk_target = max(1, int(round(chunk_fps * chunk_duration)))
+
+    print(
+        f"[analyze-video] chunk {chunk_index}/{chunk_count}: "
+        f"~{chunk_target} frames at {chunk_fps:.3f} fps over "
+        f"{format_time(chunk_start)} to {format_time(chunk_end)} "
+        f"({chunk_duration:.1f}s)...",
+        file=sys.stderr,
+    )
+
+    chunk_frames = extract(
+        video_path,
+        chunk_frames_dir,
+        fps=chunk_fps,
+        resolution=args.resolution,
+        max_frames=max_frames,
+        start_seconds=chunk_start,
+        end_seconds=chunk_end,
+    )
+
+    chunk_sheet: Path | None = None
+    if not args.no_contact_sheet and chunk_frames:
+        chunk_sheet = make_contact_sheet(
+            chunk_frames_dir,
+            chunk_sheet_path,
+            cols=args.contact_sheet_cols,
+            tile_width=args.contact_sheet_tile_width,
+        )
+
+    # Per-chunk transcript = full transcript filtered to this chunk's range
+    chunk_segments = (
+        filter_range(full_transcript_segments, chunk_start, chunk_end)
+        if full_transcript_segments
+        else []
+    )
+    chunk_transcript_text = format_transcript(chunk_segments) if chunk_segments else None
+
+    return {
+        "index": chunk_index,
+        "is_focus": is_focus,
+        "start_seconds": round(chunk_start, 2),
+        "end_seconds": round(chunk_end, 2),
+        "duration_seconds": round(chunk_duration, 2),
+        "start_formatted": format_time(chunk_start),
+        "end_formatted": format_time(chunk_end),
+        "extraction": {
+            "fps": round(chunk_fps, 3),
+            "target_frames": chunk_target,
+            "frame_count": len(chunk_frames),
+            "frame_resolution_width": args.resolution,
+            "max_frames_cap": max_frames,
+        },
+        "frames": [
+            {
+                "index": f["index"],
+                "timestamp_seconds": f["timestamp_seconds"],
+                "timestamp_formatted": format_time(f["timestamp_seconds"]),
+                "path": str(Path(f["path"]).relative_to(work)),
+                "absolute_path": f["path"],
+            }
+            for f in chunk_frames
+        ],
+        "contact_sheet": {
+            "path": str(chunk_sheet.relative_to(work)) if chunk_sheet else None,
+            "absolute_path": str(chunk_sheet) if chunk_sheet else None,
+            "layout": (
+                {
+                    "cols": args.contact_sheet_cols,
+                    "tile_width_px": args.contact_sheet_tile_width,
+                    "order": "row-major chronological",
+                }
+                if chunk_sheet
+                else None
+            ),
+        },
+        "transcript": {
+            "source": transcript_source,
+            "segment_count": len(chunk_segments),
+            "segments": chunk_segments,
+            "formatted": chunk_transcript_text,
+        },
+    }
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(
         prog="analyze-video",
         description=(
             "Process one video for the analyze-video skill: download, frames, "
-            "transcript, contact sheet, and a structured manifest."
+            "transcript, contact sheet, optional auto-chunking for long videos, "
+            "and a structured manifest."
         ),
     )
     ap.add_argument("--source", required=True, help="Video URL or local file path")
@@ -71,7 +194,12 @@ def main() -> int:
         required=True,
         help="Output directory (typically a per-video subfolder of session outputs)",
     )
-    ap.add_argument("--max-frames", type=int, default=80, help="Cap on frame count (default 80, hard max 100)")
+    ap.add_argument(
+        "--max-frames",
+        type=int,
+        default=100,
+        help=f"Cap on frame count per video/chunk (default 100, hard max {HARD_MAX_FRAMES})",
+    )
     ap.add_argument("--resolution", type=int, default=512, help="Frame width in pixels (default 512)")
     ap.add_argument("--fps", type=float, default=None, help="Override auto-fps (clamped to 2 fps)")
     ap.add_argument("--start", type=str, default=None, help="Range start (SS, MM:SS, or HH:MM:SS)")
@@ -104,14 +232,23 @@ def main() -> int:
         default=200,
         help="Width in px for each tile in the contact sheet (default 200)",
     )
+    ap.add_argument(
+        "--no-chunking",
+        action="store_true",
+        help=(
+            "Disable auto-chunking even for long videos. "
+            "By default, unfocused videos > 12 min split into 10-min chunks."
+        ),
+    )
     args = ap.parse_args()
 
-    max_frames = min(args.max_frames, 100)
+    max_frames = min(args.max_frames, HARD_MAX_FRAMES)
 
     work = Path(args.out_dir).expanduser().resolve()
     work.mkdir(parents=True, exist_ok=True)
     print(f"[analyze-video] working dir: {work}", file=sys.stderr)
 
+    # 1. Download
     print(
         "[analyze-video] downloading via yt-dlp..."
         if is_url(args.source)
@@ -121,6 +258,7 @@ def main() -> int:
     dl = download(args.source, work / "download")
     video_path = dl["video_path"]
 
+    # 2. Probe metadata
     meta = get_metadata(video_path)
     full_duration = meta["duration_seconds"]
 
@@ -134,68 +272,35 @@ def main() -> int:
     if full_duration > 0 and start_sec is not None and start_sec >= full_duration:
         raise SystemExit(f"--start {start_sec:.1f}s is past end of video ({full_duration:.1f}s)")
 
+    focused = start_sec is not None or end_sec is not None
     effective_start = start_sec if start_sec is not None else 0.0
     effective_end = end_sec if end_sec is not None else full_duration
     effective_duration = max(0.0, effective_end - effective_start)
-    focused = start_sec is not None or end_sec is not None
 
-    if focused:
-        fps, target = auto_fps_focus(effective_duration, max_frames=max_frames)
-    else:
-        fps, target = auto_fps(effective_duration, max_frames=max_frames)
-    if args.fps is not None:
-        fps = min(args.fps, MAX_FPS)
-        target = max(1, int(round(fps * effective_duration)))
-
-    scope = (
-        f"{format_time(effective_start)}-{format_time(effective_end)} ({effective_duration:.1f}s)"
-        if focused
-        else f"full {effective_duration:.1f}s"
-    )
-    print(
-        f"[analyze-video] extracting ~{target} frames at {fps:.3f} fps over {scope}...",
-        file=sys.stderr,
-    )
-
-    frames = extract(
-        video_path,
-        work / "frames",
-        fps=fps,
-        resolution=args.resolution,
-        max_frames=max_frames,
-        start_seconds=start_sec,
-        end_seconds=end_sec,
-    )
-
-    # Transcript: try captions first, then Whisper as fallback
-    transcript_segments: list[dict] = []
-    transcript_text: str | None = None
+    # 3. Transcript: try captions first, then Whisper as fallback. We fetch the
+    #    full-video transcript once and slice it per chunk later.
+    full_transcript_segments: list[dict] = []
+    full_transcript_text: str | None = None
     transcript_source: str | None = None
     if dl.get("subtitle_path"):
         try:
-            all_segments = parse_vtt(dl["subtitle_path"])
-            transcript_segments = (
-                filter_range(all_segments, start_sec, end_sec) if focused else all_segments
-            )
-            transcript_text = format_transcript(transcript_segments)
+            full_transcript_segments = parse_vtt(dl["subtitle_path"])
+            full_transcript_text = format_transcript(full_transcript_segments)
             transcript_source = "captions"
         except Exception as exc:
             print(f"[analyze-video] subtitle parse failed: {exc}", file=sys.stderr)
 
-    if not transcript_segments and not args.no_whisper:
+    if not full_transcript_segments and not args.no_whisper:
         backend, api_key = load_api_key(args.whisper)
         if backend and api_key:
             try:
-                all_segments, used_backend = transcribe_video(
+                full_transcript_segments, used_backend = transcribe_video(
                     video_path,
                     work / "audio.mp3",
                     backend=backend,
                     api_key=api_key,
                 )
-                transcript_segments = (
-                    filter_range(all_segments, start_sec, end_sec) if focused else all_segments
-                )
-                transcript_text = format_transcript(transcript_segments)
+                full_transcript_text = format_transcript(full_transcript_segments)
                 transcript_source = f"whisper ({used_backend})"
             except SystemExit as exc:
                 print(f"[analyze-video] whisper fallback failed: {exc}", file=sys.stderr)
@@ -212,28 +317,57 @@ def main() -> int:
                 file=sys.stderr,
             )
 
-    # Contact sheet
-    contact_sheet_path: Path | None = None
-    if not args.no_contact_sheet and frames:
+    # 4. Decide chunking strategy
+    if focused:
+        # Focus mode bypasses chunking. Single chunk = the focus range.
+        chunk_ranges = [(effective_start, effective_end)]
+        is_focus_chunk = True
+        chunked = False
+    elif args.no_chunking or not should_chunk(full_duration, focused=False):
+        # Single-chunk path (short video or chunking disabled)
+        chunk_ranges = [(0.0, full_duration)]
+        is_focus_chunk = False
+        chunked = False
+    else:
+        # Auto-chunked
+        chunk_ranges = compute_chunks(full_duration)
+        is_focus_chunk = False
+        chunked = True
+
+    if chunked:
         print(
-            f"[analyze-video] building contact sheet ({len(frames)} tiles, "
-            f"{args.contact_sheet_cols} cols, {args.contact_sheet_tile_width}px wide)...",
+            f"[analyze-video] auto-chunking: {len(chunk_ranges)} chunks "
+            f"of ~{int(chunk_ranges[0][1] - chunk_ranges[0][0])}s each",
             file=sys.stderr,
         )
-        contact_sheet_path = make_contact_sheet(
-            work / "frames",
-            work / "contact_sheet.jpg",
-            cols=args.contact_sheet_cols,
-            tile_width=args.contact_sheet_tile_width,
+
+    # 5. Process each chunk
+    processed_chunks: list[dict] = []
+    for i, (cs, ce) in enumerate(chunk_ranges):
+        chunk = _process_chunk(
+            chunk_index=i + 1,
+            chunk_count=len(chunk_ranges),
+            chunk_start=cs,
+            chunk_end=ce,
+            is_focus=is_focus_chunk,
+            video_path=video_path,
+            work=work,
+            args=args,
+            max_frames=max_frames,
+            full_transcript_segments=full_transcript_segments,
+            transcript_source=transcript_source,
         )
+        processed_chunks.append(chunk)
 
     info = dl.get("info") or {}
     aspect = _aspect_ratio_label(meta.get("width"), meta.get("height"))
-    long_video_warning = (not focused) and full_duration > 600
 
-    # Build manifest (structured output the skill consumes)
+    total_frames = sum(c["extraction"]["frame_count"] for c in processed_chunks)
+    preview_cost_warning = chunked and len(processed_chunks) >= PREVIEW_COST_WARNING_CHUNKS
+
+    # 6. Build manifest (schema_version 2)
     manifest = {
-        "schema_version": 1,
+        "schema_version": 2,
         "source": args.source,
         "title": info.get("title"),
         "uploader": info.get("uploader"),
@@ -255,50 +389,24 @@ def main() -> int:
             if focused
             else None
         ),
-        "extraction": {
-            "fps": round(fps, 3),
-            "target_frames": target,
-            "frame_count": len(frames),
-            "frame_resolution_width": args.resolution,
-            "max_frames_cap": max_frames,
-        },
-        "frames": [
-            {
-                "index": f["index"],
-                "timestamp_seconds": f["timestamp_seconds"],
-                "timestamp_formatted": format_time(f["timestamp_seconds"]),
-                "path": str(Path(f["path"]).relative_to(work)),
-                "absolute_path": f["path"],
-            }
-            for f in frames
-        ],
+        "chunked": chunked,
+        "chunk_count": len(processed_chunks),
+        "total_frame_count": total_frames,
+        "chunks": processed_chunks,
         "transcript": {
             "source": transcript_source,
-            "segment_count": len(transcript_segments),
-            "segments": transcript_segments,
-            "formatted": transcript_text,
+            "segment_count": len(full_transcript_segments),
+            "segments": full_transcript_segments,
+            "formatted": full_transcript_text,
         },
-        "contact_sheet": {
-            "path": (
-                str(contact_sheet_path.relative_to(work))
-                if contact_sheet_path
-                else None
-            ),
-            "absolute_path": str(contact_sheet_path) if contact_sheet_path else None,
-            "layout": {
-                "cols": args.contact_sheet_cols,
-                "tile_width_px": args.contact_sheet_tile_width,
-                "order": "row-major chronological",
-            } if contact_sheet_path else None,
-        },
-        "long_video_warning": long_video_warning,
+        "preview_cost_warning": preview_cost_warning,
         "out_dir": str(work),
     }
 
     manifest_path = work / "manifest.json"
     manifest_path.write_text(json.dumps(manifest, indent=2))
 
-    # Human-readable report (kept compact; the manifest is the structured copy)
+    # 7. Human-readable report
     report_lines: list[str] = []
     report_lines.append("# analyze-video: pipeline report")
     report_lines.append("")
@@ -320,36 +428,41 @@ def main() -> int:
             f"- **Resolution:** {meta['width']}x{meta['height']} "
             f"({meta.get('codec') or 'unknown codec'}{', ' + aspect if aspect else ''})"
         )
-    mode = "focused" if focused else "full"
-    report_lines.append(
-        f"- **Frames:** {len(frames)} @ {fps:.3f} fps, {mode} mode "
-        f"(budget {target}, max {max_frames})"
-    )
-    report_lines.append(f"- **Frame size:** {args.resolution}px wide")
-    if transcript_segments:
-        in_range = " in range" if focused else ""
+    if chunked:
         report_lines.append(
-            f"- **Transcript:** {len(transcript_segments)} segments{in_range} "
+            f"- **Chunks:** {len(processed_chunks)} (auto-chunked, "
+            f"10-min windows with 5s overlap)"
+        )
+    elif focused:
+        report_lines.append(f"- **Mode:** focused on user-specified range")
+    else:
+        report_lines.append(f"- **Mode:** single-pass (under 12-minute chunking threshold)")
+    report_lines.append(
+        f"- **Total frames:** {total_frames} across {len(processed_chunks)} chunk"
+        f"{'s' if len(processed_chunks) != 1 else ''}"
+    )
+    if full_transcript_segments:
+        report_lines.append(
+            f"- **Transcript:** {len(full_transcript_segments)} segments "
             f"(via {transcript_source or 'captions'})"
         )
     else:
         report_lines.append("- **Transcript:** none available")
-    if contact_sheet_path:
-        report_lines.append(f"- **Contact sheet:** `{contact_sheet_path.name}`")
     report_lines.append(f"- **Manifest:** `{manifest_path.name}`")
     report_lines.append("")
 
-    if long_video_warning:
-        mins = int(full_duration // 60)
+    if preview_cost_warning:
         report_lines.append(
-            f"> **Warning:** This is a {mins}-minute video. Frame coverage is "
-            "sparse at this length. Accuracy degrades on anything over 10 minutes. "
-            "For better results, re-run with `--start HH:MM:SS --end HH:MM:SS` to "
-            "zoom into a specific section."
+            f"> **Heads up:** This video chunked into {len(processed_chunks)} "
+            f"sections. Reading every contact sheet to preview the whole video "
+            f"will cost ~{len(processed_chunks) * 7}-{len(processed_chunks) * 12}k "
+            "tokens before any frames are selected. If the user has a specific "
+            "section in mind, re-running with `--start HH:MM:SS --end HH:MM:SS` "
+            "is much cheaper."
         )
         report_lines.append("")
 
-    if not transcript_segments:
+    if not full_transcript_segments:
         setup_py = SCRIPT_DIR / "setup.py"
         report_lines.append(
             "_No transcript available. Captions were missing and the Whisper "
