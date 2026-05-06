@@ -20,15 +20,15 @@ Given a video URL (YouTube, Vimeo, X, TikTok, Twitch, most yt-dlp-supported site
 
 Handles single videos and batches.
 
-## Why the Contact Sheet
+## Why a Contact Sheet
 
-Reading every extracted frame burns 50–80k image tokens per video. Instead, the script tiles each chunk's frames into a `contact_sheet.jpg`. Claude reads the contact sheet (~5–10k tokens), decides which frames matter, and reads only those at full resolution.
+Reading every extracted frame burns tens of thousands of image tokens per video. Instead, the script tiles each chunk's frames into a `contact_sheet.jpg`. AI reads the contact sheet, decides which frames matter, and reads only those at full resolution.
 
 **Typical token budget:** 20–30k per chunk instead of 50–80k.
 
 ## Why Auto-Chunking
 
-A 60-minute video at the old 100-frame cap would have one frame every 36 seconds — most of the video would be invisible to Claude. Auto-chunking splits long videos into 10-minute sections, each with its own ~80–100 frames, so coverage stays at roughly one frame every 7 seconds regardless of total length.
+A 60-minute video would have one frame every 36 seconds, most of the video would be invisible to the agent. Auto-chunking splits long videos into 10-minute sections, each with its own ~80–100 frames, so coverage stays at roughly one frame every 7 seconds regardless of total length.
 
 The trade-off is more contact sheets to preview; for very long videos (5+ chunks), the skill warns about the preview cost and offers focus mode as an alternative.
 
