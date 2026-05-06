@@ -85,6 +85,16 @@ def load_api_key(preferred: str | None = None) -> tuple[str, str] | tuple[None, 
     return None, None
 
 
+def load_all_api_keys() -> dict[str, str]:
+    """Return all available {backend: api_key}. Used for auto-fallback."""
+    keys: dict[str, str] = {}
+    for backend in ("groq", "openai"):
+        b, k = load_api_key(backend)
+        if b and k:
+            keys[b] = k
+    return keys
+
+
 def extract_audio(video_path: str, out_path: Path) -> Path:
     """Extract mono 16kHz 64kbps mp3 (around 480 kB/min, fits any Whisper limit)."""
     if shutil.which("ffmpeg") is None:
@@ -264,15 +274,36 @@ def _segments_from_response(data: dict) -> list[dict]:
     return out
 
 
+def transcribe_audio(
+    audio_path: Path,
+    backend: str,
+    api_key: str,
+) -> list[dict]:
+    """Upload an existing audio file and parse segments. Used by transcribe_video
+    and by callers that already have audio (saves re-extracting on retry)."""
+    if backend == "groq":
+        response = _post_whisper(GROQ_ENDPOINT, api_key, GROQ_MODEL, audio_path)
+    elif backend == "openai":
+        response = _post_whisper(OPENAI_ENDPOINT, api_key, OPENAI_MODEL, audio_path)
+    else:
+        raise SystemExit(f"Unknown whisper backend: {backend}")
+
+    segments = _segments_from_response(response)
+    if not segments:
+        raise SystemExit("Whisper returned no transcript segments")
+    return segments
+
+
 def transcribe_video(
     video_path: str,
     audio_out: Path,
     backend: str | None = None,
     api_key: str | None = None,
 ) -> tuple[list[dict], str]:
-    """Run the full flow: extract audio, upload, parse segments.
+    """Run the full flow: extract audio (or reuse if present), upload, parse segments.
 
     Returns (segments, backend_used). Raises SystemExit on any failure.
+    Reuses audio_out if it already exists (saves time on retries / re-runs).
     """
     if backend is None or api_key is None:
         detected_backend, detected_key = load_api_key()
@@ -287,24 +318,23 @@ def transcribe_video(
             f"Run `python3 {setup_py}` to configure."
         )
 
-    print(f"[analyze-video] extracting audio for Whisper ({backend})...", file=sys.stderr)
-    audio_path = extract_audio(video_path, audio_out)
-    size_kb = audio_path.stat().st_size / 1024
-    print(
-        f"[analyze-video] audio: {size_kb:.0f} kB, uploading to {backend} Whisper...",
-        file=sys.stderr,
-    )
-
-    if backend == "groq":
-        response = _post_whisper(GROQ_ENDPOINT, api_key, GROQ_MODEL, audio_path)
-    elif backend == "openai":
-        response = _post_whisper(OPENAI_ENDPOINT, api_key, OPENAI_MODEL, audio_path)
+    if audio_out.exists() and audio_out.stat().st_size > 0:
+        print(
+            f"[analyze-video] reusing existing audio: {audio_out.name} "
+            f"({audio_out.stat().st_size / 1024:.0f} kB)",
+            file=sys.stderr,
+        )
+        audio_path = audio_out
     else:
-        raise SystemExit(f"Unknown whisper backend: {backend}")
+        print(f"[analyze-video] extracting audio for Whisper ({backend})...", file=sys.stderr)
+        audio_path = extract_audio(video_path, audio_out)
+        size_kb = audio_path.stat().st_size / 1024
+        print(
+            f"[analyze-video] audio: {size_kb:.0f} kB, uploading to {backend} Whisper...",
+            file=sys.stderr,
+        )
 
-    segments = _segments_from_response(response)
-    if not segments:
-        raise SystemExit("Whisper returned no transcript segments")
+    segments = transcribe_audio(audio_path, backend, api_key)
 
     print(
         f"[analyze-video] transcribed {len(segments)} segments via {backend}",

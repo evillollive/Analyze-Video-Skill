@@ -37,6 +37,7 @@ from frames import (  # noqa: E402
     MAX_FPS,
     auto_fps,
     auto_fps_focus,
+    auto_tile_width,
     compute_chunks,
     extract,
     format_time,
@@ -45,8 +46,8 @@ from frames import (  # noqa: E402
     parse_time,
     should_chunk,
 )
-from transcribe import filter_range, format_transcript, parse_vtt  # noqa: E402
-from whisper import load_api_key, transcribe_video  # noqa: E402
+from transcribe import filter_range, parse_vtt  # noqa: E402
+from whisper import load_all_api_keys, load_api_key, transcribe_video  # noqa: E402
 
 
 # Soft-warn the skill when chunking produces this many or more contact sheets,
@@ -69,6 +70,22 @@ def _aspect_ratio_label(width: int | None, height: int | None) -> str | None:
     return f"{round(ratio, 2)}:1"
 
 
+def _docx_image_dimensions(width: int | None, height: int | None, aspect: str | None) -> dict:
+    """Pick docx image dimensions in points. Width is generally pinned at 480
+    so the image fits the body text column on US Letter at 1in margins."""
+    if aspect == "16:9":
+        return {"width": 480, "height": 270}
+    if aspect == "4:3":
+        return {"width": 480, "height": 360}
+    if aspect == "9:16":
+        return {"width": 240, "height": 427}
+    if aspect == "1:1":
+        return {"width": 360, "height": 360}
+    if width and height:
+        return {"width": 480, "height": int(round(480 * height / width))}
+    return {"width": 480, "height": 270}
+
+
 def _process_chunk(
     *,
     chunk_index: int,
@@ -81,9 +98,8 @@ def _process_chunk(
     args,
     max_frames: int,
     full_transcript_segments: list[dict],
-    transcript_source: str | None,
 ) -> dict:
-    """Extract frames + contact sheet + transcript slice for one chunk."""
+    """Extract frames + contact sheet + transcript slice indices for one chunk."""
     chunk_dir = work / "chunks" / f"chunk_{chunk_index}"
     chunk_frames_dir = chunk_dir / "frames"
     chunk_sheet_path = chunk_dir / "contact_sheet.jpg"
@@ -117,20 +133,37 @@ def _process_chunk(
 
     chunk_sheet: Path | None = None
     if not args.no_contact_sheet and chunk_frames:
+        # Auto-pick tile width based on frame count unless the user overrode it.
+        tile_width = (
+            args.contact_sheet_tile_width
+            if args.contact_sheet_tile_width is not None
+            else auto_tile_width(len(chunk_frames))
+        )
         chunk_sheet = make_contact_sheet(
             chunk_frames_dir,
             chunk_sheet_path,
             cols=args.contact_sheet_cols,
-            tile_width=args.contact_sheet_tile_width,
+            tile_width=tile_width,
         )
 
-    # Per-chunk transcript = full transcript filtered to this chunk's range
-    chunk_segments = (
-        filter_range(full_transcript_segments, chunk_start, chunk_end)
-        if full_transcript_segments
-        else []
-    )
-    chunk_transcript_text = format_transcript(chunk_segments) if chunk_segments else None
+    # Per-chunk transcript = indices into the top-level segments array (no
+    # duplicated text). The agent (or select_frames.py) can slice on demand.
+    if full_transcript_segments:
+        chunk_segments = filter_range(full_transcript_segments, chunk_start, chunk_end)
+        seg_count = len(chunk_segments)
+        if seg_count:
+            first = chunk_segments[0]
+            last = chunk_segments[-1]
+            try:
+                start_idx = full_transcript_segments.index(first)
+                end_idx = full_transcript_segments.index(last)
+            except ValueError:
+                start_idx, end_idx = None, None
+        else:
+            start_idx, end_idx = None, None
+    else:
+        seg_count = 0
+        start_idx, end_idx = None, None
 
     return {
         "index": chunk_index,
@@ -140,41 +173,30 @@ def _process_chunk(
         "duration_seconds": round(chunk_duration, 2),
         "start_formatted": format_time(chunk_start),
         "end_formatted": format_time(chunk_end),
-        "extraction": {
-            "fps": round(chunk_fps, 3),
-            "target_frames": chunk_target,
-            "frame_count": len(chunk_frames),
-            "frame_resolution_width": args.resolution,
-            "max_frames_cap": max_frames,
-        },
+        "frame_count": len(chunk_frames),
         "frames": [
             {
                 "index": f["index"],
                 "timestamp_seconds": f["timestamp_seconds"],
                 "timestamp_formatted": format_time(f["timestamp_seconds"]),
-                "path": str(Path(f["path"]).relative_to(work)),
                 "absolute_path": f["path"],
             }
             for f in chunk_frames
         ],
-        "contact_sheet": {
-            "path": str(chunk_sheet.relative_to(work)) if chunk_sheet else None,
-            "absolute_path": str(chunk_sheet) if chunk_sheet else None,
-            "layout": (
-                {
-                    "cols": args.contact_sheet_cols,
-                    "tile_width_px": args.contact_sheet_tile_width,
-                    "order": "row-major chronological",
-                }
-                if chunk_sheet
-                else None
-            ),
-        },
-        "transcript": {
-            "source": transcript_source,
-            "segment_count": len(chunk_segments),
-            "segments": chunk_segments,
-            "formatted": chunk_transcript_text,
+        "contact_sheet": (
+            {
+                "absolute_path": str(chunk_sheet),
+                "cols": args.contact_sheet_cols,
+                "rows": (len(chunk_frames) + args.contact_sheet_cols - 1)
+                // args.contact_sheet_cols,
+            }
+            if chunk_sheet
+            else None
+        ),
+        "transcript_slice": {
+            "segment_count": seg_count,
+            "start_index": start_idx,
+            "end_index": end_idx,
         },
     }
 
@@ -229,8 +251,8 @@ def main() -> int:
     ap.add_argument(
         "--contact-sheet-tile-width",
         type=int,
-        default=200,
-        help="Width in px for each tile in the contact sheet (default 200)",
+        default=None,
+        help="Width in px for each tile in the contact sheet (default: auto-pick by frame count)",
     )
     ap.add_argument(
         "--no-chunking",
@@ -240,7 +262,21 @@ def main() -> int:
             "By default, unfocused videos > 12 min split into 10-min chunks."
         ),
     )
+    ap.add_argument(
+        "--quick",
+        action="store_true",
+        help=(
+            "Quick mode: lower frame budget (max 40/chunk) and skip contact-sheet "
+            "preview step (manifest sets quick_mode=true so the skill knows to "
+            "select frames directly from the manifest without reading sheets)."
+        ),
+    )
     args = ap.parse_args()
+
+    if args.quick:
+        # Quick mode: trim the frame budget. The sheet itself is still produced
+        # as a fallback, but the manifest signals the skill to skip the preview.
+        args.max_frames = min(args.max_frames, 40)
 
     max_frames = min(args.max_frames, HARD_MAX_FRAMES)
 
@@ -277,34 +313,34 @@ def main() -> int:
     effective_end = end_sec if end_sec is not None else full_duration
     effective_duration = max(0.0, effective_end - effective_start)
 
-    # 3. Transcript: try captions first, then Whisper as fallback. We fetch the
-    #    full-video transcript once and slice it per chunk later.
+    # 3. Transcript: try captions first, then Whisper. If --whisper not specified,
+    #    try preferred backend and auto-fall-back to the other one if the first
+    #    fails (rate limits, transient errors). We fetch the full-video
+    #    transcript once and slice it per chunk later.
     full_transcript_segments: list[dict] = []
-    full_transcript_text: str | None = None
     transcript_source: str | None = None
     if dl.get("subtitle_path"):
         try:
             full_transcript_segments = parse_vtt(dl["subtitle_path"])
-            full_transcript_text = format_transcript(full_transcript_segments)
             transcript_source = "captions"
         except Exception as exc:
             print(f"[analyze-video] subtitle parse failed: {exc}", file=sys.stderr)
 
     if not full_transcript_segments and not args.no_whisper:
-        backend, api_key = load_api_key(args.whisper)
-        if backend and api_key:
-            try:
-                full_transcript_segments, used_backend = transcribe_video(
-                    video_path,
-                    work / "audio.mp3",
-                    backend=backend,
-                    api_key=api_key,
-                )
-                full_transcript_text = format_transcript(full_transcript_segments)
-                transcript_source = f"whisper ({used_backend})"
-            except SystemExit as exc:
-                print(f"[analyze-video] whisper fallback failed: {exc}", file=sys.stderr)
+        if args.whisper:
+            # User pinned a specific backend; honor that, no fallback.
+            backend, api_key = load_api_key(args.whisper)
+            attempts = [(backend, api_key)] if backend and api_key else []
         else:
+            # Auto-fallback: try Groq first, then OpenAI (or whichever keys exist).
+            available = load_all_api_keys()
+            attempts = [
+                (b, available[b])
+                for b in ("groq", "openai")
+                if b in available
+            ]
+
+        if not attempts:
             hint = (
                 f"--whisper {args.whisper} was set but the matching API key is missing"
                 if args.whisper
@@ -316,6 +352,30 @@ def main() -> int:
                 "Whisper fallback",
                 file=sys.stderr,
             )
+        else:
+            for i, (backend, api_key) in enumerate(attempts):
+                try:
+                    full_transcript_segments, used_backend = transcribe_video(
+                        video_path,
+                        work / "audio.mp3",
+                        backend=backend,
+                        api_key=api_key,
+                    )
+                    transcript_source = f"whisper ({used_backend})"
+                    break
+                except SystemExit as exc:
+                    next_attempt = attempts[i + 1] if i + 1 < len(attempts) else None
+                    if next_attempt:
+                        print(
+                            f"[analyze-video] whisper backend '{backend}' failed: {exc}; "
+                            f"falling back to '{next_attempt[0]}'",
+                            file=sys.stderr,
+                        )
+                    else:
+                        print(
+                            f"[analyze-video] whisper failed (no more backends): {exc}",
+                            file=sys.stderr,
+                        )
 
     # 4. Decide chunking strategy
     if focused:
@@ -355,19 +415,20 @@ def main() -> int:
             args=args,
             max_frames=max_frames,
             full_transcript_segments=full_transcript_segments,
-            transcript_source=transcript_source,
         )
         processed_chunks.append(chunk)
 
     info = dl.get("info") or {}
     aspect = _aspect_ratio_label(meta.get("width"), meta.get("height"))
+    docx_dim = _docx_image_dimensions(meta.get("width"), meta.get("height"), aspect)
 
-    total_frames = sum(c["extraction"]["frame_count"] for c in processed_chunks)
+    total_frames = sum(c["frame_count"] for c in processed_chunks)
     preview_cost_warning = chunked and len(processed_chunks) >= PREVIEW_COST_WARNING_CHUNKS
 
-    # 6. Build manifest (schema_version 2)
-    manifest = {
-        "schema_version": 2,
+    # 6. Build full manifest (schema_version 3). Top-level segments are the
+    #    canonical transcript; per-chunk transcript is just index pointers.
+    common_fields = {
+        "schema_version": 3,
         "source": args.source,
         "title": info.get("title"),
         "uploader": info.get("uploader"),
@@ -377,6 +438,7 @@ def main() -> int:
         "width": meta.get("width"),
         "height": meta.get("height"),
         "aspect_ratio": aspect,
+        "docx_image_dimensions": docx_dim,
         "codec": meta.get("codec"),
         "has_audio": meta.get("has_audio"),
         "focus_range": (
@@ -392,19 +454,31 @@ def main() -> int:
         "chunked": chunked,
         "chunk_count": len(processed_chunks),
         "total_frame_count": total_frames,
-        "chunks": processed_chunks,
-        "transcript": {
-            "source": transcript_source,
-            "segment_count": len(full_transcript_segments),
-            "segments": full_transcript_segments,
-            "formatted": full_transcript_text,
-        },
         "preview_cost_warning": preview_cost_warning,
+        "quick_mode": bool(args.quick),
+        "transcript_source": transcript_source,
+        "transcript_segment_count": len(full_transcript_segments),
         "out_dir": str(work),
+    }
+
+    manifest = {
+        **common_fields,
+        "chunks": processed_chunks,
+        "transcript_segments": full_transcript_segments,
     }
 
     manifest_path = work / "manifest.json"
     manifest_path.write_text(json.dumps(manifest, indent=2))
+
+    # 6b. Lightweight manifest: same shape minus transcript_segments. The skill
+    #     reads this by default; only fall back to manifest.json when raw
+    #     transcript text is needed (direct quotes, boundary refinement).
+    manifest_lite = {
+        **common_fields,
+        "chunks": processed_chunks,
+        "manifest_path": str(manifest_path),
+    }
+    (work / "manifest_lite.json").write_text(json.dumps(manifest_lite, indent=2))
 
     # 7. Human-readable report
     report_lines: list[str] = []
@@ -473,8 +547,9 @@ def main() -> int:
 
     (work / "report.md").write_text("\n".join(report_lines))
 
-    # Final stdout: just the manifest path so the skill can find it
-    print(str(manifest_path))
+    # Final stdout: the lite manifest path (skill reads this; full manifest
+    # path is recorded inside it under "manifest_path" if needed).
+    print(str(work / "manifest_lite.json"))
     return 0
 
 

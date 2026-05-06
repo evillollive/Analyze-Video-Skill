@@ -1,8 +1,8 @@
 ---
-description: After /watch processes one or more videos, write a detailed visual analysis with embedded still frames and export it as a Word document (.docx).
+description: Analyze one or more videos (URLs or local files) and produce a Word document with embedded frames and a timestamp-based written analysis.
 allowed-tools: [Bash, Read, Write, AskUserQuestion]
 ---
 
 Invoke the `analyze-video` skill (defined in SKILL.md) with the user's arguments: $ARGUMENTS
 
-Follow the skill's full pipeline: inventory /watch outputs in context → ask user for frame count and document preferences → copy frames → select frames intelligently → Read frames → write analysis → build .docx → validate and deliver. If /watch has not been run yet, tell the user to run it first.
+Follow the full pipeline in SKILL.md: setup preflight → parse the request (sources, optional focus, quick intent) → ask the user only when needed → run `process.py` per video → preview each `manifest_lite.json` and contact sheet(s) → call `select_frames.py` to pick frames → Read selected frames → write the analysis → emit the docx spec → run `build-docx.js` → validate and deliver → offer PDF + cleanup.
