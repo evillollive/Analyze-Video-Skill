@@ -43,9 +43,15 @@ The trade-off is more contact sheets to preview; for very long videos (5+ chunks
 
 ## Installation
 
-This is a Claude Code skill. Drop the entire folder under your skills directory, or install it as a plugin per your Claude Code setup. The `setup.py` script handles dependency installation and API-key scaffolding the first time the skill runs.
+This is a Claude Code skill. Drop the entire folder under your skills directory, or install it as a plugin per your Claude Code setup. The `setup.py` script handles dependency installation, the npm `docx` module, and API-key scaffolding the first time the skill runs.
 
-Configuration lives at `~/.config/analyze-video/.env`.
+Configuration lives at `~/.config/analyze-video/.env`. To set a Whisper key from the command line without editing the file:
+
+```bash
+python3 scripts/setup.py --set-key groq <YOUR_KEY>
+# or:
+python3 scripts/setup.py --set-key openai <YOUR_KEY>
+```
 
 ## Usage
 
@@ -54,6 +60,7 @@ Just ask Claude something like:
 - *"Analyze this video: https://youtu.be/abc and write me a report"*
 - *"Make a doc from these three videos with screenshots"*
 - *"Analyze the demo at 2:30–3:15 in this clip"*
+- *"Quick TL;DR with a few screenshots from this clip"* (triggers `--quick` mode)
 
 The skill triggers automatically and walks through the workflow.
 
@@ -73,15 +80,16 @@ Analyze-Video-Skill/
 │   └── scripts/                    # Hook helper scripts
 ├── scripts/
 │   ├── process.py                  # Per-video pipeline orchestrator
+│   ├── select_frames.py            # Frame-selection helper (proportional + boundary-aware)
 │   ├── download.py                 # yt-dlp wrapper
 │   ├── frames.py                   # ffmpeg frame extraction + contact sheet
 │   ├── transcribe.py               # WebVTT caption parser
-│   ├── whisper.py                  # Groq / OpenAI Whisper client
-│   ├── setup.py                    # Preflight + installer
-│   ├── build-docx.js               # Node.js docx builder
+│   ├── whisper.py                  # Groq / OpenAI Whisper client (with auto-fallback)
+│   ├── setup.py                    # Preflight + installer (deps, npm docx, --set-key)
+│   ├── build-docx.js               # JSON-spec docx builder (no per-session npm install)
 │   └── build-skill.sh              # Builds .skill bundle for distribution
 └── templates/
-    └── build.js.template           # docx builder template (uses npm `docx` package)
+    └── caption_guide.md            # Caption style guide (read at write-time)
 ```
 
 ## Security & Privacy

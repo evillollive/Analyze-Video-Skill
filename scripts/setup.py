@@ -27,9 +27,11 @@ import sys
 from pathlib import Path
 
 
-REQUIRED_BINARIES = ["ffmpeg", "ffprobe", "yt-dlp"]
+REQUIRED_BINARIES = ["ffmpeg", "ffprobe", "yt-dlp", "node", "npm"]
 CONFIG_DIR = Path.home() / ".config" / "analyze-video"
 CONFIG_FILE = CONFIG_DIR / ".env"
+SCRIPTS_DIR = Path(__file__).resolve().parent
+DOCX_NODE_MODULES = SCRIPTS_DIR / "node_modules" / "docx"
 ENV_TEMPLATE = """# /analyze-video API configuration
 #
 # Whisper transcription fallback, used only when yt-dlp cannot get captions
@@ -154,6 +156,9 @@ def _brew_pkg(missing: list[str]) -> list[str]:
         elif bin_name == "yt-dlp":
             if "yt-dlp" not in pkgs:
                 pkgs.append("yt-dlp")
+        elif bin_name in ("node", "npm"):
+            if "node" not in pkgs:
+                pkgs.append("node")
         else:
             pkgs.append(bin_name)
     return pkgs
@@ -183,6 +188,8 @@ def _install_hint_linux(missing: list[str]) -> str:
         hints.append("apt: `sudo apt install ffmpeg` or dnf: `sudo dnf install ffmpeg`")
     if "yt-dlp" in pkgs:
         hints.append("`pipx install yt-dlp` (recommended) or `pip install --user yt-dlp`")
+    if "node" in pkgs:
+        hints.append("apt: `sudo apt install nodejs npm` or use nvm (https://github.com/nvm-sh/nvm)")
     return "\n  ".join(hints) if hints else "nothing to install"
 
 
@@ -193,7 +200,75 @@ def _install_hint_windows(missing: list[str]) -> str:
         hints.append("winget: `winget install Gyan.FFmpeg`")
     if "yt-dlp" in pkgs:
         hints.append("winget: `winget install yt-dlp.yt-dlp` or pip: `pip install --user yt-dlp`")
+    if "node" in pkgs:
+        hints.append("winget: `winget install OpenJS.NodeJS`")
     return "\n  ".join(hints) if hints else "nothing to install"
+
+
+def _install_docx() -> tuple[bool, str]:
+    """Install the npm `docx` package once into scripts/node_modules.
+
+    The build script (`scripts/build-docx.js`) requires('docx'), and Node
+    resolves modules from any `node_modules/` next to the script. Installing
+    once here avoids the per-session `npm init && npm install` dance.
+    """
+    if DOCX_NODE_MODULES.exists():
+        return True, "already installed"
+    if shutil.which("npm") is None:
+        return False, "npm not available; install Node.js first"
+    SCRIPTS_DIR.mkdir(parents=True, exist_ok=True)
+    pkg_json = SCRIPTS_DIR / "package.json"
+    if not pkg_json.exists():
+        pkg_json.write_text(
+            '{\n  "name": "analyze-video-runtime",\n  "private": true,\n'
+            '  "description": "Runtime npm deps for the analyze-video skill builder.",\n'
+            '  "dependencies": {}\n}\n'
+        )
+    print("[setup] installing npm `docx` into scripts/node_modules ...", file=sys.stderr)
+    result = subprocess.run(
+        ["npm", "install", "--no-audit", "--no-fund", "--prefix", str(SCRIPTS_DIR), "docx"],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        return False, f"npm install docx failed: {result.stderr.strip()[:300]}"
+    return True, "installed"
+
+
+def _set_key(backend: str, value: str) -> int:
+    """Write/replace a single API key in the .env file at mode 0600."""
+    backend = backend.lower()
+    key_name = {"groq": "GROQ_API_KEY", "openai": "OPENAI_API_KEY"}.get(backend)
+    if not key_name:
+        sys.stderr.write(f"unknown backend: {backend} (expected 'groq' or 'openai')\n")
+        return 2
+    if not value or not value.strip():
+        sys.stderr.write("empty key value\n")
+        return 2
+
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    if not CONFIG_FILE.exists():
+        CONFIG_FILE.write_text(ENV_TEMPLATE)
+
+    lines = CONFIG_FILE.read_text().splitlines()
+    new_lines: list[str] = []
+    replaced = False
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith(f"{key_name}=") or stripped.startswith(f"{key_name} ="):
+            new_lines.append(f"{key_name}={value.strip()}")
+            replaced = True
+        else:
+            new_lines.append(line)
+    if not replaced:
+        new_lines.append(f"{key_name}={value.strip()}")
+    CONFIG_FILE.write_text("\n".join(new_lines) + "\n")
+    try:
+        CONFIG_FILE.chmod(0o600)
+    except OSError:
+        pass
+    print(f"[setup] wrote {key_name} to {CONFIG_FILE}", file=sys.stderr)
+    return 0
 
 
 def _status() -> dict:
@@ -216,6 +291,7 @@ def _status() -> dict:
         "missing_binaries": missing,
         "whisper_backend": backend,
         "has_api_key": has_key,
+        "docx_installed": DOCX_NODE_MODULES.exists(),
         "config_file": str(CONFIG_FILE),
         "platform": platform.system(),
     }
@@ -300,6 +376,15 @@ def cmd_install() -> int:
         print(f"[setup] config exists: {CONFIG_FILE}")
 
     has_key, backend = _have_api_key()
+
+    # Always try to install the docx node module too. Failure is non-fatal:
+    # the per-session fallback in SKILL.md still works.
+    docx_ok, docx_msg = _install_docx()
+    if docx_ok:
+        print(f"[setup] docx npm module: {docx_msg}")
+    else:
+        print(f"[setup] docx npm module: skipped ({docx_msg})", file=sys.stderr)
+
     if has_key:
         _write_setup_complete()
         print(f"[setup] ready. whisper backend: {backend}")
@@ -310,7 +395,11 @@ def cmd_install() -> int:
     print("")
     print("[setup] one step left: add a Whisper API key.")
     print("")
-    print(f"  Edit {CONFIG_FILE} and set either:")
+    print("  Easiest: re-run with the key, e.g.")
+    print(f"    python3 {Path(__file__).resolve()} --set-key groq sk-...")
+    print("")
+    print("  Or edit the file directly:")
+    print(f"    {CONFIG_FILE}")
     print("    GROQ_API_KEY=...    (preferred, cheaper, faster; get one at console.groq.com/keys)")
     print("    OPENAI_API_KEY=...  (fallback; get one at platform.openai.com/api-keys)")
     print("")
@@ -326,6 +415,20 @@ def main() -> int:
             return cmd_check()
         if arg == "--json":
             return cmd_json()
+        if arg == "--set-key":
+            if len(sys.argv) < 4:
+                sys.stderr.write("usage: setup.py --set-key <groq|openai> <KEY>\n")
+                return 2
+            rc = _set_key(sys.argv[2], sys.argv[3])
+            if rc == 0:
+                # Check if this completes setup; mark complete if so.
+                if not _check_binaries() and _have_api_key()[0]:
+                    _write_setup_complete()
+            return rc
+        if arg == "--install-docx":
+            ok, msg = _install_docx()
+            print(f"[setup] {msg}", file=sys.stderr)
+            return 0 if ok else 2
     return cmd_install()
 
 

@@ -142,6 +142,18 @@ def get_metadata(video_path: str) -> dict:
     }
 
 
+def auto_tile_width(frame_count: int) -> int:
+    """Pick a contact-sheet tile width that keeps the sheet ~5-7k image tokens.
+
+    More frames per sheet -> smaller tiles so the overall image stays compact.
+    """
+    if frame_count <= 24:
+        return 256
+    if frame_count <= 60:
+        return 200
+    return 160
+
+
 def auto_fps(duration_seconds: float, max_frames: int = 120) -> tuple[float, int]:
     """Pick fps that targets a sensible frame budget for full-video scans.
 
