@@ -1,6 +1,6 @@
 # /analyze-video
 
-A Claude skill that turns one or more videos into a polished Word document with timestamp-based prose analysis and embedded still frames. Download, frame extraction, contact-sheet preview, transcription, intelligent frame selection, and `.docx` export, all in one workflow.
+An agentic AI skill that turns one or more videos into a polished Word document with timestamp-based prose analysis and embedded still frames. Download, frame extraction, contact-sheet preview, transcription, intelligent frame selection, and `.docx` export, all in one workflow.
 
 ## What it does
 
