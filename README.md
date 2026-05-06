@@ -1,141 +1,73 @@
-# analyze-video
+# /analyze-video
 
-A [Cowork](https://claude.ai) skill that picks up where [/watch](https://github.com/bradautomates/claude-video) left off. Run `/watch` on one or more videos, then run `/analyze-video` to get a polished Word document with a detailed visual analysis, embedded still frames, and timestamped captions.
+A Claude skill that turns one or more videos into a polished Word document with timestamp-based prose analysis and embedded still frames.
 
----
+This is the v2 merge of the older `/watch` and `/analyze-video` skills. It is now one self-contained skill: download, frame extraction, contact-sheet preview, transcription, intelligent frame selection, and `.docx` export, all in one workflow.
 
 ## What it does
 
-`/watch` gives Claude eyes on a video: extracted frames and a timestamped transcript. `analyze-video` takes that material and turns it into a deliverable.
+Given a video URL (YouTube, Vimeo, X, TikTok, Twitch, most yt-dlp-supported sites) or a local file path, the skill:
 
-- Handles 1 to many videos in the same session
-- Asks how many frames per video to include
-- Selects frames intelligently across the full duration (not just the first N)
-- Writes a detailed timestamp-based analysis with rich visual descriptions
-- Embeds selected frames with captions directly in the document
-- Exports as `.docx`, with a PDF option on request
+1. Downloads the video and any native captions
+2. Extracts auto-scaled frames (capped at 100 frames, 2 fps)
+3. Tiles all frames into a single contact-sheet image for cheap visual preview
+4. Transcribes the audio (captions first, Whisper API as fallback)
+5. Asks how many frames to embed in the final document
+6. Reads only the selected frames and writes a detailed time-based analysis
+7. Builds a polished Word document with embedded frames and captions
 
----
+Handles single videos and batches.
+
+## Why the contact sheet
+
+Reading every extracted frame burns 50 to 80k image tokens per video. Instead, the script tiles all frames into one `contact_sheet.jpg`. Claude Reads the contact sheet once (~5 to 10k tokens), decides which frames matter, and Reads only those at full resolution.
+
+Typical token budget: 20 to 30k per video instead of 50 to 80k.
 
 ## Requirements
 
-- [Cowork](https://claude.ai) (or Claude Code with skill support)
-- The [/watch skill](https://github.com/bradautomates/claude-video) installed and run first
-- Node.js (for the docx builder, installed automatically if missing)
+- Python 3.9+
+- `ffmpeg`, `ffprobe`, `yt-dlp` (auto-installed via Homebrew on macOS; install commands printed for Linux/Windows)
+- A Whisper API key for the audio fallback (free tier works):
+  - Groq: https://console.groq.com/keys (preferred: cheaper, faster)
+  - OpenAI: https://platform.openai.com/api-keys (fallback)
 
----
+If neither key is set, the skill works frames-only on videos without native captions.
 
-## Install
+## Installation
 
-| Surface | Install |
-|---------|---------|
-| **Claude Code** | `/plugin marketplace add evillollive/Analyze-Video-Skill` then `/plugin install analyze-video@Analyze-Video-Skill` |
-| **claude.ai** (web) | [Download `analyze-video.skill`](https://github.com/evillollive/Analyze-Video-Skill/releases/latest) → Settings → Capabilities → Skills → `+` |
-| **Codex** | `git clone https://github.com/evillollive/Analyze-Video-Skill.git ~/.codex/skills/analyze-video` |
-| **Manual / dev** | `git clone https://github.com/evillollive/Analyze-Video-Skill.git ~/.claude/skills/analyze-video` |
+This is a Claude Code skill. Drop the entire folder under your skills directory, or install it as a plugin per your Claude Code setup. The `setup.py` script handles dependency installation and API-key scaffolding the first time the skill runs.
 
-### Claude Code
-
-```
-/plugin marketplace add evillollive/Analyze-Video-Skill
-/plugin install analyze-video@Analyze-Video-Skill
-```
-
-Update later with `/plugin update analyze-video@Analyze-Video-Skill`.
-
-### claude.ai (web)
-
-1. [Download `analyze-video.skill`](https://github.com/evillollive/Analyze-Video-Skill/releases/latest) from the latest release.
-2. Go to Settings → Capabilities → Skills.
-3. Click `+` and drop the file in.
-
-### Codex
-
-```bash
-git clone https://github.com/evillollive/Analyze-Video-Skill.git ~/.codex/skills/analyze-video
-```
-
-### Manual (developer)
-
-```bash
-git clone https://github.com/evillollive/Analyze-Video-Skill.git ~/.claude/skills/analyze-video
-```
-
----
+Configuration lives at `~/.config/analyze-video/.env`.
 
 ## Usage
 
-1. Run `/watch` on one or more videos:
-   ```
-   /watch https://youtu.be/your-video-here
-   ```
+Just ask Claude something like:
 
-2. Once `/watch` finishes, run:
-   ```
-   /analyze-video
-   ```
+- "Analyze this video: https://youtu.be/abc and write me a report"
+- "Make a doc from these three videos with screenshots"
+- "Analyze the demo at 2:30-3:15 in this clip"
 
-3. Claude will ask:
-   - How many frames per video to include
-   - If you have multiple videos: one combined document or separate files
+The skill triggers automatically and walks through the workflow.
 
-4. It builds the `.docx` and asks if you also want a PDF.
-
----
-
-## Output
-
-A Word document (`.docx`) containing:
-
-- Title and video metadata
-- Time-based sections with detailed visual descriptions
-- Still frames embedded inline with descriptive captions
-- A production notes section when multiple videos are analyzed
-
----
-
-## How frame selection works
-
-Rather than picking frames mechanically, the skill divides the video into N equal time segments and selects one frame from each. It then cross-references the transcript to shift selections toward segment boundaries where something visually meaningful is happening, and always tries to include the opening and closing of the video.
-
----
-
-## Structure
+## Files
 
 ```
-.
-├── SKILL.md                   # skill contract — loaded by all surfaces
+analyze-video/
+├── SKILL.md                      # Skill instructions for Claude
+├── README.md                     # This file
+├── LICENSE                       # MIT
 ├── scripts/
-│   ├── build-docx.js          # Node.js docx builder template with helpers
-│   └── build-skill.sh         # build dist/analyze-video.skill for claude.ai upload
-├── commands/                  # slash command shim (Claude Code only)
-├── hooks/                     # SessionStart Node.js check (Claude Code only)
-├── .claude-plugin/            # plugin.json + marketplace.json (Claude Code)
-├── .codex-plugin/             # codex packaging
-└── .github/workflows/         # release.yml — auto-builds .skill on tag push
+│   ├── process.py                # Per-video pipeline orchestrator
+│   ├── download.py               # yt-dlp wrapper
+│   ├── frames.py                 # ffmpeg frame extraction + contact sheet
+│   ├── transcribe.py             # WebVTT caption parser
+│   ├── whisper.py                # Groq / OpenAI Whisper client
+│   └── setup.py                  # Preflight + installer
+└── templates/
+    └── build.js.template         # docx builder template (uses npm `docx` package)
 ```
-
----
-
-## Develop
-
-```bash
-# Build the claude.ai upload bundle:
-bash scripts/build-skill.sh      # → dist/analyze-video.skill
-```
-
-Releasing: tag `vX.Y.Z`, push the tag. The workflow builds `dist/analyze-video.skill` and attaches it to the GitHub release.
-
-See [CHANGELOG.md](CHANGELOG.md) for version history.
-
----
-
-## Pair with
-
-- [/watch](https://github.com/bradautomates/claude-video) — required prerequisite that downloads and processes the video
-
----
 
 ## License
 
-Apache-2.0
+MIT. See `LICENSE`.

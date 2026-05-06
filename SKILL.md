@@ -1,258 +1,255 @@
 ---
 name: analyze-video
-description: After /watch processes one or more videos, this skill writes a detailed visual analysis with embedded still frames and exports it as a Word document (.docx). Use immediately after running /watch when the user wants a written analysis, video report, or document with frames. Also triggers on "analyze this video", "write up the video", "make a report from the video", "document what's in the video", "summarize with screenshots", "export the analysis", "turn this into a document", or any request to produce a deliverable from video content already processed in the session.
+description: Use when the user wants to analyze one or more videos (URLs or local files) and produce a Word document with embedded frames and a written timestamp-based analysis. Triggers on "analyze this video", "make a report from this video", "write up this YouTube link", "document what's in these videos", "analyze these clips", "video analysis", or any request that includes video URLs or local video paths and asks for a written deliverable.
 allowed-tools: Bash, Read, Write, AskUserQuestion
+homepage: https://github.com/evillollive/Analyze-Video-Skill
+repository: https://github.com/evillollive/Analyze-Video-Skill
+license: MIT
+user-invocable: true
 ---
 
-# analyze-video
+# analyze-video (v2)
 
-This skill picks up where /watch left off. /watch gives Claude eyes on a video: frames extracted as JPEGs plus a timestamped transcript. This skill takes that material and produces a polished Word document with a detailed visual analysis organized by time, selected still frames embedded and captioned, and a clean export.
+Self-contained pipeline that takes one or more video sources, downloads them, extracts frames, transcribes them (captions or Whisper API), tiles all frames into a contact sheet for cheap visual scanning, and produces a polished Word document with selected frames embedded and a timestamp-based written analysis.
 
-It handles 1 to many videos in the same session.
+This is a v2 merge of the earlier `/watch` and `/analyze-video` skills into one workflow. There is no separate `/watch` step.
 
-## What this skill does (for humans)
+## Token strategy (why the contact sheet matters)
 
-Run `/watch` on however many videos you want, then invoke `/analyze-video`. It inventories all the `/watch` outputs in context, asks how many frames per video and whether to combine into one document or keep them separate, copies frames to an accessible location, selects them intelligently (spread across the full duration, biased toward moments where something is visually changing), reads them, writes the full timestamp-based analysis, and builds the `.docx`. PDF export is a one-question follow-up after delivery.
+Reading every extracted frame burns 50 to 80k image tokens per video. Instead:
 
-A few design decisions worth knowing:
+1. The script tiles all frames into one `contact_sheet.jpg` (8 columns wide, row-major, chronological).
+2. You Read the contact sheet once (around 5 to 10k tokens) to see the whole video at a glance.
+3. You decide which N frames matter for the document, and Read only those at full resolution.
 
-- **Frame selection** is explained explicitly so Claude does not just take the first N frames. Selection is spread across the video duration and weighted toward moments where the visual content is actually changing.
-- **Captions** have a writing guide with two concrete patterns, so they describe what is in the frame rather than restating the section heading.
-- **Aspect ratio handling** is included (16:9, 4:3, vertical) so the embedded images are sized correctly regardless of source format.
-- **Cowork compatibility** is built in: /watch puts frames in /tmp which is not directly readable in Cowork, so the skill copies them to the outputs folder before reading.
+This typically lands at 20 to 30k tokens per video instead of 50 to 80k.
 
----
+## Step 0: Setup preflight
 
-## Prerequisites
-
-This skill requires /watch to have already run in the current session. Before proceeding, confirm that at least one "watch: video report" block is present in the conversation context, with frame paths and a transcript listed.
-
-If /watch has not been run yet, tell the user to run it first:
-```
-/watch <url-or-path>
-```
-
----
-
-## Step 1: Inventory what is in context
-
-Scan the conversation for all /watch reports. For each video, note:
-
-- **Title** — from the report header (e.g., "Turning a codebase into an 80s dungeon crawler")
-- **Duration** — total length of the video
-- **Frame directory** — the path listed under "Frames live at:" (typically `/tmp/watch-XXXXXXXX/frames`)
-- **Total frame count** — count the listed frame paths in the report
-- **Transcript** — all segments with timestamps
-- **Working directory** — listed at the bottom of the report (e.g., `/tmp/watch-XXXXXXXX`)
-
-If there are multiple videos, list them briefly so the user knows what you found before proceeding.
-
----
-
-## Step 2: Ask the user
-
-Use `AskUserQuestion` to collect two things:
-
-**1. How many frames per video** should be included in the document?
-
-Suggest a sensible default based on duration:
-- Under 2 min: suggest 6-8 frames
-- 2-5 min: suggest 8-12 frames
-- Over 5 min: suggest 12-20 frames
-
-**2. If there are multiple videos:** Should all videos go into one combined document, or should each get its own separate .docx file?
-
-If there is only one video, skip question 2.
-
----
-
-## Step 3: Copy frames to an accessible location
-
-The /watch script writes frames to `/tmp`, which is not directly readable by the Read tool in Cowork. Copy the selected frames to the outputs directory before reading them.
-
-First, determine how many frames exist and calculate which ones to select (see Frame Selection below). Then copy only those frames:
+Run on the first invocation each session:
 
 ```bash
-# Copy full frame directory for a video, then you can Read from the outputs path
-cp -r /tmp/watch-XXXXXXXX/frames /path/to/outputs/frames_video_1/
-
-# For multiple videos, use numbered subdirectories
-cp -r /tmp/watch-XXXXXXXX/frames /path/to/outputs/frames_video_2/
+python3 "${CLAUDE_SKILL_DIR}/scripts/setup.py" --check
 ```
 
-The outputs directory in Cowork is the path shown in your environment context. Use it consistently throughout.
+Silent on success (exit 0). On non-zero, run the installer:
 
----
+```bash
+python3 "${CLAUDE_SKILL_DIR}/scripts/setup.py"
+```
 
-## Step 4: Select frames intelligently
+Installer behavior:
+- macOS with Homebrew: auto-installs `ffmpeg` and `yt-dlp`
+- Linux/Windows: prints exact install commands for you to relay to the user
+- Scaffolds `~/.config/analyze-video/.env` at mode 0600
+- Writes `SETUP_COMPLETE=true` once deps + a key are in place
 
-Given N frames to include from M available frames, the goal is maximum coverage and visual variety, not mechanical spacing.
+If a Whisper API key is still missing after install, use `AskUserQuestion` to ask the user whether they have a Groq key (preferred: cheaper, faster) or an OpenAI key. Write it to `~/.config/analyze-video/.env`. If they don't want Whisper, you can pass `--no-whisper` to `process.py` and proceed frames-only.
 
-**Selection algorithm:**
+After Step 0 returns 0 once in a session, skip it on subsequent invocations.
 
-Divide the video into N equal time segments and pick one frame from each segment. In practice with sequential frame files numbered 0001 to M:
+## Step 1: Parse the request
+
+Extract from the user's message:
+- A list of video sources (URLs or local file paths). One or more.
+- Optional question or focus area ("analyze the demo at 2:30 to 3:15", "what's distinctive about the visuals?").
+
+Examples:
+- "Analyze https://youtu.be/abc and write me a report" -> 1 source, no focus
+- "Make a docx from these three videos: A, B, C" -> 3 sources, no focus
+- "Document what happens at 1:30 in this clip: D" -> 1 source, focus = 1:30 onward
+
+If section focus is implied, plan to pass `--start` and `--end` to `process.py` for that video.
+
+## Step 2: Ask the user (once, for the whole batch)
+
+Use `AskUserQuestion` to gather:
+
+1. **Frames per video** to include in the document. Suggest based on the longest video's duration:
+   - Under 2 min: 6 to 8
+   - 2 to 5 min: 8 to 12
+   - 5 to 15 min: 12 to 20
+   - Over 15 min: 16 to 25 (and consider asking if they want a section focus)
+
+2. **Output format** (only ask if there are 2 or more videos):
+   - One combined .docx (default)
+   - Separate .docx per video
+
+Don't ask about section focus. Infer it from the user's request.
+
+## Step 3: Process each video
+
+Determine the session outputs directory from your environment (the path under `local-agent-mode-sessions/.../outputs`). Create one numbered subdirectory per video:
+
+```bash
+OUT_DIR="<absolute path to session outputs>"
+VIDEO_DIR="$OUT_DIR/video_1"
+
+python3 "${CLAUDE_SKILL_DIR}/scripts/process.py" \
+  --source "<url-or-path>" \
+  --out-dir "$VIDEO_DIR"
+```
+
+For section-focused processing, add `--start` and/or `--end`:
+
+```bash
+python3 "${CLAUDE_SKILL_DIR}/scripts/process.py" \
+  --source "<url-or-path>" \
+  --out-dir "$OUT_DIR/video_1" \
+  --start 2:30 --end 3:15
+```
+
+Per-video outputs (in `$VIDEO_DIR`):
+- `manifest.json`: structured pipeline output, schema_version 1
+- `report.md`: human-readable summary
+- `contact_sheet.jpg`: tiled overview of all frames
+- `frames/frame_NNNN.jpg`: individual frames
+- `download/video.<ext>`: source video
+- `audio.mp3`: only if Whisper was used
+
+The script's stdout is just the manifest path. All progress and warnings go to stderr.
+
+For batch mode: process videos sequentially, one at a time. Don't parallelize. Don't accumulate full frame dumps in context between videos. After each video completes, Read its `manifest.json` and `contact_sheet.jpg`, then move on.
+
+## Step 4: Plan the analysis from each contact sheet
+
+For each video, after reading its manifest and contact sheet:
+
+1. Cross-reference the contact sheet against the transcript in `manifest.transcript.segments`.
+2. Identify distinct visual sections (intro, demo, outro, scene changes).
+3. Pick which N frames go in the document (where N is the user's answer from Step 2).
+
+**Frame selection algorithm:**
 
 ```
-step = M / N
+total = len(manifest.frames)
+N = user's chosen frame count
+step = total / N
 selected_indices = [max(1, round(step * i + step/2)) for i in range(N)]
 ```
 
-Clamp all indices to the valid range [1, M].
+Then refine: if a selected index falls in the middle of a transcript segment with no visual change, shift it 1 to 2 positions toward the nearest transcript boundary or visible transition. Always include something from the opening and closing if distinct.
 
-**Refine based on content:** Cross-reference the selected frame timestamps against the transcript. If a selected frame falls in the middle of a sentence with no visual change happening, shift it by 1-2 positions toward the nearest transcript segment boundary. Prefer frames where something new appears on screen (a new speaker, a UI change, a visual transition) over frames where nothing has changed since the last selected frame.
+The contact sheet is in row-major chronological order with 8 columns. Tile (row R, col C) corresponds to frame index `(R * 8) + C + 1`. Use this to locate visual transitions on the sheet.
 
-Always try to include at least one frame from the opening and one from the closing if the video has distinct intro/outro moments.
+## Step 5: Read selected full-res frames
 
----
-
-## Step 5: Read the selected frames
-
-Read all selected frames in a single parallel batch: one `Read` call per frame, all in the same turn. Frames are now in the outputs directory, so they are accessible.
-
-You now have both visual content (the frames) and spoken content (the transcript) to work from.
-
----
+For each selected frame index, read the corresponding `frames/frame_NNNN.jpg` (use `manifest.frames[i].absolute_path`). Do all Reads for one video in a single parallel batch. For batch mode, only read frames for the video you're currently writing about, not all videos at once.
 
 ## Step 6: Write the analysis
 
-For each video, write a detailed analysis organized into time-based sections. Structure it as flowing prose, not bullet points.
+For each video, write the analysis as time-based sections with descriptive labels (e.g., "Opening (0:00 to 0:15)" or "Live Demo (2:30 to 3:15)"). Within each section:
 
-**Section format:** Name each section by the time range and a short descriptive label (e.g., "Opening (0:00-0:15)" or "Live Demo (0:30-0:55)"). Within each section:
+- Describe what is visually on screen: layout, color, on-screen text, people, expressions, UI elements, camera focus.
+- Describe what is being said at that moment (cite transcript timestamps).
+- Note what is significant or surprising.
 
-- Describe what is visually on screen: layout, color palette, text visible, people, expressions, UI elements, what the camera is focused on
-- Describe what is being said at that moment (from the transcript)
-- Note what is significant, surprising, or worth calling out
+Be concrete and observational. Avoid "the presenter explains X" in favor of "Lee, in a black GitHub hoodie, gestures at a Copilot conversation projected behind him."
 
-Be specific and observational. A good section reads like detailed scene description: someone who has not watched the video should come away with a clear mental image of what was on screen and what was happening. Avoid vague summary language like "the presenter explains X" in favor of concrete description: "Lee, wearing a black GitHub hoodie, stands in front of a green screen and holds a laptop. He gestures toward the camera as a Copilot conversation is projected large behind him."
+For multiple videos in a combined doc, finish with an "Observations Across Videos" section noting shared format, visual style, themes, and structure.
 
-**For multiple videos:** Analyze each one fully before moving to the next. Finish the document with a "Production Notes" or "Observations Across Videos" section that notes shared patterns: format, visual style, themes, structure.
+## Step 7: Build the docx
 
----
-
-## Step 7: Build the Word document
-
-Set up the docx builder if not already done:
+Set up the docx builder once per session:
 
 ```bash
-mkdir -p /path/to/outputs/docx_build
-cd /path/to/outputs/docx_build
-npm init -y 2>/dev/null && npm install docx 2>&1 | tail -3
+mkdir -p "$OUT_DIR/docx_build"
+cd "$OUT_DIR/docx_build"
+npm init -y >/dev/null 2>&1
+npm install docx 2>&1 | tail -3
 ```
 
-The skill includes a reusable docx builder template at `scripts/build-docx.js` with helpers for headings, body text, images, and captions. At runtime, write a customized `build.js` script to the docx_build directory that requires the helpers and populates the content:
+Write `build.js` to `$OUT_DIR/docx_build/build.js` based on the template at `${CLAUDE_SKILL_DIR}/templates/build.js.template`. Replace placeholders:
+- `__OUT_DIR__` -> the absolute outputs path
+- `__DOC_TITLE__` -> e.g., "Visual Analysis: <video title>" or for batch "GitHub Films Visual Analysis"
+- `__FILENAME__` -> e.g., `gh_dungeons_analysis.docx` (single) or `github_films_analysis.docx` (batch)
 
-```javascript
-const { Document, Packer, Paragraph, TextRun, ImageRun } = require('docx');
-const fs = require('fs');
+Push paragraphs into `children` using the helpers (`title`, `meta`, `h1`, `h2`, `body`, `imgPara`, `cap`). For each video: `h1`, `meta`, then per-section `h2` + `body` + `imgPara` + `cap`.
 
-const OUT = '/path/to/outputs';
+**Image dimensions: pick from `manifest.aspect_ratio`:**
+- "16:9" -> `{ width: 480, height: 270 }`
+- "4:3"  -> `{ width: 480, height: 360 }`
+- "9:16" -> `{ width: 240, height: 427 }`
+- "1:1"  -> `{ width: 360, height: 360 }`
+- Otherwise: compute height from width=480 and `manifest.width`/`manifest.height`.
 
-// Helper functions from scripts/build-docx.js — copy or require them:
-// imgPara(filePath, width, height, description) — embed a JPEG frame
-// cap(text) — italic caption paragraph
-// body(text) — body text paragraph
-// h1(text) — H1 heading
-// h2(text) — H2 heading
-// meta(text) — metadata line
-// title(text) — title paragraph
-// buildDoc(children) — build the full document and return a Buffer promise
+**Critical docx rules (don't remove from build.js):**
+- `type: 'jpg'` is required on every `ImageRun`.
+- `altText` with all three fields (`title`, `description`, `name`) is required.
+- Never use `\n` inside a `TextRun`. Use separate `Paragraph` elements.
+- Page size 12240 x 15840 DXA (US Letter), 1440 DXA margins (1 inch).
 
-// Build children array with your analysis content
-const children = [
-  // title('Video Title Here'),
-  // meta('Duration: X:XX | Source: ...'),
-  // h1('Section Title'),
-  // body('Analysis content...'),
-  // imgPara('/path/to/frame.jpg', 480, 270, 'description'),
-  // cap('Caption text'),
-];
+Run the build:
 
-// Use buildDoc() or construct manually:
-const doc = new Document({
-  sections: [{
-    properties: {
-      page: {
-        size: { width: 12240, height: 15840 }, // US Letter
-        margin: { top: 1440, right: 1440, bottom: 1440, left: 1440 }
-      }
-    },
-    children
-  }]
-});
-
-Packer.toBuffer(doc).then(buf => {
-  fs.writeFileSync(`${OUT}/video_analysis.docx`, buf);
-  console.log('Done');
-}).catch(err => { console.error(err); process.exit(1); });
+```bash
+node "$OUT_DIR/docx_build/build.js"
 ```
-
-**Critical docx rules:**
-
-- `type: 'jpg'` is required on every ImageRun (never omit it)
-- `altText` with all three fields (title, description, name) is required on every ImageRun
-- Never use `\n` inside TextRun: use separate Paragraph elements
-- Page size is always set explicitly: 12240 x 15840 DXA for US Letter
-- Content width with 1-inch margins = 9360 DXA
-
-**Document structure:**
-
-1. Title: the video title (or a collection title for multiple videos)
-2. Metadata line: uploader, duration, source URL
-3. For each video: an H1 section, then H2 subsections by time period, with body text and frames interspersed
-4. Each selected frame appears directly after the paragraph it illustrates, followed by a 1-2 sentence caption (what is shown and why it is notable)
-5. For multiple videos: a closing "Observations" or "Production Notes" section
-
-**Naming the output file:**
-
-For a single video, derive the filename from the video title (e.g., `gh_dungeons_analysis.docx`). For a combined multi-video document, use a descriptive collection name. For separate files, name each after its video.
-
----
 
 ## Step 8: Validate and deliver
 
-Validate the document before presenting it:
+If a docx validator is available, run it:
 
 ```bash
-python /path/to/docx/scripts/office/validate.py /path/to/outputs/video_analysis.docx
+python /path/to/docx-skill/scripts/validate.py "$OUT_DIR/<filename>.docx"
 ```
 
-If the validate.py script is not available, skip validation and proceed.
+If unavailable, skip silently. Present the docx via a `computer://` link to the user.
 
-Present the file link to the user.
+## Step 9: Soft checkpoint (PDF + cleanup)
 
-Then ask: "Want a PDF version as well?" If yes:
+Ask once at the end:
+
+> "Want a PDF version too, and should I clean up the working files (frames, audio, source video) but keep the docx?"
+
+If PDF requested:
 
 ```bash
-libreoffice --headless --convert-to pdf /path/to/outputs/video_analysis.docx \
-  --outdir /path/to/outputs/
+libreoffice --headless --convert-to pdf "$OUT_DIR/<filename>.docx" --outdir "$OUT_DIR/"
 ```
 
-If LibreOffice is not available, note that the .docx can be opened in Word or Google Docs and exported to PDF from there.
+If cleanup requested: remove `$OUT_DIR/video_*` and `$OUT_DIR/docx_build`. Keep the .docx (and PDF if generated).
 
----
+## Frame-to-caption guide
 
-## Step 9: Offer cleanup
-
-After delivering, offer to delete the copied frame directories from outputs (they add bulk to the workspace). The original /watch working directories in /tmp can be removed with `rm -rf /tmp/watch-XXXXXXXX` if the user is done with them.
-
----
-
-## Frame-to-caption writing guide
-
-A good caption is concrete and adds something the image alone does not make explicit. Two patterns that work well:
+A good caption is concrete and adds something the image alone doesn't show. Two patterns:
 
 **Describe + contextualize:**
 "The dungeon game running live in a terminal. Status bar reads 'HP: 13/20 | Level: 2/5 | Kills: 4.' The dungeon layout is seeded by the repository's commit SHA."
 
 **Describe + note significance:**
-"A Merge Conflict appears as an in-game trap, announced in red at the bottom of the screen: 'WARNING: MERGE CONFLICT DETECTED. TREAD CAREFULLY.'"
+"A Merge Conflict appears as an in-game trap, announced in red: 'WARNING: MERGE CONFLICT DETECTED. TREAD CAREFULLY.'"
 
-Avoid captions that just restate the section heading or say "presenter talks about X." Describe what is visible in the frame.
+Avoid captions that restate the section heading or summarize what the speaker said. Describe what is visible in the frame.
 
----
+## Failure modes
 
-## Notes on aspect ratio
+- **Setup preflight failed** -> run installer; ask user for Whisper key if missing; or pass `--no-whisper`.
+- **Download fails** (yt-dlp error to stderr) -> tell the user plainly. Login-required and region-locked videos won't work. Don't keep retrying.
+- **No transcript** (no captions, no Whisper key, or Whisper failed) -> proceed frames-only; note this in the docx.
+- **Long video warning** (manifest.long_video_warning is true) -> acknowledge it. Offer to re-run focused via `--start`/`--end`.
+- **Whisper request fails** -> retry with the other backend (`--whisper openai` if Groq failed, vice versa).
 
-The /watch skill defaults to 512px wide frames. For standard 16:9 video, the correct document dimensions are `width: 480, height: 270`. For 4:3 video, use `width: 480, height: 360`. For vertical/9:16 video (TikTok, Reels), use `width: 240, height: 427`.
+## Token efficiency notes
 
-Check the resolution field in the /watch report header to determine the source aspect ratio before setting ImageRun dimensions.
+- Contact sheet for one video: around 5 to 10k image tokens.
+- Selected frame at 512px: around 600 to 1000 tokens each.
+- 12 selected frames per video: around 12 to 15k tokens.
+- Typical full per-video budget: 20 to 30k image tokens.
+
+If the user asks a follow-up about a video already processed in this session, you have its manifest, contact sheet, and selected frames in context. Don't re-run.
+
+## Security & permissions
+
+This skill:
+- Runs `yt-dlp` locally to download videos and pull native captions.
+- Runs `ffmpeg`/`ffprobe` locally to extract frames, audio, and the contact sheet.
+- Sends extracted audio (not the video) to Groq or OpenAI Whisper API only when no captions are available and Whisper is enabled.
+- Writes everything under the session outputs folder you provide via `--out-dir`.
+- Reads/writes `~/.config/analyze-video/.env` at mode 0600 for the Whisper key and `SETUP_COMPLETE` marker.
+
+It does NOT:
+- Upload the source video to any API. Only extracted audio leaves the machine.
+- Access any platform account (no login, no cookies, no posting).
+- Persist anything outside the session outputs folder and `~/.config/analyze-video/`.
+
+**Bundled scripts** in `scripts/`: `process.py` (entry point), `download.py`, `frames.py`, `transcribe.py`, `whisper.py`, `setup.py`. Template in `templates/build.js.template`. Review before first use.
