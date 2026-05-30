@@ -1,6 +1,6 @@
 # /analyze-video
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 [![GitHub release](https://img.shields.io/github/v/release/evillollive/Analyze-Video-Skill)](https://github.com/evillollive/Analyze-Video-Skill/releases)
 
 An agentic AI skill for [Claude Code](https://docs.anthropic.com/en/docs/claude-code) that turns one or more videos into a polished Word document with timestamp-based prose analysis and embedded still frames. Download, frame extraction, contact-sheet preview, transcription, intelligent frame selection, and `.docx` export — all in one workflow.
@@ -71,7 +71,7 @@ Analyze-Video-Skill/
 ├── SKILL.md                        # Skill instructions for Claude
 ├── README.md                       # This file
 ├── CHANGELOG.md                    # Release history
-├── LICENSE                         # MIT
+├── LICENSE                         # GPL-3.0
 ├── analyze-video.skill             # Packaged skill bundle for claude.ai
 ├── commands/
 │   └── analyze-video.md            # Slash-command definition
@@ -114,4 +114,4 @@ Contributions are welcome! Please open an issue or submit a pull request.
 
 ## License
 
-[MIT](LICENSE)
+[GPL-3.0](LICENSE)
