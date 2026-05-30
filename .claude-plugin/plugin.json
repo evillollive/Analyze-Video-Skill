@@ -1,12 +1,12 @@
 {
   "name": "analyze-video",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Analyze one or more videos (URLs or local files) and produce a Word document with embedded frames and a timestamp-based written analysis.",
   "author": {
     "name": "evillollive"
   },
   "homepage": "https://github.com/evillollive/Analyze-Video-Skill",
   "repository": "https://github.com/evillollive/Analyze-Video-Skill",
-  "license": "Apache-2.0",
+  "license": "GPL-3.0",
   "keywords": ["video", "analysis", "docx", "document", "frames", "report", "word"]
 }
