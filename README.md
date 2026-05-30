@@ -1,6 +1,6 @@
 # 🎬 /analyze-video
 
-[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
+[![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
 [![GitHub release](https://img.shields.io/github/v/release/evillollive/Analyze-Video-Skill)](https://github.com/evillollive/Analyze-Video-Skill/releases)
 
 **Drop a video link. Get a beautifully formatted Word doc back, complete with screenshots, timestamps, and a written breakdown of everything that happens.**
@@ -73,7 +73,7 @@ The skill picks up on what you're asking and handles the details.
 Analyze-Video-Skill/
 ├── SKILL.md                     # How Claude uses this skill
 ├── CHANGELOG.md                 # What changed and when
-├── LICENSE                      # GPL-3.0, always open source
+├── LICENSE                      # AGPL-3.0, always open source
 ├── analyze-video.skill          # Pre-built bundle for claude.ai
 ├── commands/
 │   └── analyze-video.md         # Slash-command definition
@@ -116,4 +116,4 @@ Found a bug? Have an idea? PRs and issues are always welcome.
 
 ## License
 
-[GPL-3.0](LICENSE). This project will always be open source. Fork it, improve it, share it. Just keep it open.
+[AGPL-3.0](LICENSE). This project will always be open source. Fork it, improve it, share it. Just keep it open.

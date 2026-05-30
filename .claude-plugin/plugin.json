@@ -7,6 +7,6 @@
   },
   "homepage": "https://github.com/evillollive/Analyze-Video-Skill",
   "repository": "https://github.com/evillollive/Analyze-Video-Skill",
-  "license": "GPL-3.0",
+  "license": "AGPL-3.0",
   "keywords": ["video", "analysis", "docx", "document", "frames", "report", "word"]
 }
