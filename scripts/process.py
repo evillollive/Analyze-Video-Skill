@@ -511,9 +511,9 @@ def main() -> int:
             f"10-min windows with 5s overlap)"
         )
     elif focused:
-        report_lines.append(f"- **Mode:** focused on user-specified range")
+        report_lines.append("- **Mode:** focused on user-specified range")
     else:
-        report_lines.append(f"- **Mode:** single-pass (under 12-minute chunking threshold)")
+        report_lines.append("- **Mode:** single-pass (under 12-minute chunking threshold)")
     report_lines.append(
         f"- **Total frames:** {total_frames} across {len(processed_chunks)} chunk"
         f"{'s' if len(processed_chunks) != 1 else ''}"
