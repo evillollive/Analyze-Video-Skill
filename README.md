@@ -3,22 +3,22 @@
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 [![GitHub release](https://img.shields.io/github/v/release/evillollive/Analyze-Video-Skill)](https://github.com/evillollive/Analyze-Video-Skill/releases)
 
-**Drop a video link. Get a beautifully formatted Word doc back — with screenshots, timestamps, and a written breakdown of everything that happens.**
+**Drop a video link. Get a beautifully formatted Word doc back, complete with screenshots, timestamps, and a written breakdown of everything that happens.**
 
-This is a skill for [Claude Code](https://docs.anthropic.com/en/docs/claude-code) that watches videos so you don't have to (or helps you watch them better). It works with YouTube, Vimeo, TikTok, X, Twitch, local files — basically anything [yt-dlp](https://github.com/yt-dlp/yt-dlp) can handle.
+This is a skill for [Claude Code](https://docs.anthropic.com/en/docs/claude-code) that watches videos so you don't have to (or helps you watch them better). It works with YouTube, Vimeo, TikTok, X, Twitch, local files... basically anything [yt-dlp](https://github.com/yt-dlp/yt-dlp) can handle.
 
 ## How it works
 
 You paste a link. The skill does the rest:
 
 1. **Downloads** the video and grabs any existing captions
-2. **Pulls frames** at smart intervals — not too many, not too few
+2. **Pulls frames** at smart intervals (not too many, not too few)
 3. **Builds a contact sheet** so the AI can see the whole video at a glance without burning through your context window
 4. **Reads the transcript** (or creates one via Whisper if there are no captions)
 5. **Picks the best frames** and writes a detailed, timestamped analysis
 6. **Exports a polished `.docx`** with embedded screenshots, captions, and prose
 
-One video or ten — it handles batches too.
+One video or ten, it handles batches too.
 
 ## The clever bits
 
@@ -28,7 +28,7 @@ Every frame the AI reads costs tokens. Instead of reading 100+ frames individual
 
 ### Long videos don't get lost
 
-A 60-minute video with 120 frames means one frame every 30 seconds — huge gaps where important things could happen. So videos over 12 minutes automatically split into 10-minute chunks, each with its own set of frames. Coverage stays tight (~1 frame every 7 seconds) no matter how long the video is.
+A 60-minute video with 120 frames means one frame every 30 seconds, leaving huge gaps where important things could happen. So videos over 12 minutes automatically split into 10-minute chunks, each with its own set of frames. Coverage stays tight (~1 frame every 7 seconds) no matter how long the video is.
 
 For really long videos (5+ chunks), the skill gives you a heads-up about preview costs and offers a focus mode to zoom into just the parts you care about.
 
@@ -37,12 +37,12 @@ For really long videos (5+ chunks), the skill gives you a heads-up about preview
 ### What you'll need
 
 - **Python 3.9+** and **Node.js** (for the Word doc builder)
-- **ffmpeg**, **ffprobe**, **yt-dlp** — on macOS these auto-install via Homebrew; on Linux/Windows the skill prints the commands for you
+- **ffmpeg**, **ffprobe**, **yt-dlp** (on macOS these auto-install via Homebrew; on Linux/Windows the skill prints the commands for you)
 - Optionally, a **Whisper API key** for transcribing videos that don't have captions:
-  - [Groq](https://console.groq.com/keys) — faster and cheaper, recommended
-  - [OpenAI](https://platform.openai.com/api-keys) — solid fallback
+  - [Groq](https://console.groq.com/keys) (faster and cheaper, recommended)
+  - [OpenAI](https://platform.openai.com/api-keys) (solid fallback)
 
-> No API key? No problem. The skill still works great on videos that have captions — you just won't get transcripts for ones that don't.
+> No API key? No problem. The skill still works great on videos that have captions. You just won't get transcripts for ones that don't.
 
 ### Install
 
@@ -63,7 +63,7 @@ Just talk naturally:
 - *"Analyze this video and write me a report: https://youtu.be/abc"*
 - *"Make a doc from these three videos with screenshots"*
 - *"Just look at the 2:30–3:15 section of this clip"*
-- *"Quick TL;DR with a few screenshots"* (triggers quick mode — fewer frames, faster turnaround)
+- *"Quick TL;DR with a few screenshots"* (triggers quick mode: fewer frames, faster turnaround)
 
 The skill picks up on what you're asking and handles the details.
 
@@ -73,13 +73,13 @@ The skill picks up on what you're asking and handles the details.
 Analyze-Video-Skill/
 ├── SKILL.md                     # How Claude uses this skill
 ├── CHANGELOG.md                 # What changed and when
-├── LICENSE                      # GPL-3.0 — always open source
+├── LICENSE                      # GPL-3.0, always open source
 ├── analyze-video.skill          # Pre-built bundle for claude.ai
 ├── commands/
 │   └── analyze-video.md         # Slash-command definition
 ├── hooks/                       # Auto-setup on session start
 ├── scripts/
-│   ├── process.py               # The main pipeline — one video at a time
+│   ├── process.py               # The main pipeline (one video at a time)
 │   ├── select_frames.py         # Smart frame picker (proportional + boundary-aware)
 │   ├── download.py              # yt-dlp wrapper with error handling
 │   ├── frames.py                # Frame extraction + contact sheet builder
@@ -116,4 +116,4 @@ Found a bug? Have an idea? PRs and issues are always welcome.
 
 ## License
 
-[GPL-3.0](LICENSE) — this project will always be open source. Fork it, improve it, share it — just keep it open.
+[GPL-3.0](LICENSE). This project will always be open source. Fork it, improve it, share it. Just keep it open.
