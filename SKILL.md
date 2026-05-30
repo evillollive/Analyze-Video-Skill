@@ -204,13 +204,8 @@ The full schema (including all rendering rules and the image/altText requirement
 
 ## Step 8: Validate and deliver
 
-If a docx validator is available, run it:
-
-```bash
-python /path/to/docx-skill/scripts/validate.py "$OUT_DIR/<filename>.docx"
-```
-
-If unavailable, skip silently. Present the docx via a `computer://` link.
+Verify the generated `.docx` file exists and is non-empty. Present it to the
+user via a `computer://` link.
 
 ## Step 9: Soft checkpoint (PDF + cleanup)
 

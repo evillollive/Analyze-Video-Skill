@@ -34,12 +34,30 @@ OPENAI_MODEL = "whisper-1"
 CONFIG_DIR = Path.home() / ".config" / "analyze-video"
 CONFIG_FILE = CONFIG_DIR / ".env"
 
+try:
+    from env_utils import read_env_key as _shared_read_env_key
+except ImportError:
+    _shared_read_env_key = None
+
 
 def load_api_key(preferred: str | None = None) -> tuple[str, str] | tuple[None, None]:
     """Return (backend, api_key). Prefers Groq, falls back to OpenAI.
 
-    If `preferred` is "groq" or "openai", only that backend's key is considered.
+    If ``preferred`` is "groq" or "openai", only that backend's key is considered.
+    Uses the shared env_utils reader when available, with an inline fallback so
+    whisper.py can still run standalone.
     """
+    if _shared_read_env_key is not None:
+        candidates = (("GROQ_API_KEY", "groq"), ("OPENAI_API_KEY", "openai"))
+        if preferred is not None:
+            candidates = tuple(c for c in candidates if c[1] == preferred)
+        for key_name, backend in candidates:
+            value = _shared_read_env_key(key_name)
+            if value:
+                return backend, value
+        return None, None
+
+    # Fallback: inline implementation for standalone usage
     def _from_env(name: str) -> str | None:
         value = os.environ.get(name)
         return value.strip() if value else None
@@ -63,15 +81,10 @@ def load_api_key(preferred: str | None = None) -> tuple[str, str] | tuple[None, 
             return None
         return None
 
-    dotenv_paths = [
-        CONFIG_FILE,
-        Path.cwd() / ".env",
-    ]
-
+    dotenv_paths = [CONFIG_FILE, Path.cwd() / ".env"]
     candidates = (("GROQ_API_KEY", "groq"), ("OPENAI_API_KEY", "openai"))
     if preferred is not None:
         candidates = tuple(c for c in candidates if c[1] == preferred)
-
     for key_name, backend in candidates:
         value = _from_env(key_name)
         if not value:
@@ -81,7 +94,6 @@ def load_api_key(preferred: str | None = None) -> tuple[str, str] | tuple[None, 
                     break
         if value:
             return backend, value
-
     return None, None
 
 

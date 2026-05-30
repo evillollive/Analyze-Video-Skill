@@ -154,11 +154,14 @@ def _process_chunk(
         if seg_count:
             first = chunk_segments[0]
             last = chunk_segments[-1]
-            try:
-                start_idx = full_transcript_segments.index(first)
-                end_idx = full_transcript_segments.index(last)
-            except ValueError:
-                start_idx, end_idx = None, None
+            # Use id() comparison to find exact segment objects, avoiding
+            # list.index() which matches by value and breaks on duplicates.
+            start_idx = next(
+                (i for i, s in enumerate(full_transcript_segments) if s is first), None
+            )
+            end_idx = next(
+                (i for i, s in enumerate(full_transcript_segments) if s is last), None
+            )
         else:
             start_idx, end_idx = None, None
     else:

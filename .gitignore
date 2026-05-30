@@ -14,3 +14,13 @@ node_modules/
 
 # local Claude Code settings
 .claude/settings.local.json
+
+# secrets
+.env
+
+# generated output
+*.docx
+
+# test artifacts
+.pytest_cache/
+.coverage

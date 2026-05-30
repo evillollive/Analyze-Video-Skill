@@ -91,10 +91,19 @@ function body(text) {
 }
 
 function imgPara(filePath, dim, alt) {
-  const transformation = {
-    width: (dim && dim.width) || 480,
-    height: (dim && dim.height) || 270,
-  };
+  const w = (dim && typeof dim.width === 'number' && dim.width > 0) ? dim.width : 480;
+  const h = (dim && typeof dim.height === 'number' && dim.height > 0) ? dim.height : 270;
+  const transformation = { width: w, height: h };
+  if (!fs.existsSync(filePath)) {
+    // Skip missing frames gracefully — return a placeholder caption
+    return new Paragraph({
+      spacing: { before: 220, after: 0 },
+      children: [new TextRun({
+        text: `[missing frame: ${filePath}]`,
+        italics: true, size: 18, color: 'CC0000', font: 'Arial',
+      })],
+    });
+  }
   return new Paragraph({
     spacing: { before: 220, after: 0 },
     children: [new ImageRun({

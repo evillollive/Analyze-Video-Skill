@@ -73,7 +73,19 @@ def _check_file_permissions(path: Path) -> None:
         pass
 
 
+try:
+    from env_utils import read_env_key as _shared_read_env_key
+except ImportError:
+    _shared_read_env_key = None
+
+
 def _read_env_key(name: str) -> str | None:
+    if _shared_read_env_key is not None:
+        # Permission check still runs for the config file
+        if CONFIG_FILE.exists():
+            _check_file_permissions(CONFIG_FILE)
+        return _shared_read_env_key(name)
+    # Fallback: inline implementation
     value = os.environ.get(name)
     if value and value.strip():
         return value.strip()
@@ -245,6 +257,10 @@ def _set_key(backend: str, value: str) -> int:
     if not value or not value.strip():
         sys.stderr.write("empty key value\n")
         return 2
+    clean = value.strip()
+    if "\n" in clean or "\r" in clean:
+        sys.stderr.write("key value must not contain newlines\n")
+        return 2
 
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     if not CONFIG_FILE.exists():
@@ -256,12 +272,12 @@ def _set_key(backend: str, value: str) -> int:
     for line in lines:
         stripped = line.strip()
         if stripped.startswith(f"{key_name}=") or stripped.startswith(f"{key_name} ="):
-            new_lines.append(f"{key_name}={value.strip()}")
+            new_lines.append(f"{key_name}={clean}")
             replaced = True
         else:
             new_lines.append(line)
     if not replaced:
-        new_lines.append(f"{key_name}={value.strip()}")
+        new_lines.append(f"{key_name}={clean}")
     CONFIG_FILE.write_text("\n".join(new_lines) + "\n")
     try:
         CONFIG_FILE.chmod(0o600)

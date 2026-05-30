@@ -82,12 +82,19 @@ def download_url(url: str, out_dir: Path) -> dict:
     ]
 
     # yt-dlp may exit non-zero if a subtitle variant fails (e.g. 429) even when
-    # the video itself downloaded fine. Treat "video file present" as success.
+    # the video itself downloaded fine. Treat "video file present" as success,
+    # but warn so partial downloads don't hide silently.
     result = subprocess.run(cmd, stdout=sys.stderr, stderr=sys.stderr)
     video = _pick_video(out_dir)
     if video is None:
         raise SystemExit(
             f"yt-dlp did not produce a video file in {out_dir} (exit {result.returncode})"
+        )
+    if result.returncode != 0:
+        print(
+            f"[download] WARNING: yt-dlp exited {result.returncode} but video "
+            f"file exists — subtitle fetch may have failed",
+            file=sys.stderr,
         )
 
     subtitle = _pick_subtitle(out_dir)
