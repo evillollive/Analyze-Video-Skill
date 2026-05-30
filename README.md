@@ -1,51 +1,54 @@
-# /analyze-video
+# 🎬 /analyze-video
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 [![GitHub release](https://img.shields.io/github/v/release/evillollive/Analyze-Video-Skill)](https://github.com/evillollive/Analyze-Video-Skill/releases)
 
-An agentic AI skill for [Claude Code](https://docs.anthropic.com/en/docs/claude-code) that turns one or more videos into a polished Word document with timestamp-based prose analysis and embedded still frames. Download, frame extraction, contact-sheet preview, transcription, intelligent frame selection, and `.docx` export — all in one workflow.
+**Drop a video link. Get a beautifully formatted Word doc back — with screenshots, timestamps, and a written breakdown of everything that happens.**
 
-## What It Does
+This is a skill for [Claude Code](https://docs.anthropic.com/en/docs/claude-code) that watches videos so you don't have to (or helps you watch them better). It works with YouTube, Vimeo, TikTok, X, Twitch, local files — basically anything [yt-dlp](https://github.com/yt-dlp/yt-dlp) can handle.
 
-Given a video URL (YouTube, Vimeo, X, TikTok, Twitch, most yt-dlp-supported sites) or a local file path, the skill:
+## How it works
 
-1. Downloads the video and any native captions
-2. Extracts auto-scaled frames (up to 120 per chunk, 2 fps cap)
-3. Auto-chunks long videos: anything over 12 minutes splits into 10-minute chunks (5-second overlap)
-4. Tiles each chunk's frames into a contact-sheet image for cheap visual preview
-5. Transcribes the audio (captions first, Whisper API as fallback)
-6. Asks how many frames to embed in the final document
-7. Reads only the selected frames and writes a detailed time-based analysis
-8. Builds a polished Word document with embedded frames and captions
+You paste a link. The skill does the rest:
 
-Handles single videos and batches.
+1. **Downloads** the video and grabs any existing captions
+2. **Pulls frames** at smart intervals — not too many, not too few
+3. **Builds a contact sheet** so the AI can see the whole video at a glance without burning through your context window
+4. **Reads the transcript** (or creates one via Whisper if there are no captions)
+5. **Picks the best frames** and writes a detailed, timestamped analysis
+6. **Exports a polished `.docx`** with embedded screenshots, captions, and prose
 
-## Why a Contact Sheet
+One video or ten — it handles batches too.
 
-Reading every extracted frame burns tens of thousands of image tokens per video. Instead, the script tiles each chunk's frames into a `contact_sheet.jpg`. AI reads the contact sheet, decides which frames matter, and reads only those at full resolution.
+## The clever bits
 
-## Why Auto-Chunking
+### Contact sheets save you money
 
-A 60-minute video would have one frame every 36 seconds, most of the video would be invisible to the agent. Auto-chunking splits long videos into 10-minute sections, each with its own ~80–100 frames, so coverage stays at roughly one frame every 7 seconds regardless of total length.
+Every frame the AI reads costs tokens. Instead of reading 100+ frames individually, the skill tiles them into a single contact sheet image. The AI scans that overview, picks the frames that actually matter, and only reads *those* at full resolution. Same quality, fraction of the cost.
 
-The trade-off is more contact sheets to preview; for very long videos (5+ chunks), the skill warns about the preview cost and offers focus mode as an alternative.
+### Long videos don't get lost
 
-## Requirements
+A 60-minute video with 120 frames means one frame every 30 seconds — huge gaps where important things could happen. So videos over 12 minutes automatically split into 10-minute chunks, each with its own set of frames. Coverage stays tight (~1 frame every 7 seconds) no matter how long the video is.
 
-- **Python** 3.9+
-- **Node.js** (for the `.docx` builder)
-- **ffmpeg**, **ffprobe**, **yt-dlp** — auto-installed via Homebrew on macOS; install commands printed for Linux/Windows
-- A **Whisper API key** for audio transcription fallback (free tier works):
-  - [Groq](https://console.groq.com/keys) (preferred — cheaper, faster)
-  - [OpenAI](https://platform.openai.com/api-keys) (fallback)
+For really long videos (5+ chunks), the skill gives you a heads-up about preview costs and offers a focus mode to zoom into just the parts you care about.
 
-> If neither key is set, the skill works frames-only on videos without native captions.
+## Getting started
 
-## Installation
+### What you'll need
 
-This is a Claude Code skill. Drop the entire folder under your skills directory, or install it as a plugin per your Claude Code setup. The `setup.py` script handles dependency installation, the npm `docx` module, and API-key scaffolding the first time the skill runs.
+- **Python 3.9+** and **Node.js** (for the Word doc builder)
+- **ffmpeg**, **ffprobe**, **yt-dlp** — on macOS these auto-install via Homebrew; on Linux/Windows the skill prints the commands for you
+- Optionally, a **Whisper API key** for transcribing videos that don't have captions:
+  - [Groq](https://console.groq.com/keys) — faster and cheaper, recommended
+  - [OpenAI](https://platform.openai.com/api-keys) — solid fallback
 
-Configuration lives at `~/.config/analyze-video/.env`. To set a Whisper key from the command line without editing the file:
+> No API key? No problem. The skill still works great on videos that have captions — you just won't get transcripts for ones that don't.
+
+### Install
+
+Drop this folder into your Claude Code skills directory, or install it as a plugin. The first time the skill runs, `setup.py` takes care of dependencies, the npm `docx` module, and scaffolding your config.
+
+Your settings live at `~/.config/analyze-video/.env`. To add a Whisper key:
 
 ```bash
 python3 scripts/setup.py --set-key groq <YOUR_KEY>
@@ -53,65 +56,64 @@ python3 scripts/setup.py --set-key groq <YOUR_KEY>
 python3 scripts/setup.py --set-key openai <YOUR_KEY>
 ```
 
-## Usage
+## Try it
 
-Just ask Claude something like:
+Just talk naturally:
 
-- *"Analyze this video: https://youtu.be/abc and write me a report"*
+- *"Analyze this video and write me a report: https://youtu.be/abc"*
 - *"Make a doc from these three videos with screenshots"*
-- *"Analyze the demo at 2:30–3:15 in this clip"*
-- *"Quick TL;DR with a few screenshots from this clip"* (triggers `--quick` mode)
+- *"Just look at the 2:30–3:15 section of this clip"*
+- *"Quick TL;DR with a few screenshots"* (triggers quick mode — fewer frames, faster turnaround)
 
-The skill triggers automatically and walks through the workflow.
+The skill picks up on what you're asking and handles the details.
 
-## Project Structure
+## What's in the box
 
 ```
 Analyze-Video-Skill/
-├── SKILL.md                        # Skill instructions for Claude
-├── README.md                       # This file
-├── CHANGELOG.md                    # Release history
-├── LICENSE                         # GPL-3.0
-├── analyze-video.skill             # Packaged skill bundle for claude.ai
+├── SKILL.md                     # How Claude uses this skill
+├── CHANGELOG.md                 # What changed and when
+├── LICENSE                      # GPL-3.0 — always open source
+├── analyze-video.skill          # Pre-built bundle for claude.ai
 ├── commands/
-│   └── analyze-video.md            # Slash-command definition
-├── hooks/
-│   ├── hooks.json                  # SessionStart hook config
-│   └── scripts/                    # Hook helper scripts
+│   └── analyze-video.md         # Slash-command definition
+├── hooks/                       # Auto-setup on session start
 ├── scripts/
-│   ├── process.py                  # Per-video pipeline orchestrator
-│   ├── select_frames.py            # Frame-selection helper (proportional + boundary-aware)
-│   ├── download.py                 # yt-dlp wrapper
-│   ├── frames.py                   # ffmpeg frame extraction + contact sheet
-│   ├── transcribe.py               # WebVTT caption parser
-│   ├── whisper.py                  # Groq / OpenAI Whisper client (with auto-fallback)
-│   ├── setup.py                    # Preflight + installer (deps, npm docx, --set-key)
-│   ├── build-docx.js               # JSON-spec docx builder (no per-session npm install)
-│   └── build-skill.sh              # Builds .skill bundle for distribution
+│   ├── process.py               # The main pipeline — one video at a time
+│   ├── select_frames.py         # Smart frame picker (proportional + boundary-aware)
+│   ├── download.py              # yt-dlp wrapper with error handling
+│   ├── frames.py                # Frame extraction + contact sheet builder
+│   ├── transcribe.py            # VTT caption parser + deduplicator
+│   ├── whisper.py               # Groq/OpenAI Whisper client with auto-fallback
+│   ├── env_utils.py             # Shared config reader
+│   ├── setup.py                 # First-run installer + preflight checks
+│   ├── build-docx.js            # JSON → Word doc renderer
+│   └── build-skill.sh           # Packages everything into a .skill bundle
+├── tests/                       # 48 tests covering parsing, math, and security
 └── templates/
-    └── caption_guide.md            # Caption style guide (read at write-time)
+    └── caption_guide.md         # Writing style guide for frame captions
 ```
 
-## Security & Privacy
+## Privacy & security
 
-This skill:
+Everything runs locally on your machine. Here's exactly what goes where:
 
-- Runs `yt-dlp` locally to download videos and pull native captions.
-- Runs `ffmpeg`/`ffprobe` locally to extract frames, audio, and the contact sheet.
-- Sends extracted **audio only** (not the video) to Groq or OpenAI Whisper API when no captions are available and Whisper is enabled.
-- Writes everything under the session outputs folder you provide via `--out-dir`.
-- Reads/writes `~/.config/analyze-video/.env` (mode `0600`) for the Whisper key.
+**Stays on your computer:**
+- The video file, all extracted frames, contact sheets, and the final `.docx`
+- Your config at `~/.config/analyze-video/.env` (locked to owner-only permissions)
 
-It does **not**:
+**Sent to an API (only when needed):**
+- Extracted audio → Groq or OpenAI Whisper, *only* when the video has no captions and you've set up a key. The video itself never leaves your machine.
 
-- Upload the source video to any API.
-- Access any platform account (no login, no cookies, no posting).
-- Persist anything outside the session outputs folder and `~/.config/analyze-video/`.
+**Never happens:**
+- No video uploads to any service
+- No platform logins, cookies, or account access
+- No data stored anywhere except your output folder and config directory
 
 ## Contributing
 
-Contributions are welcome! Please open an issue or submit a pull request.
+Found a bug? Have an idea? PRs and issues are always welcome.
 
 ## License
 
-[GPL-3.0](LICENSE)
+[GPL-3.0](LICENSE) — this project will always be open source. Fork it, improve it, share it — just keep it open.
