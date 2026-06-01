@@ -1,4 +1,4 @@
-# 🎬 /analyze-video
+# 🎬 /analyze-video (v2)
 
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
 [![GitHub release](https://img.shields.io/github/v/release/evillollive/Analyze-Video-Skill)](https://github.com/evillollive/Analyze-Video-Skill/releases)
@@ -26,11 +26,9 @@ One video or ten, it handles batches too.
 
 Every frame the AI reads costs tokens. Instead of reading 100+ frames individually, the skill tiles them into a single contact sheet image. The AI scans that overview, picks the frames that actually matter, and only reads *those* at full resolution. Same quality, fraction of the cost.
 
-### Long videos don't get lost
+### Unified v2 workflow
 
-A 60-minute video with 120 frames means one frame every 30 seconds, leaving huge gaps where important things could happen. So videos over 12 minutes automatically split into 10-minute chunks, each with its own set of frames. Coverage stays tight (~1 frame every 7 seconds) no matter how long the video is.
-
-For really long videos (5+ chunks), the skill gives you a heads-up about preview costs and offers a focus mode to zoom into just the parts you care about.
+`/watch` and `/analyze-video` are now merged into one skill flow. You run one command, the skill handles setup, processing, frame selection, analysis, and docx output end to end.
 
 ## Getting started
 
@@ -62,8 +60,7 @@ Just talk naturally:
 
 - *"Analyze this video and write me a report: https://youtu.be/abc"*
 - *"Make a doc from these three videos with screenshots"*
-- *"Just look at the 2:30–3:15 section of this clip"*
-- *"Quick TL;DR with a few screenshots"* (triggers quick mode: fewer frames, faster turnaround)
+- *"Just look at the 2:30 to 3:15 section of this clip"*
 
 The skill picks up on what you're asking and handles the details.
 
@@ -79,15 +76,15 @@ Analyze-Video-Skill/
 │   └── analyze-video.md         # Slash-command definition
 ├── hooks/                       # Auto-setup on session start
 ├── scripts/
-│   ├── process.py               # The main pipeline (one video at a time)
-│   ├── select_frames.py         # Smart frame picker (proportional + boundary-aware)
+│   ├── process.py               # Main pipeline entry point (download, frames, transcript)
 │   ├── download.py              # yt-dlp wrapper with error handling
 │   ├── frames.py                # Frame extraction + contact sheet builder
 │   ├── transcribe.py            # VTT caption parser + deduplicator
-│   ├── whisper.py               # Groq/OpenAI Whisper client with auto-fallback
+│   ├── whisper.py               # Groq/OpenAI Whisper client
 │   ├── env_utils.py             # Shared config reader
 │   ├── setup.py                 # First-run installer + preflight checks
-│   ├── build-docx.js            # JSON → Word doc renderer
+│   ├── build-docx.js            # Word document renderer
+│   ├── select_frames.py         # Frame selection helper
 │   └── build-skill.sh           # Packages everything into a .skill bundle
 ├── tests/                       # 48 tests covering parsing, math, and security
 └── templates/

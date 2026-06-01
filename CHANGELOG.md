@@ -2,6 +2,14 @@
 
 All notable changes to `/analyze-video` are documented here.
 
+## [0.3.0] — 2026-06-01
+
+Skill-definition and documentation alignment for the v2 workflow.
+
+### Changed
+- `SKILL.md` replaced with the new v2 spec content.
+- README updated to reflect the merged `/watch` + `/analyze-video` workflow and current guidance.
+
 ## [0.2.0] — 2026-05-06
 
 Major UX, ergonomics, and token-budget overhaul.
