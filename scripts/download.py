@@ -15,6 +15,22 @@ from urllib.parse import urlparse
 
 
 VIDEO_EXTS = {".mp4", ".mkv", ".webm", ".mov", ".m4v", ".avi", ".flv", ".wmv"}
+BLOCKED_PATTERNS: tuple[tuple[str, str], ...] = (
+    ("sign in to confirm", "login_required"),
+    ("not a bot", "bot_check"),
+    ("confirm you", "login_required"),
+    ("members-only", "members_only"),
+    ("members only", "members_only"),
+    ("private video", "private"),
+    ("video unavailable", "unavailable"),
+    ("geo-restricted", "geo_restricted"),
+    ("not available in your country", "geo_restricted"),
+    ("http error 403", "forbidden"),
+    ("403 forbidden", "forbidden"),
+    ("http error 429", "rate_limited"),
+    ("too many requests", "rate_limited"),
+    ("age-restricted", "age_restricted"),
+)
 
 
 def is_url(source: str) -> bool:
@@ -57,9 +73,57 @@ def _pick_video(out_dir: Path) -> Path | None:
     return None
 
 
-def download_url(url: str, out_dir: Path) -> dict:
+def classify_download_error(stderr: str) -> dict:
+    """Classify common yt-dlp access failures and return actionable guidance."""
+    text = (stderr or "").lower()
+    kind = "download_failed"
+    for pattern, candidate in BLOCKED_PATTERNS:
+        if pattern in text:
+            kind = candidate
+            break
+
+    if kind in {"login_required", "bot_check", "age_restricted", "members_only", "private"}:
+        guidance = (
+            "The site appears to require an authenticated browser session. If you have permission "
+            "to view this video, re-run with --cookies-from-browser <browser> or --cookies <file>."
+        )
+    elif kind == "rate_limited":
+        guidance = (
+            "The site appears to be rate-limiting requests. Wait before retrying; authenticated "
+            "cookies may help if the content is available in your browser."
+        )
+    elif kind == "geo_restricted":
+        guidance = (
+            "The video appears to be region restricted. Use a local video file or another source "
+            "you are authorized to access from this environment."
+        )
+    elif kind == "forbidden":
+        guidance = (
+            "The site returned 403 Forbidden. If the video works in your browser, retry with "
+            "--cookies-from-browser <browser> or provide a local file."
+        )
+    else:
+        guidance = "Retry later, update yt-dlp, or provide a local video file."
+
+    excerpt = " ".join((stderr or "").strip().split())[:600]
+    return {"kind": kind, "guidance": guidance, "excerpt": excerpt}
+
+
+def download_url(
+    url: str,
+    out_dir: Path,
+    *,
+    cookies: str | None = None,
+    cookies_from_browser: str | None = None,
+) -> dict:
     if shutil.which("yt-dlp") is None:
         raise SystemExit("yt-dlp is not installed. Install with: brew install yt-dlp")
+    if cookies and cookies_from_browser:
+        raise SystemExit("Use only one of --cookies or --cookies-from-browser")
+    if cookies:
+        cookie_path = Path(cookies).expanduser().resolve()
+        if not cookie_path.exists():
+            raise SystemExit(f"Cookie file not found: {cookie_path}")
 
     out_dir.mkdir(parents=True, exist_ok=True)
     output_template = str(out_dir / "video.%(ext)s")
@@ -76,19 +140,28 @@ def download_url(url: str, out_dir: Path) -> dict:
         "--sub-format", "vtt",
         "--convert-subs", "vtt",
         "--no-playlist",
-        "--ignore-errors",
         "-o", output_template,
-        url,
     ]
+    if cookies:
+        cmd += ["--cookies", str(cookie_path)]
+    if cookies_from_browser:
+        cmd += ["--cookies-from-browser", cookies_from_browser]
+    cmd.append(url)
 
     # yt-dlp may exit non-zero if a subtitle variant fails (e.g. 429) even when
     # the video itself downloaded fine. Treat "video file present" as success,
     # but warn so partial downloads don't hide silently.
-    result = subprocess.run(cmd, stdout=sys.stderr, stderr=sys.stderr)
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.stdout:
+        print(result.stdout, file=sys.stderr, end="" if result.stdout.endswith("\n") else "\n")
+    if result.stderr:
+        print(result.stderr, file=sys.stderr, end="" if result.stderr.endswith("\n") else "\n")
     video = _pick_video(out_dir)
     if video is None:
+        classified = classify_download_error((result.stdout or "") + "\n" + (result.stderr or ""))
         raise SystemExit(
-            f"yt-dlp did not produce a video file in {out_dir} (exit {result.returncode})"
+            f"yt-dlp did not produce a video file in {out_dir} (exit {result.returncode}; "
+            f"{classified['kind']}). {classified['guidance']}"
         )
     if result.returncode != 0:
         print(
@@ -120,9 +193,15 @@ def download_url(url: str, out_dir: Path) -> dict:
     }
 
 
-def download(source: str, out_dir: Path) -> dict:
+def download(
+    source: str,
+    out_dir: Path,
+    *,
+    cookies: str | None = None,
+    cookies_from_browser: str | None = None,
+) -> dict:
     if is_url(source):
-        return download_url(source, out_dir)
+        return download_url(source, out_dir, cookies=cookies, cookies_from_browser=cookies_from_browser)
     return resolve_local(source)
 
 

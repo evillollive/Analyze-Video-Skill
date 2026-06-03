@@ -2,6 +2,26 @@
 
 All notable changes to `/analyze-video` are documented here.
 
+## [0.4.0] — 2026-06-03
+
+Safety, failure-mode, and documentation alignment release.
+
+### Added
+- Blocked-download classification for common yt-dlp failures, including login/bot checks, 403/429s, age gates, members-only/private access, and geo restrictions.
+- User-authorized retry options via `process.py --cookies-from-browser <browser>` and `--cookies <file>`.
+- Focused Whisper extraction: `--start`/`--end` ranges now upload only the focused audio instead of the full video audio.
+- Whisper audio size guard with a clear focused-range fallback message.
+- Tests for download failure classification, no-key setup readiness, and focused audio extraction.
+
+### Changed
+- `SKILL.md` now matches the actual schema v3 pipeline: `manifest_lite.json`, chunked contact sheets, `select_frames.py`, and JSON-spec docx generation via `scripts/build-docx.js`.
+- `setup.py --check` treats missing Whisper keys as a degraded-but-ready state when required local dependencies are present.
+- README privacy/failure guidance now distinguishes authorized browser-cookie use from bot-detection evasion.
+
+### Fixed
+- `SKILL.md` license metadata now matches the AGPL-3.0 license used by the repository.
+- `process.py` documentation now correctly identifies manifest schema version 3.
+
 ## [0.3.0] — 2026-06-01
 
 Skill-definition and documentation alignment for the v2 workflow.

@@ -40,11 +40,11 @@ Every frame the AI reads costs tokens. Instead of reading 100+ frames individual
   - [Groq](https://console.groq.com/keys) (faster and cheaper, recommended)
   - [OpenAI](https://platform.openai.com/api-keys) (solid fallback)
 
-> No API key? No problem. The skill still works great on videos that have captions. You just won't get transcripts for ones that don't.
+> No API key? No problem. The skill still works on videos that have captions, and captionless videos fall back to frames-only analysis.
 
 ### Install
 
-Drop this folder into your Claude Code skills directory, or install it as a plugin. The first time the skill runs, `setup.py` takes care of dependencies, the npm `docx` module, and scaffolding your config.
+Drop this folder into your Claude Code skills directory, or install it as a plugin. The first time the skill runs, `setup.py` takes care of required local dependencies, the npm `docx` module, and scaffolding your config. Whisper keys are optional and are not required for setup to complete.
 
 Your settings live at `~/.config/analyze-video/.env`. To add a Whisper key:
 
@@ -86,7 +86,7 @@ Analyze-Video-Skill/
 │   ├── build-docx.js            # Word document renderer
 │   ├── select_frames.py         # Frame selection helper
 │   └── build-skill.sh           # Packages everything into a .skill bundle
-├── tests/                       # 48 tests covering parsing, math, and security
+├── tests/                       # tests covering parsing, math, setup, and security
 └── templates/
     └── caption_guide.md         # Writing style guide for frame captions
 ```
@@ -104,8 +104,28 @@ Everything runs locally on your machine. Here's exactly what goes where:
 
 **Never happens:**
 - No video uploads to any service
-- No platform logins, cookies, or account access
+- No platform logins, cookies, or account access by default
 - No data stored anywhere except your output folder and config directory
+
+### When a site blocks the download
+
+Some sites block unauthenticated download tools with login prompts, bot checks, age gates, members-only access, rate limits, or regional restrictions. The skill now classifies those failures and gives a specific next step instead of repeatedly retrying.
+
+If you can already watch the video in your own browser and want the skill to use that authorized session, retry with one of yt-dlp's cookie options:
+
+```bash
+python3 scripts/process.py --source "<url>" --out-dir /tmp/video \
+  --cookies-from-browser safari
+```
+
+or:
+
+```bash
+python3 scripts/process.py --source "<url>" --out-dir /tmp/video \
+  --cookies /path/to/cookies.txt
+```
+
+The skill should not spoof watch sessions, forge tokens, or automate hidden browser playback to bypass bot detection. If browser cookies are not appropriate, download or screen-record the video yourself and pass the local file path.
 
 ## Contributing
 

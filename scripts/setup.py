@@ -2,7 +2,7 @@
 """Setup / preflight for /analyze-video.
 
 Modes:
-  setup.py --check      Silent preflight. Exit 0 if ready, 2/3/4 on failure.
+  setup.py --check      Silent preflight. Exit 0 if ready, 2 on required deps failure.
   setup.py --json       Machine-readable status for Claude to parse.
   setup.py              Installer. Auto-installs deps, scaffolds .env, marks SETUP_COMPLETE.
 
@@ -11,8 +11,8 @@ Design:
   so /analyze-video does not spam "setup is complete" on every turn.
 - Idempotent: re-running the installer is safe, never clobbers existing keys
   and only appends missing ones.
-- SETUP_COMPLETE=true in ~/.config/analyze-video/.env tells us the user has
-  been through a successful installer run at least once.
+- SETUP_COMPLETE=true in ~/.config/analyze-video/.env tells us required local
+  dependencies have been set up. Whisper keys are optional.
 - Never sudo. On macOS, auto-install via brew. Elsewhere, print exact commands.
 - Never write an API key to disk automatically, only scaffold placeholders.
 """
@@ -292,14 +292,16 @@ def _status() -> dict:
     missing = _check_binaries()
     has_key, backend = _have_api_key()
 
-    if not missing and has_key:
+    docx_installed = DOCX_NODE_MODULES.exists()
+
+    if not missing and docx_installed and has_key:
         status = "ready"
-    elif missing and not has_key:
-        status = "needs_install_and_key"
+    elif not missing and docx_installed:
+        status = "ready_no_whisper_key"
     elif missing:
         status = "needs_install"
     else:
-        status = "needs_key"
+        status = "needs_docx"
 
     return {
         "status": status,
@@ -307,7 +309,7 @@ def _status() -> dict:
         "missing_binaries": missing,
         "whisper_backend": backend,
         "has_api_key": has_key,
-        "docx_installed": DOCX_NODE_MODULES.exists(),
+        "docx_installed": docx_installed,
         "config_file": str(CONFIG_FILE),
         "platform": platform.system(),
     }
@@ -316,21 +318,20 @@ def _status() -> dict:
 def cmd_check() -> int:
     """Silent-on-success preflight.
 
-    Exit 0 with no output when ready. On failure, print one actionable line
-    to stderr and return:
-      2 -> binaries missing
-      3 -> API key missing
-      4 -> both missing
+    Exit 0 with no output when ready. Missing Whisper keys do not fail preflight:
+    the skill can still analyze frames and videos with native captions.
+    On required dependency failure, print one actionable line to stderr and
+    return 2.
     """
     s = _status()
-    if s["status"] == "ready":
+    if s["status"] in {"ready", "ready_no_whisper_key"}:
         return 0
 
     parts = []
     if s["missing_binaries"]:
         parts.append(f"missing binaries: {', '.join(s['missing_binaries'])}")
-    if not s["has_api_key"]:
-        parts.append("no Whisper API key (GROQ_API_KEY or OPENAI_API_KEY)")
+    if not s["docx_installed"]:
+        parts.append("missing npm package: docx")
     installer = Path(__file__).resolve()
     sys.stderr.write(
         f"[analyze-video] setup incomplete ({'; '.join(parts)}). "
@@ -338,11 +339,7 @@ def cmd_check() -> int:
     )
     sys.stderr.flush()
 
-    if s["missing_binaries"] and not s["has_api_key"]:
-        return 4
-    if s["missing_binaries"]:
-        return 2
-    return 3
+    return 2
 
 
 def cmd_json() -> int:
@@ -409,7 +406,8 @@ def cmd_install() -> int:
         return 0
 
     print("")
-    print("[setup] one step left: add a Whisper API key.")
+    _write_setup_complete()
+    print("[setup] ready for frames and native captions. Optional: add a Whisper API key.")
     print("")
     print("  Easiest: re-run with the key, e.g.")
     print(f"    python3 {Path(__file__).resolve()} --set-key groq sk-...")
@@ -421,7 +419,7 @@ def cmd_install() -> int:
     print("")
     print("  Without a key, /analyze-video still works but videos without")
     print("  captions come back frames-only.")
-    return 3
+    return 0
 
 
 def main() -> int:

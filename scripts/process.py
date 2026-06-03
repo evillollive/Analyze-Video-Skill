@@ -14,7 +14,7 @@ Writes everything under --out-dir, including:
   - audio.mp3                                : extracted audio (only if Whisper used)
   - chunks/chunk_N/frames/frame_NNNN.jpg     : extracted frames per chunk
   - chunks/chunk_N/contact_sheet.jpg         : tiled overview per chunk
-  - manifest.json                            : structured pipeline output (schema_version 2)
+  - manifest.json                            : structured pipeline output (schema_version 3)
   - report.md                                : human-readable summary
 
 The skill's SKILL.md handles multi-video orchestration, frame selection,
@@ -84,6 +84,12 @@ def _docx_image_dimensions(width: int | None, height: int | None, aspect: str | 
     if width and height:
         return {"width": 480, "height": int(round(480 * height / width))}
     return {"width": 480, "height": 270}
+
+
+def _focused_audio_path(work: Path, start_seconds: float, end_seconds: float) -> Path:
+    start = int(round(start_seconds))
+    end = int(round(end_seconds))
+    return work / f"audio_{start}_{end}.mp3"
 
 
 def _process_chunk(
@@ -241,6 +247,23 @@ def main() -> int:
         help="Force a specific Whisper backend. Default: prefer Groq, fall back to OpenAI.",
     )
     ap.add_argument(
+        "--cookies",
+        default=None,
+        help=(
+            "Path to a user-provided yt-dlp cookies.txt file for videos that require "
+            "an authenticated session."
+        ),
+    )
+    ap.add_argument(
+        "--cookies-from-browser",
+        default=None,
+        metavar="BROWSER",
+        help=(
+            "Ask yt-dlp to read cookies from the user's local browser (for example: "
+            "chrome, firefox, safari). Use only with explicit user authorization."
+        ),
+    )
+    ap.add_argument(
         "--no-contact-sheet",
         action="store_true",
         help="Skip contact sheet generation (saves a few seconds)",
@@ -280,6 +303,8 @@ def main() -> int:
         # Quick mode: trim the frame budget. The sheet itself is still produced
         # as a fallback, but the manifest signals the skill to skip the preview.
         args.max_frames = min(args.max_frames, 40)
+    if args.cookies and args.cookies_from_browser:
+        raise SystemExit("Use only one of --cookies or --cookies-from-browser")
 
     max_frames = min(args.max_frames, HARD_MAX_FRAMES)
 
@@ -294,7 +319,12 @@ def main() -> int:
         else "[analyze-video] using local file...",
         file=sys.stderr,
     )
-    dl = download(args.source, work / "download")
+    dl = download(
+        args.source,
+        work / "download",
+        cookies=args.cookies,
+        cookies_from_browser=args.cookies_from_browser,
+    )
     video_path = dl["video_path"]
 
     # 2. Probe metadata
@@ -358,11 +388,18 @@ def main() -> int:
         else:
             for i, (backend, api_key) in enumerate(attempts):
                 try:
+                    audio_out = (
+                        _focused_audio_path(work, effective_start, effective_end)
+                        if focused
+                        else work / "audio.mp3"
+                    )
                     full_transcript_segments, used_backend = transcribe_video(
                         video_path,
-                        work / "audio.mp3",
+                        audio_out,
                         backend=backend,
                         api_key=api_key,
+                        start_seconds=effective_start if focused else None,
+                        end_seconds=effective_end if focused else None,
                     )
                     transcript_source = f"whisper ({used_backend})"
                     break

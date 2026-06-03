@@ -1,0 +1,8 @@
+{
+  "name": "analyze-video-runtime",
+  "private": true,
+  "description": "Runtime npm deps for the analyze-video skill builder.",
+  "dependencies": {
+    "docx": "^9.7.1"
+  }
+}

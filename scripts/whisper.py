@@ -33,6 +33,7 @@ OPENAI_MODEL = "whisper-1"
 
 CONFIG_DIR = Path.home() / ".config" / "analyze-video"
 CONFIG_FILE = CONFIG_DIR / ".env"
+MAX_WHISPER_AUDIO_BYTES = 24 * 1024 * 1024
 
 try:
     from env_utils import read_env_key as _shared_read_env_key
@@ -107,7 +108,23 @@ def load_all_api_keys() -> dict[str, str]:
     return keys
 
 
-def extract_audio(video_path: str, out_path: Path) -> Path:
+def _check_audio_size(audio_path: Path) -> None:
+    size = audio_path.stat().st_size
+    if size > MAX_WHISPER_AUDIO_BYTES:
+        mb = size / (1024 * 1024)
+        limit = MAX_WHISPER_AUDIO_BYTES / (1024 * 1024)
+        raise SystemExit(
+            f"Audio is too large for Whisper upload ({mb:.1f} MB; limit ~{limit:.0f} MB). "
+            "Use --start/--end for a focused range or a video with captions."
+        )
+
+
+def extract_audio(
+    video_path: str,
+    out_path: Path,
+    start_seconds: float | None = None,
+    end_seconds: float | None = None,
+) -> Path:
     """Extract mono 16kHz 64kbps mp3 (around 480 kB/min, fits any Whisper limit)."""
     if shutil.which("ffmpeg") is None:
         raise SystemExit("ffmpeg is not installed. Install with: brew install ffmpeg")
@@ -118,19 +135,28 @@ def extract_audio(video_path: str, out_path: Path) -> Path:
         "-hide_banner",
         "-loglevel", "error",
         "-y",
+    ]
+    if start_seconds is not None:
+        cmd += ["-ss", f"{start_seconds:.3f}"]
+    cmd += [
         "-i", video_path,
         "-vn",
         "-acodec", "libmp3lame",
         "-ar", "16000",
         "-ac", "1",
         "-b:a", "64k",
-        str(out_path),
     ]
+    if start_seconds is not None and end_seconds is not None:
+        cmd += ["-t", f"{max(0.0, end_seconds - start_seconds):.3f}"]
+    elif end_seconds is not None:
+        cmd += ["-to", f"{end_seconds:.3f}"]
+    cmd.append(str(out_path))
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
         raise SystemExit(f"ffmpeg audio extraction failed: {result.stderr.strip()}")
     if not out_path.exists() or out_path.stat().st_size == 0:
         raise SystemExit("ffmpeg produced no audio (video may have no audio track)")
+    _check_audio_size(out_path)
     return out_path
 
 
@@ -311,6 +337,8 @@ def transcribe_video(
     audio_out: Path,
     backend: str | None = None,
     api_key: str | None = None,
+    start_seconds: float | None = None,
+    end_seconds: float | None = None,
 ) -> tuple[list[dict], str]:
     """Run the full flow: extract audio (or reuse if present), upload, parse segments.
 
@@ -331,6 +359,7 @@ def transcribe_video(
         )
 
     if audio_out.exists() and audio_out.stat().st_size > 0:
+        _check_audio_size(audio_out)
         print(
             f"[analyze-video] reusing existing audio: {audio_out.name} "
             f"({audio_out.stat().st_size / 1024:.0f} kB)",
@@ -338,8 +367,25 @@ def transcribe_video(
         )
         audio_path = audio_out
     else:
-        print(f"[analyze-video] extracting audio for Whisper ({backend})...", file=sys.stderr)
-        audio_path = extract_audio(video_path, audio_out)
+        if start_seconds is not None or end_seconds is not None:
+            range_bits = []
+            if start_seconds is not None:
+                range_bits.append(f"from {start_seconds:.1f}s")
+            if end_seconds is not None:
+                range_bits.append(f"to {end_seconds:.1f}s")
+            range_label = " " + " ".join(range_bits)
+        else:
+            range_label = ""
+        print(
+            f"[analyze-video] extracting audio{range_label} for Whisper ({backend})...",
+            file=sys.stderr,
+        )
+        audio_path = extract_audio(
+            video_path,
+            audio_out,
+            start_seconds=start_seconds,
+            end_seconds=end_seconds,
+        )
         size_kb = audio_path.stat().st_size / 1024
         print(
             f"[analyze-video] audio: {size_kb:.0f} kB, uploading to {backend} Whisper...",
