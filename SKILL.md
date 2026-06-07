@@ -138,10 +138,20 @@ Per-video outputs include:
 - `manifest_lite.json`: lightweight default manifest, schema v3 minus transcript text.
 - `manifest.json`: full schema v3 manifest with top-level `transcript_segments`.
 - `report.md`: human-readable pipeline report.
+- `status.json`: live stage marker (`downloading`, `extracting` chunk i of N, `complete`). Useful for checking progress mid-run.
+- `manifest_partial.json`: a partial manifest written as chunks finish; present only while a run is in flight or after it was interrupted. Removed on success.
 - `chunks/chunk_N/contact_sheet.jpg`: one contact sheet per processed chunk.
 - `chunks/chunk_N/frames/frame_NNNN.jpg`: full-resolution selected-frame candidates.
 - `download/video.<ext>`: source video, when downloaded.
 - `audio.mp3` or `audio_START_END.mp3`: only if Whisper was used.
+
+### Resuming after a timeout
+
+`process.py` is resumable. Re-running with the same `--source` and `--out-dir` reuses the already-downloaded video and any chunk whose frames are still valid (matched by an extraction signature), so an interrupted long video continues instead of restarting from zero. If a run is killed, check `status.json` to see where it stopped, then just re-run the same command. Pass `--force` to ignore cached output and re-download + re-extract everything.
+
+### Trimming a trailing promo/outro
+
+If a video ends with a repetitive promo or static "watch the full episode" card, `process.py` detects it and records a `trailing_promo` hint in the manifest (plus a note in `report.md`). It does not remove anything by default. To drop that block from frame extraction, re-run with `--trim-static-outro`, or target the real content with `--end`.
 
 ## Step 4: Read manifests and preview visuals
 
@@ -236,11 +246,27 @@ Spec shape:
       ]
     }
   ],
-  "observations": "Optional cross-video observations."
+  "observations": "Optional cross-video observations.",
+  "appendix_contact_sheets": [
+    {
+      "path": "/absolute/path/chunks/chunk_1/contact_sheet.jpg",
+      "heading": "Video title — chunk 1 (0:00 to 10:00)",
+      "caption": "Chronological overview, 0:00 to 10:00.",
+      "alt": "Grid of evenly spaced frames from the first ten minutes."
+    }
+  ]
 }
 ```
 
-Use `manifest_lite.docx_image_dimensions` as the per-video default. `build-docx.js` handles page sizing, image embedding, captions, and required alt text.
+Use `manifest_lite.docx_image_dimensions` as the per-video default. `build-docx.js` handles page sizing, image embedding, captions, and required alt text. Contact sheets in `appendix_contact_sheets` keep their own aspect ratio automatically (no `width`/`height` needed).
+
+**If `node` reports it can't find `docx` (EACCES / `Cannot find module 'docx'`):** the skill directory is read-only, so `npm install` there fails silently. The builder already tries `DOCX_NODE_MODULES`, `NODE_PATH`, `scripts/node_modules`, and finally installs into `~/.cache/analyze-video/node_modules`. To point it at an existing install instead, run:
+
+```bash
+NODE_PATH=/path/to/dir/containing/node_modules node "${CLAUDE_SKILL_DIR}/scripts/build-docx.js" --spec "$OUT_DIR/spec.json"
+```
+
+Do **not** try to `npm install` into `${CLAUDE_SKILL_DIR}/scripts`; it may be mounted read-only.
 
 ## Step 8: Validate and deliver
 
@@ -248,7 +274,9 @@ Run the builder and confirm the `.docx` exists. If a docx validator is available
 
 At the end, ask once:
 
-> "Want a PDF version too, and should I clean up the working files (frames, audio, source video) but keep the docx?"
+> "Want a PDF version too, should I append the contact sheet(s) as a visual appendix, and should I clean up the working files (frames, audio, source video) but keep the docx?"
+
+If the contact-sheet appendix is requested, add an `appendix_contact_sheets` entry (one per chunk, or one for a single-chunk video) before building the docx. Pull each `contact_sheet.absolute_path` from the manifest's chunks, and caption each with its chunk time range. Skip this by default unless the user asks.
 
 If PDF requested:
 

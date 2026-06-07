@@ -2,6 +2,27 @@
 
 All notable changes to `/analyze-video` are documented here.
 
+## [1.0.0] — 2026-06-07
+
+First stable release. Reliability, resume, and real-world failure-handling overhaul driven by a production run report.
+
+### Added
+- **Resume support:** frame extraction now skips re-extraction when a chunk's frames already exist and the source video plus extraction parameters are unchanged (signature-based check). Use `process.py --force` to re-extract from scratch.
+- **Local sidecar pickup:** a co-located subtitle (`<video>.en.vtt`, `<video>.*.vtt`, or a lone `.vtt` paired with a single video) and a co-located `<video>.info.json` are now used for captions, title, uploader, and source URL when analyzing a local file.
+- **Trailing promo/outro detection:** `detect_trailing_promo()` flags repeated end cards and static outros. New opt-in `process.py --trim-static-outro` trims the detected promo from analysis, but only for high-confidence detections so quiet legitimate endings are reported, never silently dropped.
+- **Progress and partial output:** `status.json` is written per stage and `manifest_partial.json` is emitted after each chunk (removed on success), so a run killed by a timeout leaves a clear record of how far it got.
+- **Contact-sheet appendix:** `build-docx.js` accepts an optional `appendix_contact_sheets` spec field that renders the chunk contact sheets as a visual appendix in the docx.
+- **Re-download guard:** a `.source.json` marker records the source URL so a cached download is reused only when it matches the requested URL.
+- Tests for resume, sidecar resolution, promo detection, status/partial-manifest writes, and stem-matching edge cases.
+
+### Changed
+- `build-docx.js` resolves the `docx` module across `DOCX_NODE_MODULES`, `NODE_PATH`, `scripts/node_modules`, and `~/.cache/analyze-video`, falling back to a cache-dir install only as a last resort. This fixes silent `EACCES` failures when the skill directory is mounted read-only.
+- `SKILL.md` documents the new outputs (`status.json`, `manifest_partial.json`), resuming, promo trimming, the docx `NODE_PATH` guidance, and the contact-sheet appendix prompt.
+
+### Fixed
+- Local files no longer lose their downloaded subtitle or report the bare filename as the title.
+- Frame extraction no longer wipes and re-extracts every chunk on each run, which previously prevented long videos from ever completing in a single pass.
+
 ## [0.4.0] — 2026-06-03
 
 Safety, failure-mode, and documentation alignment release.

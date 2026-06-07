@@ -13,6 +13,7 @@ the 50-80k it would cost to Read every frame individually.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -198,6 +199,49 @@ def auto_fps_focus(duration_seconds: float, max_frames: int = 120) -> tuple[floa
     return _clamp_fps(target / duration_seconds, duration_seconds, max_frames)
 
 
+def _extract_signature(
+    video_path: str,
+    fps: float,
+    resolution: int,
+    max_frames: int,
+    start_seconds: float | None,
+    end_seconds: float | None,
+) -> dict:
+    """Fingerprint the inputs that determine a chunk's extracted frames.
+
+    Used to decide whether an existing frames/ directory can be reused (resume)
+    or must be re-extracted. Includes the source file's size + mtime so a swapped
+    video invalidates stale frames.
+    """
+    try:
+        st = os.stat(video_path)
+        video_sig = f"{st.st_size}:{st.st_mtime_ns}"
+    except OSError:
+        video_sig = "missing"
+    return {
+        "video": str(video_path),
+        "video_sig": video_sig,
+        "fps": round(fps, 6),
+        "resolution": resolution,
+        "max_frames": max_frames,
+        "start_seconds": None if start_seconds is None else round(start_seconds, 3),
+        "end_seconds": None if end_seconds is None else round(end_seconds, 3),
+    }
+
+
+def _frames_from_dir(out_dir: Path, fps: float, start_seconds: float | None) -> list[dict]:
+    offset = start_seconds or 0.0
+    frames = sorted(out_dir.glob("frame_*.jpg"))
+    return [
+        {
+            "index": i + 1,
+            "timestamp_seconds": round(offset + (i / fps if fps > 0 else 0.0), 2),
+            "path": str(p),
+        }
+        for i, p in enumerate(frames)
+    ]
+
+
 def extract(
     video_path: str,
     out_dir: Path,
@@ -206,13 +250,33 @@ def extract(
     max_frames: int = 120,
     start_seconds: float | None = None,
     end_seconds: float | None = None,
+    force: bool = False,
 ) -> list[dict]:
     if shutil.which("ffmpeg") is None:
         raise SystemExit("ffmpeg is not installed. Install with: brew install ffmpeg")
 
     out_dir.mkdir(parents=True, exist_ok=True)
-    for existing in out_dir.glob("frame_*.jpg"):
-        existing.unlink()
+    sig_path = out_dir / ".extract.json"
+    signature = _extract_signature(
+        video_path, fps, resolution, max_frames, start_seconds, end_seconds
+    )
+    existing = sorted(out_dir.glob("frame_*.jpg"))
+
+    # Resume: reuse a completed extraction whose inputs are unchanged. This is
+    # what lets a re-run after a timeout pick up where it left off instead of
+    # deleting everything and starting from zero.
+    if not force and existing and sig_path.exists():
+        try:
+            if json.loads(sig_path.read_text()) == signature:
+                return _frames_from_dir(out_dir, fps, start_seconds)
+        except (OSError, json.JSONDecodeError):
+            pass
+
+    # Inputs changed (or --force): clear stale frames before re-extracting.
+    for stale in existing:
+        stale.unlink()
+    if sig_path.exists():
+        sig_path.unlink()
 
     output_pattern = str(out_dir / "frame_%04d.jpg")
     cmd: list[str] = [
@@ -240,16 +304,9 @@ def extract(
     if result.returncode != 0:
         raise SystemExit(f"ffmpeg frame extraction failed: {result.stderr.strip()}")
 
-    offset = start_seconds or 0.0
-    frames = sorted(out_dir.glob("frame_*.jpg"))
-    return [
-        {
-            "index": i + 1,
-            "timestamp_seconds": round(offset + (i / fps if fps > 0 else 0.0), 2),
-            "path": str(p),
-        }
-        for i, p in enumerate(frames)
-    ]
+    # Record the signature so a later run can reuse these frames (resume).
+    sig_path.write_text(json.dumps(signature))
+    return _frames_from_dir(out_dir, fps, start_seconds)
 
 
 def make_contact_sheet(

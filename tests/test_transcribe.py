@@ -6,7 +6,7 @@ SCRIPTS_DIR = str(Path(__file__).resolve().parent.parent / "scripts")
 if SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, SCRIPTS_DIR)
 
-from transcribe import parse_vtt, filter_range, format_transcript, _dedupe
+from transcribe import parse_vtt, filter_range, format_transcript, _dedupe, detect_trailing_promo
 
 
 def _write_vtt(tmp_path: Path, content: str) -> Path:
@@ -112,3 +112,68 @@ class TestFormatTranscript:
         segs = [{"start": 65.0, "end": 70.0, "text": "Test"}]
         output = format_transcript(segs)
         assert output == "[01:05] Test"
+
+
+def _seg(start, end, text):
+    return {"start": start, "end": end, "text": text}
+
+
+class TestDetectTrailingPromo:
+    def _speech(self, count, step=5.0):
+        # Distinct, dense sentences: high words/sec, all-unique phrases.
+        return [
+            _seg(i * step, i * step + step,
+                 f"this is sentence number {i} with plenty of distinct spoken content")
+            for i in range(count)
+        ]
+
+    def test_detects_repeated_trailing_card(self):
+        speech = self._speech(20)  # 0..100s
+        promo = [_seg(100 + i * 10, 100 + i * 10 + 10, "dont miss the full episode")
+                 for i in range(6)]  # 100..160s, ~0.5 words/sec
+        res = detect_trailing_promo(speech + promo, full_duration=160)
+        assert res is not None and res["detected"]
+        assert res["confidence"] == "high"
+        assert 95 <= res["start_seconds"] <= 105
+
+    def test_detects_single_held_card(self):
+        # After dedupe a held card is one long, low-words-per-second segment.
+        speech = self._speech(20)  # 0..100s
+        held = [_seg(100.0, 145.0, "subscribe now")]  # 45s, 2 words, promo keyword
+        res = detect_trailing_promo(speech + held, full_duration=145)
+        assert res is not None
+        assert res["start_seconds"] == 100.0
+        assert res["confidence"] == "high"  # "subscribe" keyword raises confidence
+
+    def test_quiet_ending_is_low_confidence(self):
+        # A single sparse, non-promo final cue should be flagged low confidence
+        # so it is reported but never auto-trimmed.
+        speech = self._speech(20)  # 0..100s
+        ending = [_seg(100.0, 140.0, "and that is the end")]  # 40s, 5 words, no keyword
+        res = detect_trailing_promo(speech + ending, full_duration=140)
+        assert res is not None
+        assert res["confidence"] == "low"
+
+    def test_detects_card_starting_before_lookback_window(self):
+        # A long held card that starts before the 240s lookback floor but ends
+        # after it must still be detected (overlap, not start-only, membership).
+        speech = [_seg(i * 10, i * 10 + 10, f"distinct spoken sentence number {i} here")
+                  for i in range(15)]  # 0..150s
+        held = [_seg(150.0, 420.0, "subscribe now")]  # 270s card; starts before 420-240=180
+        res = detect_trailing_promo(speech + held, full_duration=420)
+        assert res is not None
+        assert res["start_seconds"] == 150.0
+
+    def test_ignores_dense_speech(self):
+        speech = self._speech(40)  # 200s of distinct dense speech
+        res = detect_trailing_promo(speech, full_duration=200)
+        assert res is None
+
+    def test_requires_minimum_duration(self):
+        speech = self._speech(20)
+        promo = [_seg(100 + i * 5, 100 + i * 5 + 5, "buy now") for i in range(4)]  # 20s < 30s
+        res = detect_trailing_promo(speech + promo, full_duration=120)
+        assert res is None
+
+    def test_empty_transcript(self):
+        assert detect_trailing_promo([], full_duration=120) is None

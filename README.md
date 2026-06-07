@@ -1,4 +1,4 @@
-# 🎬 /analyze-video (v2)
+# 🎬 /analyze-video
 
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
 [![GitHub release](https://img.shields.io/github/v/release/evillollive/Analyze-Video-Skill)](https://github.com/evillollive/Analyze-Video-Skill/releases)
@@ -26,9 +26,13 @@ One video or ten, it handles batches too.
 
 Every frame the AI reads costs tokens. Instead of reading 100+ frames individually, the skill tiles them into a single contact sheet image. The AI scans that overview, picks the frames that actually matter, and only reads *those* at full resolution. Same quality, fraction of the cost.
 
-### Unified v2 workflow
+### Unified workflow
 
-`/watch` and `/analyze-video` are now merged into one skill flow. You run one command, the skill handles setup, processing, frame selection, analysis, and docx output end to end.
+`/watch` and `/analyze-video` are merged into one skill flow. You run one command, the skill handles setup, processing, frame selection, analysis, and docx output end to end.
+
+### Built for long videos
+
+Big videos used to time out and restart from zero. Now the skill picks up where it left off: extracted frames are reused when the source and settings haven't changed (pass `--force` to redo them), a `status.json` and a rolling `manifest_partial.json` record progress so an interrupted run is never a black box, and repeated end-card promos or static outros can be detected and trimmed with `--trim-static-outro`.
 
 ## Getting started
 

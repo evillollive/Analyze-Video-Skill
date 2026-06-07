@@ -36,6 +36,15 @@
  *     }
  *   ],
  *   "observations": "Cross-video observations..."    // optional, batch only
+ *   "appendix_contact_sheets": [                      // optional appendix
+ *     {
+ *       "path": "/abs/path/contact_sheet.jpg",        // REQUIRED
+ *       "heading": "Title — chunk 2 (10:00–20:00)",   // optional H2
+ *       "caption": "Frames 0:00–10:00",               // optional, also used as alt
+ *       "alt": "Accessible description of the grid",   // optional alt override
+ *       "width": 600, "height": 800                    // optional; auto from JPEG if omitted
+ *     }
+ *   ]
  * }
  *
  * Usage:
@@ -43,9 +52,61 @@
  *   cat spec.json | node build-docx.js --spec -
  */
 
-const { Document, Packer, Paragraph, TextRun, ImageRun } = require('docx');
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
+
+// ----------------------------------------------------------------------------
+// docx module resolution
+// ----------------------------------------------------------------------------
+// The skill directory (where this script lives) may be mounted read-only, so we
+// can't rely on a `scripts/node_modules/docx` being present or installable here.
+// Resolve `docx` from any writable/known location, and only as a last resort
+// install it into a per-user cache. This avoids the silent EACCES failures that
+// happen when `npm install` targets a read-only skill directory.
+function resolveDocx() {
+  const cacheModules = path.join(os.homedir(), '.cache', 'analyze-video', 'node_modules');
+  const roots = [];
+  if (process.env.DOCX_NODE_MODULES) roots.push(process.env.DOCX_NODE_MODULES);
+  if (process.env.NODE_PATH) roots.push(...process.env.NODE_PATH.split(path.delimiter).filter(Boolean));
+  roots.push(path.join(__dirname, 'node_modules'));
+  roots.push(cacheModules);
+
+  for (const root of roots) {
+    try {
+      return require(path.join(root, 'docx'));
+    } catch (e) { /* try next root */ }
+  }
+  // Default Node resolution (covers a docx installed anywhere up the tree).
+  try {
+    return require('docx');
+  } catch (e) { /* fall through to install */ }
+
+  // Last resort: install into the writable per-user cache, then load it.
+  const cacheParent = path.dirname(cacheModules); // ~/.cache/analyze-video
+  try {
+    fs.mkdirSync(cacheParent, { recursive: true });
+    const { execFileSync } = require('child_process');
+    process.stderr.write('[build-docx] installing docx into ' + cacheModules + ' ...\n');
+    execFileSync('npm', ['install', 'docx@^9', '--no-audit', '--no-fund', '--prefix', cacheParent], {
+      stdio: ['ignore', 'ignore', 'inherit'],
+    });
+    return require(path.join(cacheModules, 'docx'));
+  } catch (e) {
+    process.stderr.write(
+      '[build-docx] ERROR: could not load or install the `docx` module.\n' +
+      '  Tried: ' + roots.join(', ') + '\n' +
+      '  The skill directory may be read-only. Fixes:\n' +
+      '   - set NODE_PATH to a directory containing docx, or\n' +
+      '   - run `python3 scripts/setup.py --install-docx` once in a writable checkout, or\n' +
+      '   - allow this script to install docx into ' + cacheModules + '.\n' +
+      '  Underlying error: ' + e.message + '\n'
+    );
+    process.exit(1);
+  }
+}
+
+const { Document, Packer, Paragraph, TextRun, ImageRun } = resolveDocx();
 
 // ----------------------------------------------------------------------------
 // Paragraph helpers
@@ -126,6 +187,66 @@ function cap(text) {
   });
 }
 
+// Read intrinsic JPEG dimensions from SOF markers so contact-sheet grids keep
+// their aspect ratio (no explicit width/height needed from the caller).
+function jpegSize(buf) {
+  if (!buf || buf.length < 4 || buf[0] !== 0xff || buf[1] !== 0xd8) return null;
+  let off = 2;
+  while (off + 9 < buf.length) {
+    if (buf[off] !== 0xff) { off += 1; continue; }
+    const marker = buf[off + 1];
+    // SOF0..SOF15 (skip DHT/DAC/RSTn which aren't frame headers): C0-CF except C4,C8,CC
+    if (marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc) {
+      const height = buf.readUInt16BE(off + 5);
+      const width = buf.readUInt16BE(off + 7);
+      return { width, height };
+    }
+    const segLen = buf.readUInt16BE(off + 2);
+    if (segLen < 2) return null;
+    off += 2 + segLen;
+  }
+  return null;
+}
+
+// Render a contact sheet scaled to fit the page while preserving aspect ratio.
+function contactSheetPara(filePath, alt, explicitDim) {
+  const MAX_W = 600;
+  const MAX_H = 860;
+  if (!fs.existsSync(filePath)) {
+    return new Paragraph({
+      spacing: { before: 220, after: 0 },
+      children: [new TextRun({
+        text: `[missing contact sheet: ${filePath}]`,
+        italics: true, size: 18, color: 'CC0000', font: 'Arial',
+      })],
+    });
+  }
+  const data = fs.readFileSync(filePath);
+  let w = MAX_W;
+  let h = Math.round(MAX_W * 0.66);
+  const intrinsic = (explicitDim && explicitDim.width && explicitDim.height)
+    ? { width: explicitDim.width, height: explicitDim.height }
+    : jpegSize(data);
+  if (intrinsic && intrinsic.width > 0 && intrinsic.height > 0) {
+    const scale = Math.min(MAX_W / intrinsic.width, MAX_H / intrinsic.height, 1);
+    w = Math.max(1, Math.round(intrinsic.width * scale));
+    h = Math.max(1, Math.round(intrinsic.height * scale));
+  }
+  return new Paragraph({
+    spacing: { before: 220, after: 0 },
+    children: [new ImageRun({
+      type: 'jpg',
+      data,
+      transformation: { width: w, height: h },
+      altText: {
+        title: 'contact sheet',
+        description: alt || 'contact sheet: grid of video frames',
+        name: 'contact sheet',
+      },
+    })],
+  });
+}
+
 // ----------------------------------------------------------------------------
 // Spec -> children
 // ----------------------------------------------------------------------------
@@ -170,6 +291,28 @@ function buildChildren(spec) {
   if (spec.observations) {
     children.push(h1('Observations Across Videos'));
     children.push(...body(spec.observations));
+  }
+
+  // Optional appendix: tiled contact-sheet overviews (one per chunk/video).
+  // Off unless the spec includes them; each entry keeps its aspect ratio and
+  // carries required alt text for accessibility.
+  const sheets = Array.isArray(spec.appendix_contact_sheets) ? spec.appendix_contact_sheets : [];
+  const validSheets = sheets.filter((s) => s && s.path);
+  if (validSheets.length > 0) {
+    children.push(h1('Contact Sheet Appendix'));
+    children.push(...body(
+      'Each grid below is a chronological overview of the extracted frames for a '
+      + 'video (or chunk). Use it as a visual index of the full timeline.'
+    ));
+    for (const sheet of validSheets) {
+      if (sheet.heading) children.push(h2(sheet.heading));
+      const dim = (sheet.width && sheet.height)
+        ? { width: sheet.width, height: sheet.height }
+        : null;
+      const alt = sheet.alt || sheet.caption || 'contact sheet: grid of video frames';
+      children.push(contactSheetPara(sheet.path, alt, dim));
+      if (sheet.caption) children.push(cap(sheet.caption));
+    }
   }
   return children;
 }

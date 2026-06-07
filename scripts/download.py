@@ -47,10 +47,18 @@ def resolve_local(path: str) -> dict:
             f"[analyze-video] warning: {p.suffix} is not a known video extension, proceeding anyway",
             file=sys.stderr,
         )
+    subtitle = _local_subtitle(p)
+    info = _local_info(p)
+    title = info.get("title") or p.name
     return {
         "video_path": str(p),
-        "subtitle_path": None,
-        "info": {"title": p.name, "url": str(p)},
+        "subtitle_path": str(subtitle) if subtitle else None,
+        "info": {
+            "title": title,
+            "uploader": info.get("uploader"),
+            "duration": info.get("duration"),
+            "url": info.get("url") or str(p),
+        },
         "downloaded": False,
     }
 
@@ -61,6 +69,54 @@ def _pick_subtitle(out_dir: Path) -> Path | None:
         return None
     preferred = [c for c in candidates if ".en" in c.name]
     return preferred[0] if preferred else candidates[0]
+
+
+def _local_subtitle(video: Path) -> Path | None:
+    """Find a VTT sitting next to a local video file.
+
+    Matching is separator-anchored on the video's stem so ``clip1.mp4`` never
+    grabs ``clip10.en.vtt``. Order: English stem variant, any stem language
+    variant, the exact ``<stem>.vtt``, then a lone VTT only when the directory
+    holds exactly one video and one subtitle (an unambiguous pair).
+    """
+    parent = video.parent
+    stem = video.stem
+    for pattern in (f"{stem}.en*.vtt", f"{stem}.*.vtt"):
+        matches = sorted(parent.glob(pattern))
+        if matches:
+            english = [m for m in matches if ".en" in m.name.lower()]
+            return english[0] if english else matches[0]
+    exact = parent / f"{stem}.vtt"
+    if exact.exists():
+        return exact
+    vtts = sorted(parent.glob("*.vtt"))
+    videos = [p for p in parent.iterdir() if p.suffix.lower() in VIDEO_EXTS]
+    if len(vtts) == 1 and len(videos) == 1:
+        return vtts[0]
+    return None
+
+
+def _local_info(video: Path) -> dict:
+    """Read yt-dlp's co-located <stem>.info.json (or a lone *.info.json)."""
+    parent = video.parent
+    stem = video.stem
+    candidates = [parent / f"{stem}.info.json", parent / "video.info.json"]
+    loose = sorted(parent.glob("*.info.json"))
+    if len(loose) == 1 and loose[0] not in candidates:
+        candidates.append(loose[0])
+    for info_path in candidates:
+        if info_path.exists():
+            try:
+                raw = json.loads(info_path.read_text())
+            except (OSError, json.JSONDecodeError):
+                continue
+            return {
+                "title": raw.get("title"),
+                "uploader": raw.get("uploader") or raw.get("channel"),
+                "duration": raw.get("duration"),
+                "url": raw.get("webpage_url"),
+            }
+    return {}
 
 
 def _pick_video(out_dir: Path) -> Path | None:
@@ -109,12 +165,62 @@ def classify_download_error(stderr: str) -> dict:
     return {"kind": kind, "guidance": guidance, "excerpt": excerpt}
 
 
+def _result_from_dir(out_dir: Path, video: Path, url: str) -> dict:
+    subtitle = _pick_subtitle(out_dir)
+    info_path = out_dir / "video.info.json"
+    info: dict = {}
+    if info_path.exists():
+        try:
+            raw = json.loads(info_path.read_text())
+            info = {
+                "title": raw.get("title"),
+                "uploader": raw.get("uploader") or raw.get("channel"),
+                "duration": raw.get("duration"),
+                "url": raw.get("webpage_url") or url,
+            }
+        except Exception:
+            info = {"url": url}
+    return {
+        "video_path": str(video),
+        "subtitle_path": str(subtitle) if subtitle else None,
+        "info": info or {"url": url},
+        "downloaded": True,
+    }
+
+
+def _source_marker_matches(out_dir: Path, url: str) -> bool:
+    """True if this out_dir's recorded download source matches `url`.
+
+    Prevents reusing a previously downloaded video when the user points the same
+    --out-dir at a different URL. Reuse requires positive confirmation: a
+    `.source.json` marker (written on download) or a matching URL in
+    video.info.json. Absent any evidence, we re-download to be safe.
+    """
+    marker = out_dir / ".source.json"
+    if marker.exists():
+        try:
+            data = json.loads(marker.read_text())
+            if data.get("url"):
+                return data["url"] == url
+        except (OSError, json.JSONDecodeError):
+            pass
+    info_path = out_dir / "video.info.json"
+    if info_path.exists():
+        try:
+            raw = json.loads(info_path.read_text())
+            return url in {raw.get("webpage_url"), raw.get("original_url")}
+        except (OSError, json.JSONDecodeError):
+            pass
+    return False
+
+
 def download_url(
     url: str,
     out_dir: Path,
     *,
     cookies: str | None = None,
     cookies_from_browser: str | None = None,
+    force: bool = False,
 ) -> dict:
     if shutil.which("yt-dlp") is None:
         raise SystemExit("yt-dlp is not installed. Install with: brew install yt-dlp")
@@ -126,6 +232,23 @@ def download_url(
             raise SystemExit(f"Cookie file not found: {cookie_path}")
 
     out_dir.mkdir(parents=True, exist_ok=True)
+
+    # Resume: a video already downloaded into out_dir is reused as-is (unless
+    # --force), so a re-run after a timeout doesn't re-download the whole file.
+    # Only reuse when the recorded source matches this URL.
+    if not force:
+        existing = _pick_video(out_dir)
+        if (
+            existing is not None
+            and existing.stat().st_size > 0
+            and _source_marker_matches(out_dir, url)
+        ):
+            print(
+                f"[download] reusing existing video {existing.name} (pass --force to re-download)",
+                file=sys.stderr,
+            )
+            return _result_from_dir(out_dir, existing, url)
+
     output_template = str(out_dir / "video.%(ext)s")
 
     cmd = [
@@ -170,27 +293,14 @@ def download_url(
             file=sys.stderr,
         )
 
-    subtitle = _pick_subtitle(out_dir)
-    info_path = out_dir / "video.info.json"
-    info: dict = {}
-    if info_path.exists():
-        try:
-            raw = json.loads(info_path.read_text())
-            info = {
-                "title": raw.get("title"),
-                "uploader": raw.get("uploader") or raw.get("channel"),
-                "duration": raw.get("duration"),
-                "url": raw.get("webpage_url") or url,
-            }
-        except Exception:
-            info = {"url": url}
+    # Record the source so a later resume can confirm this out_dir holds *this*
+    # URL before reusing the download.
+    try:
+        (out_dir / ".source.json").write_text(json.dumps({"url": url}))
+    except OSError:
+        pass
 
-    return {
-        "video_path": str(video),
-        "subtitle_path": str(subtitle) if subtitle else None,
-        "info": info or {"url": url},
-        "downloaded": True,
-    }
+    return _result_from_dir(out_dir, video, url)
 
 
 def download(
@@ -199,9 +309,16 @@ def download(
     *,
     cookies: str | None = None,
     cookies_from_browser: str | None = None,
+    force: bool = False,
 ) -> dict:
     if is_url(source):
-        return download_url(source, out_dir, cookies=cookies, cookies_from_browser=cookies_from_browser)
+        return download_url(
+            source,
+            out_dir,
+            cookies=cookies,
+            cookies_from_browser=cookies_from_browser,
+            force=force,
+        )
     return resolve_local(source)
 
 
