@@ -16,7 +16,7 @@ You paste a link. The skill does the rest:
 3. **Builds a contact sheet** so the AI can see the whole video at a glance without burning through your context window
 4. **Reads the transcript** (or creates one via Whisper if there are no captions)
 5. **Picks the best frames** and writes a detailed, timestamped analysis
-6. **Exports a polished `.docx`** with embedded screenshots, captions, and prose
+6. **Exports a polished `.docx`** with embedded screenshots, captions, and prose (one frame per row, or two-up side by side)
 
 One video or ten, it handles batches too.
 
