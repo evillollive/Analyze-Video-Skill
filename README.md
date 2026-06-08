@@ -41,7 +41,7 @@ Big videos used to time out and restart from zero. Now the skill picks up where 
 ### What you'll need
 
 - **Python 3.9+** and **Node.js** (for the Word doc builder)
-- **ffmpeg**, **ffprobe**, **yt-dlp** (on macOS these auto-install via Homebrew; on Linux/Windows the skill prints the commands for you)
+- **ffmpeg**, **ffprobe**, **yt-dlp** (macOS auto-installs via Homebrew; on Linux the skill auto-installs the no-sudo pieces like `yt-dlp` and prints commands for anything needing root; Windows prints the commands)
 - Optionally, a **Whisper API key** for transcribing videos that don't have captions:
   - [Groq](https://console.groq.com/keys) (faster and cheaper, recommended)
   - [OpenAI](https://platform.openai.com/api-keys) (solid fallback)

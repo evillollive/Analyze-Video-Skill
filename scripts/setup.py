@@ -104,7 +104,7 @@ OPENAI_API_KEY=
 
 
 def _which(name: str) -> str | None:
-    return shutil.which(name)
+    return _resolve_tool(name)
 
 
 def _check_binaries() -> list[str]:
@@ -129,6 +129,12 @@ try:
     from env_utils import read_env_key as _shared_read_env_key
 except ImportError:
     _shared_read_env_key = None
+
+try:
+    from env_utils import resolve_tool as _resolve_tool
+except ImportError:  # pragma: no cover
+    def _resolve_tool(name: str) -> str | None:
+        return shutil.which(name)
 
 
 def _read_env_key(name: str) -> str | None:
@@ -245,6 +251,59 @@ def _install_macos(missing: list[str]) -> tuple[bool, str]:
     return True, f"installed via brew: {', '.join(pkgs)}"
 
 
+def _path_export_hint(tool: str) -> str | None:
+    """If `tool` resolves only via a user-bin dir not on PATH, return an export hint.
+
+    Auto-installed tools (pip --user / pipx) often land in ~/.local/bin or the
+    Python userbase bin, which isn't on PATH in fresh sandboxes. Surfacing the
+    exact export line is what keeps the very next bash call from failing.
+    """
+    resolved = _resolve_tool(tool)
+    if not resolved:
+        return None
+    bindir = Path(resolved).resolve().parent
+    path_dirs = []
+    for p in os.environ.get("PATH", "").split(os.pathsep):
+        if not p:
+            continue
+        try:
+            path_dirs.append(Path(p).expanduser().resolve())
+        except OSError:
+            continue
+    if bindir in path_dirs:
+        return None
+    return f'export PATH="$PATH:{bindir}"'
+
+
+def _pip_install_user(pkg: str) -> tuple[bool, str]:
+    """pip install --user <pkg>, retrying with --break-system-packages on PEP 668."""
+    base = [sys.executable, "-m", "pip", "install", "--user", pkg]
+    result = subprocess.run(base, capture_output=True, text=True)
+    if result.returncode == 0:
+        return True, f"installed {pkg} (pip --user)"
+    combined = (result.stdout + result.stderr).lower()
+    if "externally-managed" in combined or "break-system-packages" in combined:
+        retry = [*base, "--break-system-packages"]
+        result2 = subprocess.run(retry, capture_output=True, text=True)
+        if result2.returncode == 0:
+            return True, f"installed {pkg} (pip --user --break-system-packages)"
+        return False, f"pip install {pkg} failed: {result2.stderr.strip()[:200]}"
+    return False, f"pip install {pkg} failed: {result.stderr.strip()[:200]}"
+
+
+def _install_ytdlp() -> tuple[bool, str]:
+    """Install yt-dlp without sudo: prefer pipx, fall back to pip --user."""
+    if _which("yt-dlp"):
+        return True, "already installed"
+    if shutil.which("pipx"):
+        result = subprocess.run(
+            ["pipx", "install", "yt-dlp"], capture_output=True, text=True
+        )
+        if result.returncode == 0:
+            return True, "installed yt-dlp (pipx)"
+    return _pip_install_user("yt-dlp")
+
+
 def _install_hint_linux(missing: list[str]) -> str:
     pkgs = _brew_pkg(missing)
     hints = []
@@ -269,34 +328,62 @@ def _install_hint_windows(missing: list[str]) -> str:
     return "\n  ".join(hints) if hints else "nothing to install"
 
 
-def _install_docx() -> tuple[bool, str]:
-    """Install the npm `docx` package once into scripts/node_modules.
+def _npm_install_docx(prefix: Path) -> tuple[bool, str]:
+    """Run `npm install docx` under `prefix` (creating it first).
 
-    The build script (`scripts/build-docx.js`) requires('docx'), and Node
-    resolves modules from any `node_modules/` next to the script. Installing
-    once here avoids the per-session `npm init && npm install` dance.
+    Installs into `<prefix>/node_modules/docx`. Returns (ok, message).
     """
-    if _docx_available():
-        return True, "already installed"
-    if shutil.which("npm") is None:
-        return False, "npm not available; install Node.js first"
-    SCRIPTS_DIR.mkdir(parents=True, exist_ok=True)
-    pkg_json = SCRIPTS_DIR / "package.json"
+    try:
+        prefix.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        return False, f"cannot create {prefix}: {exc}"
+    pkg_json = prefix / "package.json"
     if not pkg_json.exists():
-        pkg_json.write_text(
-            '{\n  "name": "analyze-video-runtime",\n  "private": true,\n'
-            '  "description": "Runtime npm deps for the analyze-video skill builder.",\n'
-            '  "dependencies": {}\n}\n'
-        )
-    print("[setup] installing npm `docx` into scripts/node_modules ...", file=sys.stderr)
+        try:
+            pkg_json.write_text(
+                '{\n  "name": "analyze-video-runtime",\n  "private": true,\n'
+                '  "description": "Runtime npm deps for the analyze-video skill builder.",\n'
+                '  "dependencies": {}\n}\n'
+            )
+        except OSError:
+            pass
     result = subprocess.run(
-        ["npm", "install", "--no-audit", "--no-fund", "--prefix", str(SCRIPTS_DIR), "docx"],
+        ["npm", "install", "--no-audit", "--no-fund", "--prefix", str(prefix), "docx@^9"],
         capture_output=True,
         text=True,
     )
     if result.returncode != 0:
         return False, f"npm install docx failed: {result.stderr.strip()[:300]}"
-    return True, "installed"
+    return True, f"installed into {prefix / 'node_modules'}"
+
+
+def _install_docx() -> tuple[bool, str]:
+    """Install the npm `docx` package so `build-docx.js` can require it.
+
+    Prefers the skill's own `scripts/` dir when it's writable, but falls back to
+    the per-user cache (`~/.cache/analyze-video`) when the skill directory is
+    mounted read-only. This mirrors build-docx.js's own resolution/install order
+    and is what makes setup actually succeed in sandboxes instead of printing a
+    deferral note and failing.
+    """
+    if _docx_available():
+        return True, "already installed"
+    if shutil.which("npm") is None:
+        return False, "npm not available; install Node.js first"
+
+    targets: list[Path] = []
+    if os.access(SCRIPTS_DIR, os.W_OK):
+        targets.append(SCRIPTS_DIR)
+    # CACHE_NODE_MODULES is <cache>/node_modules; install with prefix <cache>.
+    targets.append(CACHE_NODE_MODULES.parent)
+
+    last_msg = "no writable install location found"
+    for prefix in targets:
+        ok, msg = _npm_install_docx(prefix)
+        if ok:
+            return True, msg
+        last_msg = msg
+    return False, last_msg
 
 
 def _set_key(backend: str, value: str) -> int:
@@ -419,9 +506,29 @@ def cmd_install() -> int:
                 return 2
             installed_deps = True
         elif system == "Linux":
-            print("[setup] dependencies missing on Linux, please install:", file=sys.stderr)
-            print("  " + _install_hint_linux(missing), file=sys.stderr)
-            return 2
+            # User decision: auto-run the non-sudo install (yt-dlp via pipx/pip
+            # --user). Only the packages that genuinely need root (ffmpeg,
+            # node/npm) get printed as hints. This removes the macOS/Linux
+            # inconsistency where Linux just echoed commands.
+            if "yt-dlp" in missing:
+                ok, msg = _install_ytdlp()
+                print(f"[setup] yt-dlp: {msg}", file=sys.stderr)
+                hint = _path_export_hint("yt-dlp")
+                if hint:
+                    print(
+                        f"[setup] yt-dlp is not on PATH yet. Add it with:\n  {hint}",
+                        file=sys.stderr,
+                    )
+            still_missing = _check_binaries()
+            if still_missing:
+                print(
+                    "[setup] some dependencies need a system package manager "
+                    "(likely sudo) on Linux:",
+                    file=sys.stderr,
+                )
+                print("  " + _install_hint_linux(still_missing), file=sys.stderr)
+                return 2
+            installed_deps = True
         elif system == "Windows":
             print("[setup] dependencies missing on Windows, please install:", file=sys.stderr)
             print("  " + _install_hint_windows(missing), file=sys.stderr)
@@ -461,6 +568,24 @@ def cmd_install() -> int:
             "writable checkout. Frames, captions, and transcripts work regardless.",
             file=sys.stderr,
         )
+
+    # If any required tool resolves only via a user-local bin that isn't on PATH,
+    # surface the exact export line. setup counts such tools as present (we invoke
+    # ffmpeg/ffprobe/yt-dlp by absolute path), but the agent's own bare `node` /
+    # `npm` calls and any new shell still need them on PATH.
+    path_hints = []
+    for binary in REQUIRED_BINARIES:
+        hint = _path_export_hint(binary)
+        if hint and hint not in path_hints:
+            path_hints.append(hint)
+    if path_hints:
+        print(
+            "[setup] NOTE: some tools are installed but not on PATH. "
+            "Run before invoking the skill:",
+            file=sys.stderr,
+        )
+        for hint in path_hints:
+            print(f"  {hint}", file=sys.stderr)
 
     if has_key:
         _write_setup_complete()

@@ -7,11 +7,62 @@ whisper.py so the logic doesn't drift out of sync.
 from __future__ import annotations
 
 import os
+import shutil
+import site
 from pathlib import Path
 
 
 CONFIG_DIR = Path.home() / ".config" / "analyze-video"
 CONFIG_FILE = CONFIG_DIR / ".env"
+
+
+def _user_bin_dirs() -> list[Path]:
+    """Common per-user executable dirs that may hold pip/pipx-installed tools.
+
+    `pip install --user` and `pipx` land binaries in locations that are often
+    missing from a non-interactive shell's PATH (e.g. ~/.local/bin), which is why
+    tools like yt-dlp can be installed yet invisible to a bare name lookup.
+    """
+    dirs: list[Path] = []
+    try:
+        userbase = Path(site.getuserbase())
+        dirs.append(userbase / "bin")
+        # On Windows, `pip install --user` puts executables under Scripts/.
+        dirs.append(userbase / "Scripts")
+    except Exception:
+        pass
+    dirs.append(Path.home() / ".local" / "bin")
+    dirs.append(Path.home() / "bin")
+    seen: set[Path] = set()
+    ordered: list[Path] = []
+    for d in dirs:
+        if d not in seen:
+            seen.add(d)
+            ordered.append(d)
+    return ordered
+
+
+def resolve_tool(name: str) -> str | None:
+    """Find an executable on PATH, falling back to common user-local bin dirs.
+
+    Returns an absolute path string, or None if not found. Using the resolved
+    absolute path (rather than the bare name) lets the pipeline run even when a
+    user-installed tool's directory isn't on PATH.
+    """
+    found = shutil.which(name)
+    if found:
+        try:
+            return str(Path(found).resolve())
+        except OSError:
+            return found
+    for d in _user_bin_dirs():
+        cand = d / name
+        try:
+            if cand.is_file() and os.access(cand, os.X_OK):
+                return str(cand)
+        except OSError:
+            continue
+    return None
 
 
 def read_dotenv_key(path: Path, name: str) -> str | None:

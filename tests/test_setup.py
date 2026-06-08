@@ -97,3 +97,72 @@ class TestDocxAvailable:
         monkeypatch.delenv("DOCX_NODE_MODULES", raising=False)
         monkeypatch.delenv("NODE_PATH", raising=False)
         assert setup._docx_available() is False
+
+
+class TestInstallDocxFallback:
+    def test_falls_back_to_cache_when_scripts_readonly(self, tmp_path, monkeypatch):
+        """When scripts/ is read-only, docx installs into the per-user cache."""
+        cache_nm = tmp_path / "cache" / "node_modules"
+        monkeypatch.setattr(setup, "CACHE_NODE_MODULES", cache_nm)
+        monkeypatch.setattr(setup, "SCRIPTS_DIR", tmp_path / "ro-scripts")
+        monkeypatch.setattr(setup, "_docx_available", lambda: False)
+        monkeypatch.setattr(setup.shutil, "which", lambda name: "/usr/bin/npm")
+        # scripts dir reports not writable; cache parent is.
+        monkeypatch.setattr(setup.os, "access", lambda p, mode: False)
+
+        calls = []
+
+        def fake_install(prefix):
+            calls.append(prefix)
+            return True, f"installed into {prefix / 'node_modules'}"
+
+        monkeypatch.setattr(setup, "_npm_install_docx", fake_install)
+        ok, _msg = setup._install_docx()
+        assert ok is True
+        # Should target the cache parent (not the read-only scripts dir).
+        assert calls == [cache_nm.parent]
+
+    def test_prefers_scripts_dir_when_writable(self, tmp_path, monkeypatch):
+        cache_nm = tmp_path / "cache" / "node_modules"
+        scripts = tmp_path / "scripts"
+        monkeypatch.setattr(setup, "CACHE_NODE_MODULES", cache_nm)
+        monkeypatch.setattr(setup, "SCRIPTS_DIR", scripts)
+        monkeypatch.setattr(setup, "_docx_available", lambda: False)
+        monkeypatch.setattr(setup.shutil, "which", lambda name: "/usr/bin/npm")
+        monkeypatch.setattr(setup.os, "access", lambda p, mode: True)
+
+        calls = []
+        monkeypatch.setattr(
+            setup, "_npm_install_docx",
+            lambda prefix: (calls.append(prefix) or (True, "ok")),
+        )
+        ok, _msg = setup._install_docx()
+        assert ok is True
+        assert calls[0] == scripts
+
+
+class TestPathExportHint:
+    def test_returns_hint_when_off_path(self, tmp_path, monkeypatch):
+        bindir = tmp_path / "userbin"
+        bindir.mkdir()
+        tool = bindir / "yt-dlp"
+        tool.write_text("#!/bin/sh\n")
+        tool.chmod(0o755)
+        monkeypatch.setattr(setup, "_resolve_tool", lambda name: str(tool))
+        monkeypatch.setenv("PATH", "/usr/bin:/bin")
+        hint = setup._path_export_hint("yt-dlp")
+        assert hint == f'export PATH="$PATH:{bindir.resolve()}"'
+
+    def test_returns_none_when_already_on_path(self, tmp_path, monkeypatch):
+        bindir = tmp_path / "userbin"
+        bindir.mkdir()
+        tool = bindir / "yt-dlp"
+        tool.write_text("#!/bin/sh\n")
+        tool.chmod(0o755)
+        monkeypatch.setattr(setup, "_resolve_tool", lambda name: str(tool))
+        monkeypatch.setenv("PATH", str(bindir))
+        assert setup._path_export_hint("yt-dlp") is None
+
+    def test_returns_none_when_unresolved(self, monkeypatch):
+        monkeypatch.setattr(setup, "_resolve_tool", lambda name: None)
+        assert setup._path_export_hint("yt-dlp") is None

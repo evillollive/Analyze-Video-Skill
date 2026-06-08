@@ -302,10 +302,13 @@ function jpegSize(buf) {
   return null;
 }
 
-// Render a contact sheet scaled to fit the page while preserving aspect ratio.
+// Render a contact sheet scaled so roughly two sheets fit per page (compact
+// layout). Letter/A4 printable height is ~9in; capping each image block near
+// ~4in (plus its heading/caption) lets two stack per page instead of one image
+// ballooning to a full page each. Aspect ratio is always preserved.
 function contactSheetPara(filePath, alt, explicitDim) {
-  const MAX_W = 600;
-  const MAX_H = 860;
+  const MAX_W = 520;
+  const MAX_H = 400;
   if (!fs.existsSync(filePath)) {
     return new Paragraph({
       spacing: { before: 220, after: 0 },

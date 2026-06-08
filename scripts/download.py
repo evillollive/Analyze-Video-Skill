@@ -13,6 +13,13 @@ import sys
 from pathlib import Path
 from urllib.parse import urlparse
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+try:
+    from env_utils import resolve_tool as _resolve_tool
+except ImportError:  # pragma: no cover
+    def _resolve_tool(name: str) -> str | None:
+        return shutil.which(name)
+
 
 VIDEO_EXTS = {".mp4", ".mkv", ".webm", ".mov", ".m4v", ".avi", ".flv", ".wmv"}
 BLOCKED_PATTERNS: tuple[tuple[str, str], ...] = (
@@ -239,8 +246,12 @@ def download_url(
     cookies_from_browser: str | None = None,
     force: bool = False,
 ) -> dict:
-    if shutil.which("yt-dlp") is None:
-        raise SystemExit("yt-dlp is not installed. Install with: brew install yt-dlp")
+    ytdlp = _resolve_tool("yt-dlp")
+    if ytdlp is None:
+        raise SystemExit(
+            "yt-dlp is not installed. Install with: brew install yt-dlp (macOS), "
+            "pipx install yt-dlp, or pip install --user yt-dlp"
+        )
     if cookies and cookies_from_browser:
         raise SystemExit("Use only one of --cookies or --cookies-from-browser")
     if cookies:
@@ -275,7 +286,7 @@ def download_url(
     output_template = str(out_dir / "video.%(ext)s")
 
     cmd = [
-        "yt-dlp",
+        ytdlp,
         "-N", "8",
         "-f", "bv*[height<=720]+ba/b[height<=720]/bv+ba/b",
         "--merge-output-format", "mp4",

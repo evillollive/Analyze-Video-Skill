@@ -20,6 +20,24 @@ import subprocess
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+try:
+    from env_utils import resolve_tool as _resolve_tool
+except ImportError:  # pragma: no cover
+    def _resolve_tool(name: str) -> str | None:
+        return shutil.which(name)
+
+
+def _require_tool(name: str) -> str:
+    """Resolve a required executable (PATH or user-local bins) or exit clearly."""
+    path = _resolve_tool(name)
+    if path is None:
+        raise SystemExit(
+            f"{name} is not installed. Install with: brew install ffmpeg (macOS) "
+            "or your system package manager."
+        )
+    return path
+
 
 MAX_FPS = 2.0
 HARD_MAX_FRAMES = 120  # was 100, bumped for the auto-chunking redesign
@@ -109,12 +127,11 @@ def format_time(seconds: float) -> str:
 
 
 def get_metadata(video_path: str) -> dict:
-    if shutil.which("ffprobe") is None:
-        raise SystemExit("ffprobe is not installed. Install with: brew install ffmpeg")
+    ffprobe = _require_tool("ffprobe")
 
     result = subprocess.run(
         [
-            "ffprobe",
+            ffprobe,
             "-v", "quiet",
             "-print_format", "json",
             "-show_format",
@@ -274,8 +291,7 @@ def extract(
     caller should use when building the contact sheet so stale frames from a
     different run can't leak in.
     """
-    if shutil.which("ffmpeg") is None:
-        raise SystemExit("ffmpeg is not installed. Install with: brew install ffmpeg")
+    ffmpeg = _require_tool("ffmpeg")
 
     out_dir.mkdir(parents=True, exist_ok=True)
     signature = _extract_signature(
@@ -316,7 +332,7 @@ def extract(
 
     output_pattern = str(frames_dir / "frame_%04d.jpg")
     cmd: list[str] = [
-        "ffmpeg",
+        ffmpeg,
         "-hide_banner",
         "-loglevel", "error",
         "-y",
@@ -362,8 +378,7 @@ def make_contact_sheet(
     Returns the contact sheet path. Raises SystemExit on failure or if no
     frames are present.
     """
-    if shutil.which("ffmpeg") is None:
-        raise SystemExit("ffmpeg is not installed. Install with: brew install ffmpeg")
+    ffmpeg = _require_tool("ffmpeg")
 
     frame_files = sorted(frames_dir.glob("frame_*.jpg"))
     if not frame_files:
@@ -373,7 +388,7 @@ def make_contact_sheet(
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     cmd = [
-        "ffmpeg",
+        ffmpeg,
         "-hide_banner",
         "-loglevel", "error",
         "-y",

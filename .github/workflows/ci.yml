@@ -30,3 +30,87 @@ jobs:
         run: |
           bash scripts/build-skill.sh
           test -f dist/analyze-video.skill
+
+  integration:
+    name: Constrained-environment integration
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install ffmpeg and a user-local (off-PATH) yt-dlp
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg
+          # Land yt-dlp in the per-user bin, which mirrors `pip install --user`
+          # in sandboxes where that dir is not on PATH.
+          python -m pip install --quiet --user yt-dlp
+
+      - name: resolve_tool finds an off-PATH tool
+        run: |
+          # Strip the user-local bin from PATH so a bare lookup would miss yt-dlp;
+          # resolve_tool must still find it via its user-bin fallback.
+          export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+          python - <<'PY'
+          import sys
+          sys.path.insert(0, "scripts")
+          from env_utils import resolve_tool
+          resolved = resolve_tool("yt-dlp")
+          assert resolved, "yt-dlp must resolve via user-local bin even when off PATH"
+          print("resolved yt-dlp ->", resolved)
+          PY
+
+      - name: End-to-end pipeline with a READ-ONLY skill directory
+        run: |
+          set -euo pipefail
+          SKILL="$GITHUB_WORKSPACE"
+          mkdir -p /tmp/work
+          cd /tmp/work
+          # Tiny synthetic local video, so no network/download is needed.
+          ffmpeg -hide_banner -loglevel error \
+            -f lavfi -i testsrc=size=320x240:rate=10:duration=4 \
+            -f lavfi -i sine=frequency=440:duration=4 \
+            -c:v libx264 -pix_fmt yuv420p -c:a aac -shortest sample.mp4
+          # Mirror sandbox mounts: the skill's scripts dir is read-only. The
+          # pipeline must still run, and the docx builder must self-install into
+          # the writable per-user cache instead of failing on the read-only dir.
+          chmod -R a-w "$SKILL/scripts"
+          python "$SKILL/scripts/process.py" --source sample.mp4 --out-dir out --no-whisper
+          test -f out/manifest_lite.json
+          python - <<'PY'
+          import json
+          d = json.load(open("out/manifest_lite.json"))
+          sheet = d["chunks"][0]["contact_sheet"]["absolute_path"]
+          spec = {
+              "out": "/tmp/work/out/analysis.docx",
+              "title": "CI Integration Analysis",
+              "videos": [{
+                  "title": d.get("title") or "sample",
+                  "source": d["source"],
+                  "sections": [{"heading": "Overview", "body": "smoke test", "frames": []}],
+              }],
+              "appendix_contact_sheets": [
+                  {"heading": "Chunk 1", "path": sheet, "caption": "frames"},
+              ],
+          }
+          json.dump(spec, open("out/spec.json", "w"))
+          PY
+          node "$SKILL/scripts/build-docx.js" --spec out/spec.json
+          test -f out/analysis.docx
+          # docx self-installed into the writable cache because scripts was read-only.
+          test -d "$HOME/.cache/analyze-video/node_modules/docx"
+          echo "integration OK"
+
+      - name: Restore write permissions
+        if: always()
+        run: chmod -R u+w "$GITHUB_WORKSPACE/scripts" || true

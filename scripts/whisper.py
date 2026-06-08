@@ -40,6 +40,12 @@ try:
 except ImportError:
     _shared_read_env_key = None
 
+try:
+    from env_utils import resolve_tool as _resolve_tool
+except ImportError:  # pragma: no cover
+    def _resolve_tool(name: str) -> str | None:
+        return shutil.which(name)
+
 
 def load_api_key(preferred: str | None = None) -> tuple[str, str] | tuple[None, None]:
     """Return (backend, api_key). Prefers Groq, falls back to OpenAI.
@@ -126,12 +132,13 @@ def extract_audio(
     end_seconds: float | None = None,
 ) -> Path:
     """Extract mono 16kHz 64kbps mp3 (around 480 kB/min, fits any Whisper limit)."""
-    if shutil.which("ffmpeg") is None:
+    ffmpeg = _resolve_tool("ffmpeg")
+    if ffmpeg is None:
         raise SystemExit("ffmpeg is not installed. Install with: brew install ffmpeg")
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     cmd = [
-        "ffmpeg",
+        ffmpeg,
         "-hide_banner",
         "-loglevel", "error",
         "-y",

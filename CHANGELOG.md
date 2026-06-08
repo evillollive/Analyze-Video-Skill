@@ -2,6 +2,23 @@
 
 All notable changes to `/analyze-video` are documented here.
 
+## [1.4.0] - 2026-06-08
+
+Robustness fixes for constrained/sandboxed environments, driven by a batch of real-world run reports. Adds a constrained-Linux integration test to catch these seams in CI.
+
+### Added
+- **PATH-robust tool resolution.** A shared `resolve_tool()` finds `ffmpeg`, `ffprobe`, and `yt-dlp` even when they're installed in a user-local bin (`~/.local/bin`, the Python userbase) that isn't on `PATH`, and the pipeline now invokes them by absolute path. This fixes "tool installed but invisible" failures after `pip install --user` / `pipx`.
+- **Auto-install on Linux.** `setup.py` now runs the no-sudo installs itself (`yt-dlp` via `pipx`/`pip --user`, with a PEP 668 `--break-system-packages` fallback; the `docx` npm module into the per-user cache) instead of only printing commands. It prints exact `export PATH=...` hints when a tool lands off `PATH`, and sudo hints only for packages that need root (`ffmpeg`, Node.js/npm).
+- **Constrained-environment integration test.** A new CI job makes the skill directory read-only, runs the real pipeline on a synthetic local video, and builds the document, asserting the `docx` module self-installs into the writable cache. This catches environment/integration seams that mocked unit tests can't.
+
+### Changed
+- **`docx` installs into the per-user cache when the skill dir is read-only.** `setup.py` now installs `docx` into `~/.cache/analyze-video` (matching what `build-docx.js` already does) when `scripts/` isn't writable, instead of silently failing against a read-only mount.
+- **Compact contact-sheet appendix.** Contact sheets in the document appendix are now sized so about two fit per page, instead of one sheet ballooning to a full page each.
+- **Hardened delivery gate.** SKILL.md Step 8 now makes the "include contact sheets / transcript?" question a mandatory, explicit gate before the single document build, so appendices are never added without asking.
+
+### Docs
+- SKILL.md documents skill-directory resolution when `CLAUDE_SKILL_DIR` is unset, the setup exit-code contract (0 = ready, non-zero = not ready), and the harmless yt-dlp "no JavaScript runtime" warning.
+
 ## [1.3.0] - 2026-06-08
 
 ### Added

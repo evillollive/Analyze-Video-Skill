@@ -31,13 +31,23 @@ For long videos, `process.py` auto-chunks unfocused videos over 12 minutes into 
 
 ## Step 0: Setup preflight
 
+First, resolve the skill directory. Most runners set `CLAUDE_SKILL_DIR`, but some sandboxes don't. If it's unset, fall back to the directory this `SKILL.md` lives in:
+
+```bash
+SKILL_DIR="${CLAUDE_SKILL_DIR:-$(cd "$(dirname "$0")" 2>/dev/null && pwd)}"
+# If you don't have $0 (e.g. pasting commands), locate it once:
+#   SKILL_DIR=$(dirname "$(find / -name SKILL.md -path '*analyze-video*' 2>/dev/null | head -1)")
+```
+
+Use `"$SKILL_DIR/scripts/..."` in place of `"${CLAUDE_SKILL_DIR}/scripts/..."` whenever the variable might be unset.
+
 Run once per session:
 
 ```bash
 python3 "${CLAUDE_SKILL_DIR}/scripts/setup.py" --check
 ```
 
-Exit 0 means local dependencies are ready. A Whisper API key is optional; without one, videos with native captions still get transcript analysis and captionless videos are processed frames-only.
+Exit-code contract: `0` means local dependencies are ready. Any non-zero exit means "not ready" (the script currently uses `2` for missing dependencies). Treat only `0` as ready; never assume a specific non-zero value. A Whisper API key is optional; without one, videos with native captions still get transcript analysis and captionless videos are processed frames-only.
 
 If preflight exits non-zero, run:
 
@@ -47,7 +57,8 @@ python3 "${CLAUDE_SKILL_DIR}/scripts/setup.py"
 
 The installer:
 - macOS with Homebrew: installs missing `ffmpeg`, `yt-dlp`, Node.js/npm dependencies, and the `docx` npm module.
-- Linux/Windows: prints exact install commands.
+- Linux: auto-installs the no-sudo dependencies (`yt-dlp` via `pipx`/`pip --user`, and the `docx` npm module into `~/.cache/analyze-video`). For packages that need root (`ffmpeg`, Node.js/npm), it prints exact install commands. If `yt-dlp` lands in a user-local bin that isn't on `PATH`, setup prints the exact `export PATH=...` line; run it before invoking the pipeline.
+- Windows: prints exact install commands.
 - Scaffolds `~/.config/analyze-video/.env` at mode 0600.
 - Marks setup complete once required local dependencies are ready.
 
@@ -292,16 +303,25 @@ Do **not** try to `npm install` into `${CLAUDE_SKILL_DIR}/scripts`; it may be mo
 
 ## Step 8: Validate and deliver
 
-Before building the final `.docx`, ask once for the batch (skip any option that doesn't apply, and only mention the transcript options when a transcript exists, i.e. `transcript_segment_count > 0`):
+**Mandatory gate, do not skip:** appendices are OFF by default. You MUST ask the user the delivery question below and receive an explicit answer *before* you build the `.docx`. Never auto-add the contact-sheet appendix or the transcript appendix on your own initiative. If you build without asking, that's a defect. There is exactly one build, and it happens *after* these answers.
 
-> "A few delivery options: should I include the contact sheet(s) as a visual appendix in the document? Include the full transcript as an appendix? Keep standalone copies of the contact sheet(s) and/or the transcript next to the document? Also want a PDF version, and should I clean up the remaining working files afterward?"
+Ask once for the batch using `AskUserQuestion` (skip any option that doesn't apply, and only offer the transcript options when a transcript exists, i.e. `transcript_segment_count > 0`):
 
-Then build with the chosen appendices:
+> "A few delivery options before I build the document:
+> 1. Include the contact sheet(s) as a visual appendix *inside* the document?
+> 2. Include the full transcript as an appendix *inside* the document?
+> 3. Keep standalone copies of the contact sheet(s) and/or the transcript as separate files next to the document?
+> 4. Also want a PDF version?
+> 5. Clean up the remaining working files afterward?"
 
-- **Contact sheets in the document:** add an `appendix_contact_sheets` entry (one per chunk, or one for a single-chunk video), pulling each `contact_sheet.absolute_path` from the manifest's chunks and captioning each with its chunk time range.
-- **Transcript in the document:** add an `appendix_transcript` entry per video, with `path` set to that video's `manifest_lite.transcript_path`.
+Default every appendix answer to "no" unless the user says yes. If the user gives no answer or declines, build with no appendices.
 
-Both appendices are off by default; only add them when asked. Build the docx once, after the answers, so the requested appendices are included.
+Then build with only the appendices the user explicitly approved:
+
+- **Contact sheets in the document (only if approved):** add an `appendix_contact_sheets` entry (one per chunk, or one for a single-chunk video), pulling each `contact_sheet.absolute_path` from the manifest's chunks and captioning each with its chunk time range. The builder sizes sheets so about two fit per page; you don't set width/height.
+- **Transcript in the document (only if approved):** add an `appendix_transcript` entry per video, with `path` set to that video's `manifest_lite.transcript_path`.
+
+Build the docx once, after the answers, so only the requested appendices are included.
 
 Run the builder and confirm the `.docx` exists. If a docx validator is available, run it; otherwise skip validation silently. Present the document with a `computer://` link.
 
@@ -330,6 +350,7 @@ If cleanup requested, remove per-video working directories and any spec/build sc
 - **Whisper backend failed**: when both keys exist and `--whisper` was not pinned, `process.py` tries Groq then OpenAI. If both fail, proceed frames-only.
 - **Whisper audio too large**: rerun with a focused `--start`/`--end` range or use a source with native captions.
 - **Long-video preview warning**: prefer focused reruns or quick mode rather than reading every contact sheet.
+- **yt-dlp "No supported JavaScript runtime" warning**: harmless for most sources (including any with native captions). Some sites need JS-based extraction; if a download fails for that reason, install a JS runtime yt-dlp supports (e.g. Deno) or use a local file. This is a yt-dlp requirement, not a skill bug.
 
 ## Security notes
 
