@@ -34,7 +34,7 @@ Every frame the AI reads costs tokens. Instead of reading 100+ frames individual
 
 ### Built for long videos
 
-Big videos used to time out and restart from zero. Now the skill picks up where it left off: extracted frames are reused when the source and settings haven't changed (pass `--force` to redo them), each extraction config gets its own directory so a resume never has to delete or clobber a prior run's frames (even in locked-down sandboxes), and a `status.json` plus a rolling `manifest_partial.json` record progress so an interrupted run is never a black box. A downloaded video is cached once per URL and reused across runs, so a focused rerun doesn't re-download the whole thing. Repeated end-card promos or static outros can be detected and trimmed with `--trim-static-outro`.
+Big videos used to time out and restart from zero. Now the skill picks up where it left off: extracted frames are reused when the source and settings haven't changed (pass `--force` to redo them), each extraction config gets its own directory so a resume never has to delete or clobber a prior run's frames (even in locked-down sandboxes), and a `status.json` plus a rolling `manifest_partial.json` record progress so an interrupted run is never a black box. A downloaded video is cached once per URL and reused across runs, so a focused rerun doesn't re-download the whole thing, and that cache prunes itself by age and size so it can't grow without bound (see [Privacy & security](#privacy--security)). Repeated end-card promos or static outros can be detected and trimmed with `--trim-static-outro`.
 
 ## Getting started
 
@@ -104,7 +104,7 @@ Everything runs locally on your machine. Here's exactly what goes where:
 **Stays on your computer:**
 - The video file, all extracted frames, contact sheets, and the final `.docx`
 - Your config at `~/.config/analyze-video/.env` (locked to owner-only permissions)
-- Downloaded source videos are cached at `~/.cache/analyze-video/downloads/` and reused across runs. The cache is self-managing (auto-evicted by age and total size); run `python3 scripts/setup.py --clear-cache` to wipe it yourself.
+- Downloaded source videos are cached at `~/.cache/analyze-video/downloads/` and reused across runs. The cache manages itself: at the end of each run the skill evicts entries older than 14 days and trims the total back under 5 GB (least-recently-used first), never removing a download an active run is using. Tune the limits with the `ANALYZE_VIDEO_CACHE_MAX_AGE_DAYS` and `ANALYZE_VIDEO_CACHE_MAX_GB` environment variables (set either to `0` to disable that limit), or wipe the cache yourself with `python3 scripts/setup.py --clear-cache`.
 
 **Sent to an API (only when needed):**
 - Extracted audio → Groq or OpenAI Whisper, *only* when the video has no captions and you've set up a key. The video itself never leaves your machine.
