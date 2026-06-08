@@ -16,9 +16,9 @@ You paste a link. The skill does the rest:
 3. **Builds a contact sheet** so the AI can see the whole video at a glance without burning through your context window
 4. **Reads the transcript** (or creates one via Whisper if there are no captions)
 5. **Picks the best frames** and writes a detailed, timestamped analysis
-6. **Exports a polished `.docx`** with embedded screenshots, captions, and prose (one frame per row, or two-up side by side)
+6. **Exports a polished `.docx`** with embedded screenshots, captions, and prose (one frame per row, or two-up side by side), plus an optional **PDF**
 
-Every document records the source link or file path it analyzed, and you can optionally append the contact sheet(s) and the full transcript, or keep those as standalone files next to the doc.
+Every embedded image carries required alt text, so the documents are screen-reader accessible. Each one is named after the video plus the word "analysis" (for example `how-to-bake-bread-analysis.docx`) and records the exact source link or file path it analyzed. Before building, the skill asks whether you want the contact sheet(s) and the full transcript appended *inside* the document, kept as standalone files next to it, and whether you'd like a PDF alongside the `.docx`. Everything defaults to off unless you say yes.
 
 One video or ten, it handles batches too.
 
@@ -32,9 +32,13 @@ Every frame the AI reads costs tokens. Instead of reading 100+ frames individual
 
 `/watch` and `/analyze-video` are merged into one skill flow. You run one command, the skill handles setup, processing, frame selection, analysis, and docx output end to end.
 
+### Accessible by default
+
+Word documents aren't accessible unless someone makes them so. This skill bakes it in: every embedded frame and contact sheet carries required alt text, so the output works with screen readers out of the box. It's part of the builder, not an optional extra you have to remember.
+
 ### Built for long videos
 
-Big videos used to time out and restart from zero. Now the skill picks up where it left off: extracted frames are reused when the source and settings haven't changed (pass `--force` to redo them), each extraction config gets its own directory so a resume never has to delete or clobber a prior run's frames (even in locked-down sandboxes), and a `status.json` plus a rolling `manifest_partial.json` record progress so an interrupted run is never a black box. A downloaded video is cached once per URL and reused across runs, so a focused rerun doesn't re-download the whole thing, and that cache prunes itself by age and size so it can't grow without bound (see [Privacy & security](#privacy--security)). Repeated end-card promos or static outros can be detected and trimmed with `--trim-static-outro`.
+Big videos used to time out and restart from zero. Now the skill picks up where it left off: extracted frames are reused when the source and settings haven't changed (pass `--force` to redo them), each extraction config gets its own directory so a resume never has to delete or clobber a prior run's frames (even in locked-down sandboxes), and a `status.json` plus a rolling `manifest_partial.json` record progress so an interrupted run is never a black box. A downloaded video is cached once per URL and reused across runs, so a focused rerun doesn't re-download the whole thing, and that cache prunes itself by age and size so it can't grow without bound (see [Privacy & security](#privacy--security)). Repeated end-card promos or static outros can be detected and trimmed with `--trim-static-outro`. Want a faster, cheaper pass? `--quick` trims the frame budget and skips the contact-sheet preview step.
 
 ## Getting started
 
@@ -45,6 +49,7 @@ Big videos used to time out and restart from zero. Now the skill picks up where 
 - Optionally, a **Whisper API key** for transcribing videos that don't have captions:
   - [Groq](https://console.groq.com/keys) (faster and cheaper, recommended)
   - [OpenAI](https://platform.openai.com/api-keys) (solid fallback)
+- Optionally, **LibreOffice** if you want PDF versions of the documents (the `.docx` works without it)
 
 > No API key? No problem. The skill still works on videos that have captions, and captionless videos fall back to frames-only analysis.
 
@@ -84,6 +89,7 @@ Analyze-Video-Skill/
 ├── scripts/
 │   ├── process.py               # Main pipeline entry point (download, frames, transcript)
 │   ├── download.py              # yt-dlp wrapper with error handling
+│   ├── cache_utils.py           # Self-pruning download cache (age + size eviction)
 │   ├── frames.py                # Frame extraction + contact sheet builder
 │   ├── transcribe.py            # VTT caption parser + deduplicator
 │   ├── whisper.py               # Groq/OpenAI Whisper client
