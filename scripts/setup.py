@@ -136,6 +136,11 @@ except ImportError:  # pragma: no cover
     def _resolve_tool(name: str) -> str | None:
         return shutil.which(name)
 
+try:
+    import cache_utils
+except ImportError:  # pragma: no cover
+    cache_utils = None
+
 
 def _read_env_key(name: str) -> str | None:
     if _shared_read_env_key is not None:
@@ -450,6 +455,9 @@ def _status() -> dict:
         "has_api_key": has_key,
         "docx_installed": docx_installed,
         "config_file": str(CONFIG_FILE),
+        "download_cache_bytes": (
+            cache_utils.dir_size(cache_utils.DOWNLOADS_DIR) if cache_utils is not None else 0
+        ),
         "platform": platform.system(),
     }
 
@@ -618,6 +626,37 @@ def cmd_install() -> int:
     return 0
 
 
+def _fmt_bytes(n: int) -> str:
+    val = float(n)
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if val < 1024 or unit == "TB":
+            return f"{val:.1f} {unit}" if unit != "B" else f"{int(val)} B"
+        val /= 1024
+    return f"{val:.1f} TB"
+
+
+def cmd_clear_cache() -> int:
+    """Delete all cached source-video downloads. Leaves the docx cache intact."""
+    if cache_utils is None:
+        print("[setup] cache utilities unavailable", file=sys.stderr)
+        return 2
+    result = cache_utils.clear_downloads()
+    freed = _fmt_bytes(result.get("freed_bytes", 0))
+    removed = result.get("removed", 0)
+    failed = result.get("failed", 0)
+    skipped = result.get("skipped", 0)
+    print(f"[setup] cleared download cache: removed {removed} item(s), freed {freed}")
+    if skipped:
+        print(
+            f"[setup] skipped {skipped} item(s) in use by a running analysis",
+            file=sys.stderr,
+        )
+    if failed:
+        print(f"[setup] {failed} item(s) could not be removed", file=sys.stderr)
+        return 2
+    return 0
+
+
 def main() -> int:
     if len(sys.argv) > 1:
         arg = sys.argv[1]
@@ -639,6 +678,8 @@ def main() -> int:
             ok, msg = _install_docx()
             print(f"[setup] {msg}", file=sys.stderr)
             return 0 if ok else 2
+        if arg == "--clear-cache":
+            return cmd_clear_cache()
     return cmd_install()
 
 

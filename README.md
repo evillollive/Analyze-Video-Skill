@@ -104,6 +104,7 @@ Everything runs locally on your machine. Here's exactly what goes where:
 **Stays on your computer:**
 - The video file, all extracted frames, contact sheets, and the final `.docx`
 - Your config at `~/.config/analyze-video/.env` (locked to owner-only permissions)
+- Downloaded source videos are cached at `~/.cache/analyze-video/downloads/` and reused across runs. The cache is self-managing (auto-evicted by age and total size); run `python3 scripts/setup.py --clear-cache` to wipe it yourself.
 
 **Sent to an API (only when needed):**
 - Extracted audio → Groq or OpenAI Whisper, *only* when the video has no captions and you've set up a key. The video itself never leaves your machine.

@@ -2,6 +2,15 @@
 
 All notable changes to `/analyze-video` are documented here.
 
+## [1.5.0] - 2026-06-08
+
+### Added
+- **Self-managing download cache.** The shared download cache (`~/.cache/analyze-video/downloads/`) no longer grows without bound. At the end of each run, `process.py` evicts entries older than 14 days and trims the total back under 5 GB (least-recently-used first), never removing the download the current run (or a concurrent run, via an `.in_use` lease) depends on. Limits are tunable with `ANALYZE_VIDEO_CACHE_MAX_AGE_DAYS` and `ANALYZE_VIDEO_CACHE_MAX_GB` (either set to `0` disables that limit).
+- **Manual cache clear.** `setup.py --clear-cache` wipes every cached download (reporting how much was freed) and leaves the `docx` module cache untouched. `setup.py --json` now reports `download_cache_bytes`.
+
+### Changed
+- Cache maintenance is intentionally strict: it only ever deletes directories directly under the downloads cache whose names are 16-character hex cache keys, and refuses to operate if that path is a symlink, so unrelated data (including the sibling `docx` `node_modules` cache) is never at risk.
+
 ## [1.4.0] - 2026-06-08
 
 Robustness fixes for constrained/sandboxed environments, driven by a batch of real-world run reports. Adds a constrained-Linux integration test to catch these seams in CI.

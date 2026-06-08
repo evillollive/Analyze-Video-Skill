@@ -164,6 +164,8 @@ Per-video outputs include:
 
 Downloaded URLs are cached once per URL under `~/.cache/analyze-video/downloads/<url-hash>/` and reused across runs, so a focused `--start`/`--end` rerun (even in a different `--out-dir`) does not re-download the whole video. The full video is always fetched, so timestamps stay correct. Pass `--force` to refresh a cached download, or `--no-download-cache` to keep the source under the out-dir instead.
 
+The download cache is self-managing: at the end of each run, `process.py` evicts entries older than 14 days and trims the cache back under a 5 GB total (least-recently-used first), never touching the file the current (or a concurrent) run is using. Tune the limits with `ANALYZE_VIDEO_CACHE_MAX_AGE_DAYS` and `ANALYZE_VIDEO_CACHE_MAX_GB` (set either to `0` to disable that limit). To wipe every cached download by hand, run `python3 "${CLAUDE_SKILL_DIR}/scripts/setup.py" --clear-cache` (this leaves the `docx` module cache intact). `setup.py --json` reports the current cache size as `download_cache_bytes`.
+
 ### Trimming a trailing promo/outro
 
 If a video ends with a repetitive promo or static "watch the full episode" card, `process.py` detects it and records a `trailing_promo` hint in the manifest (plus a note in `report.md`). It does not remove anything by default. To drop that block from frame extraction, re-run with `--trim-static-outro`, or target the real content with `--end`.
@@ -338,7 +340,7 @@ libreoffice --headless --convert-to pdf "$OUT_DIR/<filename>.docx" --outdir "$OU
 
 Report the kept file paths to the user.
 
-If cleanup requested, remove per-video working directories and any spec/build scratch files, but keep the `.docx`, the PDF, and any standalone files you just preserved above. Note that a downloaded URL's source video lives in the shared cache (`~/.cache/analyze-video/downloads/<url-hash>/`), not under the out-dir, so removing the out-dir won't delete it; that cache is intentionally reused across runs. Use `--no-download-cache` if you need the source kept inside the out-dir for self-contained cleanup.
+If cleanup requested, remove per-video working directories and any spec/build scratch files, but keep the `.docx`, the PDF, and any standalone files you just preserved above. Note that a downloaded URL's source video lives in the shared cache (`~/.cache/analyze-video/downloads/<url-hash>/`), not under the out-dir, so removing the out-dir won't delete it; that cache is intentionally reused across runs and is auto-pruned by age and size (see Resuming). Use `--no-download-cache` if you need the source kept inside the out-dir for self-contained cleanup, or `setup.py --clear-cache` to wipe the whole download cache now.
 
 ## Failure modes
 

@@ -36,6 +36,7 @@ SCRIPT_DIR = Path(__file__).parent.resolve()
 sys.path.insert(0, str(SCRIPT_DIR))
 
 from download import download, is_url  # noqa: E402
+import cache_utils  # noqa: E402
 from frames import (  # noqa: E402
     HARD_MAX_FRAMES,
     MAX_FPS,
@@ -62,7 +63,8 @@ PREVIEW_COST_WARNING_CHUNKS = 5
 # full download happens once and any later run (including a focused --start/--end
 # rerun in a different out-dir) reuses it instead of re-downloading. We always
 # fetch the whole video, so full_duration and absolute timestamps stay correct.
-DOWNLOAD_CACHE_DIR = Path.home() / ".cache" / "analyze-video" / "downloads"
+# cache_utils owns the canonical location and the eviction/clear logic.
+DOWNLOAD_CACHE_DIR = cache_utils.DOWNLOADS_DIR
 
 
 def _download_dir(source: str, work: Path, *, no_cache: bool) -> Path:
@@ -462,12 +464,16 @@ def main() -> int:
     )
     _write_status(work, "downloading")
     download_dir = _download_dir(args.source, work, no_cache=args.no_download_cache)
-    if is_url(args.source) and not args.no_download_cache:
+    cache_entry = download_dir if (is_url(args.source) and not args.no_download_cache) else None
+    if cache_entry is not None:
         print(
             f"[analyze-video] download cache: {download_dir} "
             f"(reused across runs; --force to refresh, --no-download-cache to opt out)",
             file=sys.stderr,
         )
+        # Lease + recency before fetching so concurrent runs and the pruner
+        # won't evict the entry this run depends on.
+        cache_utils.begin_use(cache_entry)
     dl = download(
         args.source,
         download_dir,
@@ -860,6 +866,13 @@ def main() -> int:
             partial.unlink()
         except OSError:
             pass
+
+    # Release this run's cache lease and evict old/oversized cached downloads so
+    # the shared cache doesn't grow without bound. The just-used entry is
+    # protected from eviction. Housekeeping runs even for local/no-cache sources.
+    if cache_entry is not None:
+        cache_utils.end_use(cache_entry)
+    cache_utils.prune_downloads(protect=cache_entry)
 
     # Final stdout: the lite manifest path (skill reads this; full manifest
     # path is recorded inside it under "manifest_path" if needed).
