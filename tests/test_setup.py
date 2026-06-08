@@ -72,3 +72,32 @@ class TestStatus:
             with patch.object(setup, "_check_binaries", return_value=[]):
                 with patch.object(setup, "_have_api_key", return_value=(False, None)):
                     assert setup.cmd_check() == 0
+
+
+class TestDocxAvailable:
+    def test_detects_cache_node_modules(self, tmp_path, monkeypatch):
+        cache = tmp_path / "cache" / "node_modules"
+        (cache / "docx").mkdir(parents=True)
+        (cache / "docx" / "package.json").write_text('{"name":"docx"}', encoding="utf-8")
+        monkeypatch.setattr(setup, "CACHE_NODE_MODULES", cache)
+        monkeypatch.setattr(setup, "SCRIPTS_DIR", tmp_path / "empty-scripts")
+        monkeypatch.delenv("DOCX_NODE_MODULES", raising=False)
+        monkeypatch.delenv("NODE_PATH", raising=False)
+        assert setup._docx_available() is True
+
+    def test_detects_node_path_root(self, tmp_path, monkeypatch):
+        root = tmp_path / "np"
+        (root / "docx").mkdir(parents=True)
+        (root / "docx" / "package.json").write_text('{"name":"docx"}', encoding="utf-8")
+        monkeypatch.setattr(setup, "CACHE_NODE_MODULES", tmp_path / "nope")
+        monkeypatch.setattr(setup, "SCRIPTS_DIR", tmp_path / "empty-scripts")
+        monkeypatch.delenv("DOCX_NODE_MODULES", raising=False)
+        monkeypatch.setenv("NODE_PATH", str(root))
+        assert setup._docx_available() is True
+
+    def test_absent_everywhere_is_false(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(setup, "CACHE_NODE_MODULES", tmp_path / "nope")
+        monkeypatch.setattr(setup, "SCRIPTS_DIR", tmp_path / "empty-scripts")
+        monkeypatch.delenv("DOCX_NODE_MODULES", raising=False)
+        monkeypatch.delenv("NODE_PATH", raising=False)
+        assert setup._docx_available() is False

@@ -2,6 +2,23 @@
 
 All notable changes to `/analyze-video` are documented here.
 
+## [1.1.0] - 2026-06-08
+
+Reliability fixes for long videos in sandboxed environments, a shared download cache, and a 2-up document layout. Driven by a second real-world run report.
+
+### Added
+- **Shared download cache:** a URL is now downloaded once into `~/.cache/analyze-video/downloads/<url-hash>/` and reused across runs, so a focused `--start`/`--end` rerun (even in a different `--out-dir`) no longer re-downloads the whole video. The full video is always fetched, so timestamps stay correct. New `process.py --no-download-cache` keeps the source under the out-dir instead; `--force` refreshes a cached download.
+- **2-up document layout:** `build-docx.js` accepts a `frame_layout` spec field (`"1up"` default, or `"2up"` for side-by-side frame pairs in a borderless table). Settable at the spec, video, or section level. Captions and required alt text are preserved in both layouts.
+- **Interrupted-run visibility:** `status.json` now records the in-flight `current_chunk` (written before extraction starts) and a `resume_hint`, and chunked runs print a "re-run to resume" note, so a timeout makes it obvious that re-running continues from where it stopped.
+
+### Changed
+- **Frames now extract into a signature-keyed subdirectory** (`chunks/chunk_N/frames/<sig>/`). Each distinct extraction configuration gets its own directory, so a re-run never has to delete a previous run's files and stale frames from an earlier run can't pollute the result. Always use the manifest's `absolute_path` to locate frames.
+- `setup.py` now detects an installed `docx` module across all the locations the builder actually checks (`DOCX_NODE_MODULES`, `NODE_PATH`, `scripts/node_modules`, `~/.cache/analyze-video/node_modules`, and Node's default resolution), and prints an honest "docx pending" note instead of implying everything is ready when it can't be found.
+
+### Fixed
+- **Resume no longer crashes with `PermissionError` after a timeout.** Environments that forbid cross-session file deletion previously hard-crashed when a resume tried to clear a prior run's frames. Frame extraction no longer deletes across runs at all (different configs use different directories; identical configs are safely overwritten by ffmpeg).
+- A stale subtitle or `info.json` left in the download cache can no longer be paired with a freshly downloaded video (prior artifacts are cleared before each re-download).
+
 ## [1.0.0] — 2026-06-07
 
 First stable release. Reliability, resume, and real-world failure-handling overhaul driven by a production run report.

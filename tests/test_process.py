@@ -10,6 +10,7 @@ if SCRIPTS_DIR not in sys.path:
 from process import (
     _aspect_ratio_label,
     _docx_image_dimensions,
+    _download_dir,
     _write_status,
     _write_partial_manifest,
 )
@@ -102,3 +103,25 @@ class TestWritePartialManifest:
         assert data["chunks_completed"] == 1
         assert data["transcript_segment_count"] == 42
         assert data["chunks"] == chunks
+
+
+class TestDownloadDir:
+    def test_url_uses_shared_cache_keyed_by_url(self, tmp_path):
+        url = "https://youtu.be/abc123"
+        d1 = _download_dir(url, tmp_path / "runA", no_cache=False)
+        d2 = _download_dir(url, tmp_path / "runB", no_cache=False)
+        # Same URL -> same cache dir regardless of out-dir (reuse across runs).
+        assert d1 == d2
+        assert "downloads" in d1.parts
+        # Different URL -> different cache dir.
+        other = _download_dir("https://youtu.be/zzz999", tmp_path / "runA", no_cache=False)
+        assert other != d1
+
+    def test_no_cache_uses_out_dir(self, tmp_path):
+        url = "https://youtu.be/abc123"
+        d = _download_dir(url, tmp_path / "run", no_cache=True)
+        assert d == tmp_path / "run" / "download"
+
+    def test_local_source_uses_out_dir(self, tmp_path):
+        d = _download_dir("/some/local/video.mp4", tmp_path / "run", no_cache=False)
+        assert d == tmp_path / "run" / "download"

@@ -32,7 +32,7 @@ Every frame the AI reads costs tokens. Instead of reading 100+ frames individual
 
 ### Built for long videos
 
-Big videos used to time out and restart from zero. Now the skill picks up where it left off: extracted frames are reused when the source and settings haven't changed (pass `--force` to redo them), a `status.json` and a rolling `manifest_partial.json` record progress so an interrupted run is never a black box, and repeated end-card promos or static outros can be detected and trimmed with `--trim-static-outro`.
+Big videos used to time out and restart from zero. Now the skill picks up where it left off: extracted frames are reused when the source and settings haven't changed (pass `--force` to redo them), each extraction config gets its own directory so a resume never has to delete or clobber a prior run's frames (even in locked-down sandboxes), and a `status.json` plus a rolling `manifest_partial.json` record progress so an interrupted run is never a black box. A downloaded video is cached once per URL and reused across runs, so a focused rerun doesn't re-download the whole thing. Repeated end-card promos or static outros can be detected and trimmed with `--trim-static-outro`.
 
 ## Getting started
 

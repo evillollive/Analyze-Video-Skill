@@ -106,7 +106,10 @@ function resolveDocx() {
   }
 }
 
-const { Document, Packer, Paragraph, TextRun, ImageRun } = resolveDocx();
+const {
+  Document, Packer, Paragraph, TextRun, ImageRun,
+  Table, TableRow, TableCell, WidthType, BorderStyle, TableBorders,
+} = resolveDocx();
 
 // ----------------------------------------------------------------------------
 // Paragraph helpers
@@ -187,6 +190,67 @@ function cap(text) {
   });
 }
 
+// ----------------------------------------------------------------------------
+// 2-up frame layout (side-by-side pairs in a borderless table)
+// ----------------------------------------------------------------------------
+// Max width per cell so two frames fit across the ~6.5in content column. ~300px
+// at 96dpi ≈ 3.1in, leaving room for cell margins.
+const TWO_UP_MAX_W = 300;
+
+function scaledForTwoUp(dim) {
+  const w0 = (dim && typeof dim.width === 'number' && dim.width > 0) ? dim.width : 480;
+  const h0 = (dim && typeof dim.height === 'number' && dim.height > 0) ? dim.height : 270;
+  // Clamp width to the cell; preserve aspect ratio. Honors per-frame overrides
+  // (which feed in via dim) without letting them overflow the column.
+  const scale = Math.min(1, TWO_UP_MAX_W / w0);
+  return { width: Math.max(1, Math.round(w0 * scale)), height: Math.max(1, Math.round(h0 * scale)) };
+}
+
+function noCellBorders() {
+  const none = { style: BorderStyle.NONE, size: 0, color: 'FFFFFF' };
+  return { top: none, bottom: none, left: none, right: none };
+}
+
+function frameCell(frame, videoDim) {
+  if (!frame || !frame.path) {
+    // Filler cell to balance an odd final pair (keeps the table rectangular).
+    return new TableCell({
+      children: [new Paragraph({})],
+      width: { size: 50, type: WidthType.PERCENTAGE },
+      borders: noCellBorders(),
+    });
+  }
+  const baseDim = (frame.width && frame.height)
+    ? { width: frame.width, height: frame.height }
+    : videoDim;
+  const children = [imgPara(frame.path, scaledForTwoUp(baseDim), frame.caption || 'video frame')];
+  if (frame.caption) children.push(cap(frame.caption));
+  return new TableCell({
+    children,
+    width: { size: 50, type: WidthType.PERCENTAGE },
+    borders: noCellBorders(),
+    margins: { top: 40, bottom: 120, left: 40, right: 40 },
+  });
+}
+
+// Render frames two-per-row in a borderless table. Returns an array with a
+// single Table element (or empty if there are no frames).
+function framesTwoUp(frames, videoDim) {
+  const valid = frames.filter(f => f && f.path);
+  if (valid.length === 0) return [];
+  const rows = [];
+  for (let i = 0; i < valid.length; i += 2) {
+    rows.push(new TableRow({
+      children: [frameCell(valid[i], videoDim), frameCell(valid[i + 1], videoDim)],
+    }));
+  }
+  return [new Table({
+    width: { size: 100, type: WidthType.PERCENTAGE },
+    borders: TableBorders.NONE,
+    rows,
+  })];
+}
+
 // Read intrinsic JPEG dimensions from SOF markers so contact-sheet grids keep
 // their aspect ratio (no explicit width/height needed from the caller).
 function jpegSize(buf) {
@@ -261,6 +325,9 @@ function buildChildren(spec) {
   }
 
   const globalDim = spec.image_dimensions || { width: 480, height: 270 };
+  // Frame layout: "1up" (default, one frame per row) or "2up" (side-by-side
+  // pairs). Set at the spec level and overridable per video or per section.
+  const globalLayout = spec.frame_layout === '2up' ? '2up' : '1up';
   const children = [title(spec.title)];
   if (spec.subtitle) children.push(meta(spec.subtitle));
 
@@ -269,6 +336,9 @@ function buildChildren(spec) {
     if (video.title) children.push(h1(video.title));
     if (video.meta) children.push(meta(video.meta));
     const videoDim = video.image_dimensions || globalDim;
+    const videoLayout = video.frame_layout
+      ? (video.frame_layout === '2up' ? '2up' : '1up')
+      : globalLayout;
 
     const sections = Array.isArray(video.sections) ? video.sections : [];
     for (const section of sections) {
@@ -277,6 +347,14 @@ function buildChildren(spec) {
       if (section.body) children.push(...body(section.body));
 
       const frames = Array.isArray(section.frames) ? section.frames : [];
+      const layout = section.frame_layout
+        ? (section.frame_layout === '2up' ? '2up' : '1up')
+        : videoLayout;
+
+      if (layout === '2up') {
+        children.push(...framesTwoUp(frames, videoDim));
+        continue;
+      }
       for (const frame of frames) {
         if (!frame || !frame.path) continue;
         const dim = (frame.width && frame.height)

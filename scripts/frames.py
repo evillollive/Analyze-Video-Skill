@@ -12,6 +12,7 @@ the 50-80k it would cost to Read every frame individually.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
@@ -229,6 +230,20 @@ def _extract_signature(
     }
 
 
+def _signature_key(signature: dict) -> str:
+    """Short, stable directory name derived from an extraction signature.
+
+    Each distinct set of extraction inputs (video, fps, range, etc.) maps to its
+    own frames subdirectory. This is what lets a re-run after a timeout resume
+    safely: identical inputs reuse (or overwrite) the same directory, while any
+    change in inputs lands in a *fresh* directory. Stale frames left by a prior
+    run with different inputs can never pollute the current run, and we never
+    have to delete cross-session files (some sandboxes forbid that and crash).
+    """
+    blob = json.dumps(signature, sort_keys=True).encode("utf-8")
+    return "fr_" + hashlib.sha1(blob).hexdigest()[:12]
+
+
 def _frames_from_dir(out_dir: Path, fps: float, start_seconds: float | None) -> list[dict]:
     offset = start_seconds or 0.0
     frames = sorted(out_dir.glob("frame_*.jpg"))
@@ -251,34 +266,55 @@ def extract(
     start_seconds: float | None = None,
     end_seconds: float | None = None,
     force: bool = False,
-) -> list[dict]:
+) -> tuple[list[dict], Path]:
+    """Extract frames into a signature-keyed subdirectory of out_dir.
+
+    Returns ``(frames, frames_dir)``. ``frames_dir`` is the actual directory the
+    frames live in (a fresh subdir per distinct extraction signature), which the
+    caller should use when building the contact sheet so stale frames from a
+    different run can't leak in.
+    """
     if shutil.which("ffmpeg") is None:
         raise SystemExit("ffmpeg is not installed. Install with: brew install ffmpeg")
 
     out_dir.mkdir(parents=True, exist_ok=True)
-    sig_path = out_dir / ".extract.json"
     signature = _extract_signature(
         video_path, fps, resolution, max_frames, start_seconds, end_seconds
     )
-    existing = sorted(out_dir.glob("frame_*.jpg"))
+    # Frames for this exact signature get their own directory. A run with any
+    # different input lands elsewhere, so we never delete another run's files.
+    frames_dir = out_dir / _signature_key(signature)
+    sig_path = frames_dir / ".extract.json"
+    existing = sorted(frames_dir.glob("frame_*.jpg")) if frames_dir.exists() else []
 
     # Resume: reuse a completed extraction whose inputs are unchanged. This is
     # what lets a re-run after a timeout pick up where it left off instead of
-    # deleting everything and starting from zero.
+    # restarting from zero.
     if not force and existing and sig_path.exists():
         try:
             if json.loads(sig_path.read_text()) == signature:
-                return _frames_from_dir(out_dir, fps, start_seconds)
+                return _frames_from_dir(frames_dir, fps, start_seconds), frames_dir
         except (OSError, json.JSONDecodeError):
             pass
 
-    # Inputs changed (or --force): clear stale frames before re-extracting.
-    for stale in existing:
-        stale.unlink()
-    if sig_path.exists():
-        sig_path.unlink()
+    frames_dir.mkdir(parents=True, exist_ok=True)
+    # No deletion needed: an interrupted prior run with this same signature wrote
+    # a prefix of the identical frame set, so ffmpeg's -y overwrites it exactly
+    # (same inputs => same frame count, no orphans). Best-effort tidy-up only;
+    # ignore failures because some sandboxes forbid cross-session deletes.
+    if force:
+        for stale in existing:
+            try:
+                stale.unlink()
+            except OSError:
+                pass
+    try:
+        if sig_path.exists():
+            sig_path.unlink()
+    except OSError:
+        pass
 
-    output_pattern = str(out_dir / "frame_%04d.jpg")
+    output_pattern = str(frames_dir / "frame_%04d.jpg")
     cmd: list[str] = [
         "ffmpeg",
         "-hide_banner",
@@ -306,7 +342,7 @@ def extract(
 
     # Record the signature so a later run can reuse these frames (resume).
     sig_path.write_text(json.dumps(signature))
-    return _frames_from_dir(out_dir, fps, start_seconds)
+    return _frames_from_dir(frames_dir, fps, start_seconds), frames_dir
 
 
 def make_contact_sheet(
@@ -411,7 +447,7 @@ if __name__ == "__main__":
         fps = fps_override
         target = max(1, int(round(fps * effective_duration)))
 
-    frames = extract(
+    frames, frames_dir = extract(
         video, out,
         fps=fps,
         resolution=resolution,
@@ -422,7 +458,7 @@ if __name__ == "__main__":
 
     sheet_path: str | None = None
     if contact_sheet:
-        sheet_path = str(make_contact_sheet(out, out.parent / "contact_sheet.jpg"))
+        sheet_path = str(make_contact_sheet(frames_dir, out.parent / "contact_sheet.jpg"))
 
     print(json.dumps(
         {

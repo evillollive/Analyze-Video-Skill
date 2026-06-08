@@ -214,6 +214,23 @@ def _source_marker_matches(out_dir: Path, url: str) -> bool:
     return False
 
 
+def _clear_download_artifacts(out_dir: Path) -> None:
+    """Best-effort removal of prior download artifacts in a cache directory.
+
+    Removes the video, its sidecar subtitles, info.json, and the source marker so
+    a re-download can't be paired with a leftover subtitle/title from a different
+    capture. Deletion failures are ignored (read-only/locked sandboxes); yt-dlp's
+    own overwrite still handles same-named files.
+    """
+    patterns = ("video.*", "video", ".source.json")
+    for pattern in patterns:
+        for stale in out_dir.glob(pattern):
+            try:
+                stale.unlink()
+            except OSError:
+                pass
+
+
 def download_url(
     url: str,
     out_dir: Path,
@@ -248,6 +265,12 @@ def download_url(
                 file=sys.stderr,
             )
             return _result_from_dir(out_dir, existing, url)
+
+    # We're about to (re)download into a shared, long-lived cache directory. Clear
+    # any prior artifacts first so a stale subtitle/info.json from a different
+    # capture can't get paired with the new video. Best-effort: ignore failures
+    # (some sandboxes forbid deletes) since yt-dlp's -y still overwrites by name.
+    _clear_download_artifacts(out_dir)
 
     output_template = str(out_dir / "video.%(ext)s")
 

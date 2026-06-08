@@ -23,6 +23,7 @@ analysis prose, and the .docx build. This script is one-video-at-a-time.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
 import time
@@ -54,6 +55,26 @@ from whisper import load_all_api_keys, load_api_key, transcribe_video  # noqa: E
 # Soft-warn the skill when chunking produces this many or more contact sheets,
 # because the preview cost (one Read per chunk) becomes substantial.
 PREVIEW_COST_WARNING_CHUNKS = 5
+
+# Shared, per-user cache for downloaded source videos. Keying by URL means the
+# full download happens once and any later run (including a focused --start/--end
+# rerun in a different out-dir) reuses it instead of re-downloading. We always
+# fetch the whole video, so full_duration and absolute timestamps stay correct.
+DOWNLOAD_CACHE_DIR = Path.home() / ".cache" / "analyze-video" / "downloads"
+
+
+def _download_dir(source: str, work: Path, *, no_cache: bool) -> Path:
+    """Where the source should be downloaded/resolved.
+
+    For URLs (unless --no-download-cache), this is a stable per-URL folder in the
+    shared cache so reruns reuse the download. For local files the path is
+    irrelevant (resolve_local ignores it), and --no-download-cache forces the
+    per-run out-dir for callers who want self-contained output.
+    """
+    if no_cache or not is_url(source):
+        return work / "download"
+    key = hashlib.sha256(source.encode("utf-8")).hexdigest()[:16]
+    return DOWNLOAD_CACHE_DIR / key
 
 
 def _write_status(work: Path, stage: str, **extra) -> None:
@@ -174,7 +195,7 @@ def _process_chunk(
         file=sys.stderr,
     )
 
-    chunk_frames = extract(
+    chunk_frames, chunk_frames_dir = extract(
         video_path,
         chunk_frames_dir,
         fps=chunk_fps,
@@ -362,6 +383,16 @@ def main() -> int:
             "in the manifest as a hint regardless of this flag."
         ),
     )
+    ap.add_argument(
+        "--no-download-cache",
+        action="store_true",
+        help=(
+            "Download the source into this run's out-dir instead of the shared "
+            "per-user cache. By default a URL is downloaded once into "
+            "~/.cache/analyze-video/downloads/<url-hash>/ and reused across runs "
+            "(so focused reruns don't re-download), keeping full timestamps intact."
+        ),
+    )
     args = ap.parse_args()
 
     if args.quick:
@@ -386,9 +417,16 @@ def main() -> int:
         file=sys.stderr,
     )
     _write_status(work, "downloading")
+    download_dir = _download_dir(args.source, work, no_cache=args.no_download_cache)
+    if is_url(args.source) and not args.no_download_cache:
+        print(
+            f"[analyze-video] download cache: {download_dir} "
+            f"(reused across runs; --force to refresh, --no-download-cache to opt out)",
+            file=sys.stderr,
+        )
     dl = download(
         args.source,
-        work / "download",
+        download_dir,
         cookies=args.cookies,
         cookies_from_browser=args.cookies_from_browser,
         force=args.force,
@@ -557,14 +595,35 @@ def main() -> int:
             f"of ~{int(chunk_ranges[0][1] - chunk_ranges[0][0])}s each",
             file=sys.stderr,
         )
+        print(
+            "[analyze-video] if this run is interrupted (e.g. a timeout), just "
+            "re-run the exact same command: completed chunks are reused and only "
+            "the unfinished one is redone (check status.json for progress).",
+            file=sys.stderr,
+        )
 
     # 5. Process each chunk
     info = dl.get("info") or {}
+    resume_hint = "Interrupted? Re-run the same command to resume from here."
     processed_chunks: list[dict] = []
     _write_status(
-        work, "extracting", chunk_count=len(chunk_ranges), chunks_completed=0
+        work,
+        "extracting",
+        chunk_count=len(chunk_ranges),
+        chunks_completed=0,
+        resume_hint=resume_hint,
     )
     for i, (cs, ce) in enumerate(chunk_ranges):
+        # Mark the in-flight chunk *before* extracting it, so a process killed
+        # mid-chunk leaves a status that names exactly where it stopped.
+        _write_status(
+            work,
+            "extracting",
+            chunk_count=len(chunk_ranges),
+            chunks_completed=len(processed_chunks),
+            current_chunk=i + 1,
+            resume_hint=resume_hint,
+        )
         chunk = _process_chunk(
             chunk_index=i + 1,
             chunk_count=len(chunk_ranges),
@@ -583,6 +642,7 @@ def main() -> int:
             "extracting",
             chunk_count=len(chunk_ranges),
             chunks_completed=len(processed_chunks),
+            resume_hint=resume_hint,
         )
         _write_partial_manifest(
             work,

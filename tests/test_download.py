@@ -7,7 +7,7 @@ SCRIPTS_DIR = str(Path(__file__).resolve().parent.parent / "scripts")
 if SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, SCRIPTS_DIR)
 
-from download import classify_download_error, resolve_local
+from download import classify_download_error, resolve_local, _clear_download_artifacts
 
 
 class TestClassifyDownloadError:
@@ -80,3 +80,25 @@ class TestResolveLocal:
         (tmp_path / "captions.en.vtt").write_text("WEBVTT\n", encoding="utf-8")
         res = resolve_local(str(tmp_path / "movie.mp4"))
         assert res["subtitle_path"].endswith("captions.en.vtt")
+
+
+class TestClearDownloadArtifacts:
+    def test_removes_video_subtitle_info_and_marker(self, tmp_path):
+        (tmp_path / "video.mp4").write_bytes(b"x")
+        (tmp_path / "video.en.vtt").write_text("WEBVTT\n", encoding="utf-8")
+        (tmp_path / "video.info.json").write_text("{}", encoding="utf-8")
+        (tmp_path / ".source.json").write_text("{}", encoding="utf-8")
+        # An unrelated file must be left alone.
+        (tmp_path / "keep.txt").write_text("keep", encoding="utf-8")
+
+        _clear_download_artifacts(tmp_path)
+
+        assert not (tmp_path / "video.mp4").exists()
+        assert not (tmp_path / "video.en.vtt").exists()
+        assert not (tmp_path / "video.info.json").exists()
+        assert not (tmp_path / ".source.json").exists()
+        assert (tmp_path / "keep.txt").exists()
+
+    def test_missing_dir_contents_is_noop(self, tmp_path):
+        # No artifacts present: must not raise.
+        _clear_download_artifacts(tmp_path)

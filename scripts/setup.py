@@ -32,6 +32,58 @@ CONFIG_DIR = Path.home() / ".config" / "analyze-video"
 CONFIG_FILE = CONFIG_DIR / ".env"
 SCRIPTS_DIR = Path(__file__).resolve().parent
 DOCX_NODE_MODULES = SCRIPTS_DIR / "node_modules" / "docx"
+# Writable per-user cache that build-docx.js falls back to (and installs into)
+# when the skill directory is read-only. setup must check here too, otherwise it
+# reports docx as "missing" even when the builder can resolve it fine.
+CACHE_NODE_MODULES = Path.home() / ".cache" / "analyze-video" / "node_modules"
+
+
+def _docx_roots() -> list[Path]:
+    """Directories that may contain a resolvable `docx`, mirroring build-docx.js.
+
+    Order matches the builder's resolveDocx(): DOCX_NODE_MODULES env, NODE_PATH
+    entries, scripts/node_modules, then the per-user cache. Keeping these in sync
+    is what stops setup from disagreeing with the actual builder.
+    """
+    roots: list[Path] = []
+    env_modules = os.environ.get("DOCX_NODE_MODULES")
+    if env_modules:
+        roots.append(Path(env_modules))
+    node_path = os.environ.get("NODE_PATH")
+    if node_path:
+        roots.extend(Path(p) for p in node_path.split(os.pathsep) if p)
+    roots.append(SCRIPTS_DIR / "node_modules")
+    roots.append(CACHE_NODE_MODULES)
+    return roots
+
+
+def _docx_available() -> bool:
+    """True if the `docx` npm module is resolvable from any known location."""
+    for root in _docx_roots():
+        pkg = root / "docx" / "package.json"
+        try:
+            if pkg.exists():
+                return True
+        except OSError:
+            continue
+    # Final check mirroring build-docx.js's bare require('docx'): Node's default
+    # resolution can find a docx installed in an ancestor node_modules that the
+    # explicit roots above don't cover. Best-effort; ignore if node is absent.
+    node = shutil.which("node")
+    if node:
+        try:
+            result = subprocess.run(
+                [node, "-e", "require.resolve('docx')"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                cwd=str(SCRIPTS_DIR),
+            )
+            if result.returncode == 0:
+                return True
+        except (OSError, subprocess.SubprocessError):
+            pass
+    return False
 ENV_TEMPLATE = """# /analyze-video API configuration
 #
 # Whisper transcription fallback, used only when yt-dlp cannot get captions
@@ -224,7 +276,7 @@ def _install_docx() -> tuple[bool, str]:
     resolves modules from any `node_modules/` next to the script. Installing
     once here avoids the per-session `npm init && npm install` dance.
     """
-    if DOCX_NODE_MODULES.exists():
+    if _docx_available():
         return True, "already installed"
     if shutil.which("npm") is None:
         return False, "npm not available; install Node.js first"
@@ -292,7 +344,7 @@ def _status() -> dict:
     missing = _check_binaries()
     has_key, backend = _have_api_key()
 
-    docx_installed = DOCX_NODE_MODULES.exists()
+    docx_installed = _docx_available()
 
     if not missing and docx_installed and has_key:
         status = "ready"
@@ -391,23 +443,42 @@ def cmd_install() -> int:
     has_key, backend = _have_api_key()
 
     # Always try to install the docx node module too. Failure is non-fatal:
-    # the per-session fallback in SKILL.md still works.
+    # the builder self-installs into the per-user cache on first run. But be
+    # honest about it so the agent doesn't assume the Word-doc step is wired up.
     docx_ok, docx_msg = _install_docx()
     if docx_ok:
         print(f"[setup] docx npm module: {docx_msg}")
     else:
         print(f"[setup] docx npm module: skipped ({docx_msg})", file=sys.stderr)
 
+    docx_ready = _docx_available()
+    if not docx_ready:
+        print(
+            "[setup] NOTE: the `docx` module isn't installed yet. The Word-document "
+            "step will try to install it into "
+            f"{CACHE_NODE_MODULES} on first run. If that directory isn't writable, "
+            "set NODE_PATH to a directory containing `docx` or run this setup from a "
+            "writable checkout. Frames, captions, and transcripts work regardless.",
+            file=sys.stderr,
+        )
+
     if has_key:
         _write_setup_complete()
-        print(f"[setup] ready. whisper backend: {backend}")
+        backend_note = "" if docx_ready else " (docx pending; see note above)"
+        print(f"[setup] ready. whisper backend: {backend}{backend_note}")
         if installed_deps:
             print("[setup] installed dependencies; /analyze-video is fully set up.")
         return 0
 
     print("")
     _write_setup_complete()
-    print("[setup] ready for frames and native captions. Optional: add a Whisper API key.")
+    if docx_ready:
+        print("[setup] ready for frames and native captions. Optional: add a Whisper API key.")
+    else:
+        print(
+            "[setup] ready for frames and native captions (docx pending; see note above). "
+            "Optional: add a Whisper API key."
+        )
     print("")
     print("  Easiest: re-run with the key, e.g.")
     print(f"    python3 {Path(__file__).resolve()} --set-key groq sk-...")
