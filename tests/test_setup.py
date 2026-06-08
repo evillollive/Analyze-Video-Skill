@@ -56,19 +56,15 @@ class TestSetKey:
 
 
 class TestStatus:
-    def test_ready_without_whisper_key_when_required_deps_exist(self, tmp_path):
-        docx_dir = tmp_path / "node_modules" / "docx"
-        docx_dir.mkdir(parents=True)
-        with patch.object(setup, "DOCX_NODE_MODULES", docx_dir):
+    def test_ready_without_whisper_key_when_required_deps_exist(self):
+        with patch.object(setup, "_docx_available", return_value=True):
             with patch.object(setup, "_check_binaries", return_value=[]):
                 with patch.object(setup, "_have_api_key", return_value=(False, None)):
                     status = setup._status()
                     assert status["status"] == "ready_no_whisper_key"
 
-    def test_check_succeeds_without_whisper_key(self, tmp_path):
-        docx_dir = tmp_path / "node_modules" / "docx"
-        docx_dir.mkdir(parents=True)
-        with patch.object(setup, "DOCX_NODE_MODULES", docx_dir):
+    def test_check_succeeds_without_whisper_key(self):
+        with patch.object(setup, "_docx_available", return_value=True):
             with patch.object(setup, "_check_binaries", return_value=[]):
                 with patch.object(setup, "_have_api_key", return_value=(False, None)):
                     assert setup.cmd_check() == 0
