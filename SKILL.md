@@ -22,7 +22,7 @@ Do not try to bypass platform bot detection or access controls. If a site blocks
 
 Do not read every frame. The pipeline emits per-chunk contact sheets and a lightweight manifest so you can preview the video at low cost:
 
-1. Read `manifest_lite.json` first. It omits transcript text but includes chunk/frame paths, timestamps, contact-sheet paths, `docx_image_dimensions`, `suggested_docx_name`, `transcript_path`, quick-mode flags, and the full manifest path.
+1. Read `manifest_lite.json` first. It omits transcript text AND per-frame arrays but includes chunk metadata, timestamps, contact-sheet paths, `docx_image_dimensions`, `suggested_docx_name`, `transcript_path`, quick-mode flags, and the full manifest path. (`select_frames.py` pulls per-frame paths from the full manifest for you.)
 2. Read contact sheets only when useful. For quick mode or very long videos, call `select_frames.py` directly and preview only the relevant chunks.
 3. Read selected full-resolution frames in one parallel batch per video.
 4. Read the full `manifest.json` only when transcript text is needed for direct quotes, section-writing, or transcript-boundary refinement.
@@ -146,7 +146,7 @@ python3 "${CLAUDE_SKILL_DIR}/scripts/process.py" \
 Process videos sequentially. Do not parallelize video processing; it can saturate network, CPU, disk, and token budget. `process.py` prints the path to `manifest_lite.json` on stdout. Progress and warnings go to stderr.
 
 Per-video outputs include:
-- `manifest_lite.json`: lightweight default manifest, schema v3 minus transcript text.
+- `manifest_lite.json`: lightweight default manifest, schema v3 minus transcript text and per-frame arrays.
 - `manifest.json`: full schema v3 manifest with top-level `transcript_segments`.
 - `transcript.txt`: human-readable transcript (`[mm:ss] text` per line), written whenever a transcript exists. Its path is also in `manifest_lite.transcript_path`.
 - `report.md`: human-readable pipeline report.
@@ -174,16 +174,20 @@ If a video ends with a repetitive promo or static "watch the full episode" card,
 
 After each `process.py` run:
 
-1. Read `manifest_lite.json`.
+1. Read `manifest_lite.json`. It carries chunk metadata, contact-sheet paths, timestamps, and `transcript_slice` pointers, but NOT per-frame arrays or transcript text (kept out so the file stays well under the Read-tool size limit on long videos).
 2. If `quick_mode` is true, skip contact-sheet preview unless the user asked for detailed visual analysis.
 3. Otherwise, read each relevant chunk contact sheet from `manifest_lite.chunks[].contact_sheet.absolute_path`. For very long videos, read only the chunks matching the user focus or visibly useful time ranges.
-4. Read `manifest.json` only when you need `transcript_segments`.
+4. Read `manifest.json` (the full manifest) when you need `transcript_segments` or per-frame paths.
 
-Chunk frame paths live at:
+Per-frame paths live in the full manifest at:
 
 ```text
-manifest_lite.chunks[].frames[].absolute_path
+manifest.json -> chunks[].frames[].absolute_path
 ```
+
+`select_frames.py` reads them for you (it loads the full manifest automatically via the lite file's `manifest_path` pointer), so you rarely need to open `manifest.json` by hand just to pick frames.
+
+Chunk schema field names (lite and full): `index`, `start_seconds`, `end_seconds`, `start_formatted`, `end_formatted`, `duration_seconds`, `frame_count`, `contact_sheet`, `transcript_slice`. (They are `index`/`start_formatted`/`end_formatted`, not `chunk_index`/`start_time_str`.)
 
 Transcript text lives at:
 
@@ -200,6 +204,8 @@ Use the helper instead of re-deriving the frame-selection math:
 ```bash
 python3 "${CLAUDE_SKILL_DIR}/scripts/select_frames.py" "$VIDEO_DIR/manifest_lite.json" <N>
 ```
+
+You can pass `manifest_lite.json` or `manifest.json`; the helper transparently loads the full manifest for the per-frame paths.
 
 The output is a JSON list of selected frames with `chunk_index`, `frame_index`, `absolute_path`, and timestamps. Refine the picks after looking at contact sheets when needed:
 - Shift toward visible scene transitions.
@@ -345,14 +351,15 @@ If cleanup requested, remove per-video working directories and any spec/build sc
 ## Failure modes
 
 - **Setup preflight failed**: run installer. Missing Whisper keys are optional; required local dependencies are not.
-- **Download blocked by login, age gate, bot check, members-only, or private access**: explain the specific access issue. If the user can view the video and authorizes it, retry with `--cookies-from-browser <browser>` or `--cookies <file>`. Otherwise ask for a local file.
+- **Download blocked by login, age gate, bot check, members-only, or private access**: explain the specific access issue. For public YouTube URLs, `download.py` already tries the android player client first (it bypasses YouTube's n-challenge without a JavaScript runtime and avoids the 403s the web client hits from server/cloud IPs), then falls back to the web client automatically. If access still fails and the user can view the video and authorizes it, retry with `--cookies-from-browser <browser>` or `--cookies <file>`. Otherwise ask for a local file. Note: `--cookies-from-browser` only works when yt-dlp runs on the SAME OS as the browser. In a Linux sandbox it cannot read a macOS/Windows browser's cookie store, so run yt-dlp host-side (e.g. via a Mac/Windows shell tool) for cookie-based access, then point `process.py` at the resulting local file.
 - **Rate limited**: wait before retrying. User-authorized browser cookies may help if the content is accessible in their browser.
 - **Geo restricted**: ask for a local file or another source the user can access from this environment.
-- **No transcript**: proceed frames-only and note it in the docx.
+- **No transcript**: proceed frames-only and note it in the docx. If the source is a YouTube URL but the video was processed from a separately downloaded local file (so the caption pass never ran), retrofit the transcript without re-downloading: `python3 scripts/process.py --captions-only --source <url> --out-dir <video-dir>`. This fetches auto-subs (android client), writes `transcript.txt`, and patches any existing `manifest(_lite).json` transcript fields.
 - **Whisper backend failed**: when both keys exist and `--whisper` was not pinned, `process.py` tries Groq then OpenAI. If both fail, proceed frames-only.
 - **Whisper audio too large**: rerun with a focused `--start`/`--end` range or use a source with native captions.
 - **Long-video preview warning**: prefer focused reruns or quick mode rather than reading every contact sheet.
-- **yt-dlp "No supported JavaScript runtime" warning**: harmless for most sources (including any with native captions). Some sites need JS-based extraction; if a download fails for that reason, install a JS runtime yt-dlp supports (e.g. Deno) or use a local file. This is a yt-dlp requirement, not a skill bug.
+- **yt-dlp "No supported JavaScript runtime" warning**: harmless for most sources (including any with native captions) and for public YouTube URLs (the android-first path needs no JS runtime). Some sites need JS-based extraction; if a download fails for that reason, install a JS runtime yt-dlp supports (e.g. Deno) or use a local file. This is a yt-dlp requirement, not a skill bug.
+- **yt-dlp can't find Node / n-challenge fails**: prefer a pipx/pip-installed `yt-dlp` over a frozen standalone binary. The standalone binary cannot reliably locate a system Node.js for subprocess-based extraction even with `PATH` exported, whereas the pip-installed version uses the system interpreter. `setup.py` installs the pip version.
 
 ## Security notes
 

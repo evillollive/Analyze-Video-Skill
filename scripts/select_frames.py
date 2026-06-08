@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
-"""Pick N frames to embed in the docx, given a manifest_lite.json.
+"""Pick N frames to embed in the docx, given a manifest.
 
 Encapsulates the frame-selection algorithm the skill used to inline as
 pseudocode (proportional distribution across chunks + step formula +
 min-1-per-chunk + endpoints).
 
 Usage:
-    python3 select_frames.py <manifest_lite.json> <N>
+    python3 select_frames.py <manifest_lite.json|manifest.json> <N>
+
+manifest_lite.json no longer carries per-frame arrays; this script transparently
+loads the full manifest.json (via the lite file's `manifest_path` pointer or a
+sibling manifest.json) to read frame paths.
 
 Output: JSON list to stdout, one entry per selected frame:
     [
@@ -133,16 +137,64 @@ def _emit(chunk: dict, frame: dict) -> dict:
     }
 
 
+def _chunks_have_frames(manifest: dict) -> bool:
+    for chunk in manifest.get("chunks") or []:
+        if chunk.get("frames"):
+            return True
+    return False
+
+
+def load_manifest_for_selection(path: Path) -> dict:
+    """Load a manifest for frame selection, upgrading lite -> full when needed.
+
+    manifest_lite.json no longer carries per-frame arrays, so if the loaded
+    manifest's chunks have no `frames` we resolve the full manifest.json. We try,
+    in order: the recorded `manifest_path` (absolute), that path resolved
+    relative to the lite file's directory (handles relocated output dirs), then a
+    sibling `manifest.json`. The original manifest is returned unchanged if it
+    already has frames or no fuller manifest can be found.
+    """
+    manifest = json.loads(path.read_text())
+    if not (manifest.get("chunks") and not _chunks_have_frames(manifest)):
+        return manifest
+
+    candidates: list[Path] = []
+    recorded = manifest.get("manifest_path")
+    if recorded:
+        rec = Path(recorded)
+        candidates.append(rec)
+        if not rec.is_absolute():
+            candidates.append(path.parent / rec)
+        else:
+            candidates.append(path.parent / rec.name)
+    candidates.append(path.parent / "manifest.json")
+
+    for candidate in candidates:
+        try:
+            if candidate.resolve() == path.resolve():
+                continue
+            full = json.loads(candidate.read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        if _chunks_have_frames(full):
+            return full
+
+    raise SystemExit(
+        f"{path.name} has no per-frame data and the full manifest.json could not "
+        f"be loaded from {path.parent}. Pass manifest.json directly."
+    )
+
+
 def main() -> int:
     if len(sys.argv) < 2:
         print(
-            "usage: select_frames.py <manifest_lite.json> [<N>]",
+            "usage: select_frames.py <manifest_lite.json|manifest.json> [<N>]",
             file=sys.stderr,
         )
         return 2
     manifest_path = Path(sys.argv[1])
     n = int(sys.argv[2]) if len(sys.argv) > 2 else 0
-    manifest = json.loads(manifest_path.read_text())
+    manifest = load_manifest_for_selection(manifest_path)
     picks = select(manifest, n)
     json.dump(picks, sys.stdout, indent=2)
     sys.stdout.write("\n")

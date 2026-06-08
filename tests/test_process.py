@@ -197,3 +197,65 @@ class TestWriteTranscriptFile:
     def test_all_blank_segments_returns_none(self, tmp_path):
         assert _write_transcript_file(tmp_path, [{"start": 0.0, "text": ""}]) is None
         assert not (tmp_path / "transcript.txt").exists()
+
+
+from process import (  # noqa: E402
+    _transcript_slice,
+    _patch_manifest_transcript,
+)
+
+
+def _segs():
+    return [
+        {"start": 0.0, "end": 5.0, "text": "a"},
+        {"start": 6.0, "end": 9.0, "text": "b"},
+        {"start": 11.0, "end": 14.0, "text": "c"},
+    ]
+
+
+class TestTranscriptSlice:
+    def test_empty_segments(self):
+        assert _transcript_slice([], 0, 10) == {
+            "segment_count": 0, "start_index": None, "end_index": None
+        }
+
+    def test_range_indices(self):
+        sl = _transcript_slice(_segs(), 0.0, 10.0)
+        assert sl["segment_count"] == 2
+        assert sl["start_index"] == 0
+        assert sl["end_index"] == 1
+
+    def test_out_of_range(self):
+        sl = _transcript_slice(_segs(), 100.0, 200.0)
+        assert sl["segment_count"] == 0
+
+
+class TestPatchManifestTranscript:
+    def test_patches_full_and_lite(self, tmp_path):
+        chunk = {"index": 1, "start_seconds": 0.0, "end_seconds": 10.0,
+                 "transcript_slice": {"segment_count": 0, "start_index": None, "end_index": None}}
+        (tmp_path / "manifest.json").write_text(json.dumps({
+            "transcript_source": None, "transcript_segment_count": 0,
+            "transcript_path": None, "transcript_segments": [],
+            "chunks": [dict(chunk)],
+        }))
+        (tmp_path / "manifest_lite.json").write_text(json.dumps({
+            "transcript_source": None, "transcript_segment_count": 0,
+            "transcript_path": None, "chunks": [dict(chunk)],
+        }))
+        segs = _segs()
+        _patch_manifest_transcript(tmp_path, segs, tmp_path / "transcript.txt")
+
+        full = json.loads((tmp_path / "manifest.json").read_text())
+        assert full["transcript_source"] == "captions"
+        assert full["transcript_segment_count"] == 3
+        assert full["transcript_segments"] == segs
+        assert full["chunks"][0]["transcript_slice"]["segment_count"] == 2
+
+        lite = json.loads((tmp_path / "manifest_lite.json").read_text())
+        assert lite["transcript_segment_count"] == 3
+        assert "transcript_segments" not in lite
+        assert lite["chunks"][0]["transcript_slice"]["segment_count"] == 2
+
+    def test_no_manifests_is_noop(self, tmp_path):
+        _patch_manifest_transcript(tmp_path, _segs(), tmp_path / "t.txt")  # must not raise

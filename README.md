@@ -116,7 +116,7 @@ Everything runs locally on your machine. Here's exactly what goes where:
 
 ### When a site blocks the download
 
-Some sites block unauthenticated download tools with login prompts, bot checks, age gates, members-only access, rate limits, or regional restrictions. The skill now classifies those failures and gives a specific next step instead of repeatedly retrying.
+Some sites block unauthenticated download tools with login prompts, bot checks, age gates, members-only access, rate limits, or regional restrictions. The skill now classifies those failures and gives a specific next step instead of repeatedly retrying. For public YouTube links it also tries the android player client first (which sidesteps YouTube's bot challenge from server IPs without needing a JavaScript runtime) before falling back to the default client.
 
 If you can already watch the video in your own browser and want the skill to use that authorized session, retry with one of yt-dlp's cookie options:
 
@@ -133,6 +133,12 @@ python3 scripts/process.py --source "<url>" --out-dir /tmp/video \
 ```
 
 The skill should not spoof watch sessions, forge tokens, or automate hidden browser playback to bypass bot detection. If browser cookies are not appropriate, download or screen-record the video yourself and pass the local file path.
+
+Note that `--cookies-from-browser` only works when yt-dlp runs on the same machine and OS as the browser. If you're running the skill in a sandbox or remote environment, it can't read your local browser's cookie store, so run the download host-side (where the browser lives) and pass the resulting local file. If you've already downloaded a video this way and it lost its captions, you can recover the transcript without re-downloading:
+
+```bash
+python3 scripts/process.py --captions-only --source "<url>" --out-dir /tmp/video
+```
 
 ## Contributing
 

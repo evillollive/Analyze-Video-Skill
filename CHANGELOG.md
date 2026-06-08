@@ -2,6 +2,22 @@
 
 All notable changes to `/analyze-video` are documented here.
 
+## [1.6.0] - 2026-06-08
+
+Reliability fixes driven by a real-world YouTube run inside a Linux sandbox: bot detection on cloud IPs, the 256 KB manifest Read limit, and transcript gaps on locally-downloaded files.
+
+### Added
+- **Android-first YouTube downloads.** For public YouTube URLs, `download.py` now leads with the android player client (`--extractor-args youtube:player-client=android`), which bypasses YouTube's n-challenge without a JavaScript runtime and avoids the 403s the default web client hits from server/cloud IPs. If it can't produce a usable video, it retries once with the web client. The same client is applied to the subtitle pass. When cookies are supplied, the authenticated web session is honored instead (the android client ignores cookies).
+- **`--captions-only` retrofit mode.** `process.py --captions-only --source <url> --out-dir <dir>` fetches auto-subtitles and writes `transcript.txt` without re-downloading or re-extracting the video, then patches any existing `manifest(_lite).json` transcript fields (including per-chunk slices). This recovers a transcript for an output directory whose video was processed from a separately downloaded local file.
+
+### Changed
+- **Slimmer `manifest_lite.json`.** The lite manifest no longer carries per-frame arrays (it already dropped transcript text). On long videos those arrays could push the file past the 256 KB Read-tool limit. `select_frames.py` now transparently loads the full `manifest.json` (via the lite file's `manifest_path` pointer or a sibling) to read frame paths, so the existing invocation keeps working.
+- **Download cache lease is always released.** The pipeline now runs cache `end_use` + prune in a `finally`, so a failed download (more likely now that there are two attempts) can't leave an `.in_use` lease protecting a cache entry from eviction until its TTL.
+- **Auth-aware cache reuse.** A cached anonymous download is no longer served to a later cookie-authenticated request for the same URL; the `.source.json` marker now records the auth mode and client.
+
+### Docs
+- SKILL.md documents the android-first fallback, the `--cookies-from-browser` same-OS caveat (run yt-dlp host-side in a sandbox), the preference for pip/pipx yt-dlp over a frozen binary, the `--captions-only` recovery step, and the real chunk schema field names (`index`, `start_formatted`, `end_formatted`).
+
 ## [1.5.0] - 2026-06-08
 
 ### Added

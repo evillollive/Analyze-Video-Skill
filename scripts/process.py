@@ -35,7 +35,7 @@ from pathlib import Path
 SCRIPT_DIR = Path(__file__).parent.resolve()
 sys.path.insert(0, str(SCRIPT_DIR))
 
-from download import download, is_url  # noqa: E402
+from download import download, fetch_captions, is_url  # noqa: E402
 import cache_utils  # noqa: E402
 from frames import (  # noqa: E402
     HARD_MAX_FRAMES,
@@ -325,6 +325,74 @@ def _process_chunk(
     }
 
 
+def _transcript_slice(segments: list[dict], start: float, end: float) -> dict:
+    """Index range into `segments` covering [start, end] (matches _process_chunk)."""
+    if not segments:
+        return {"segment_count": 0, "start_index": None, "end_index": None}
+    in_range = filter_range(segments, start, end)
+    if not in_range:
+        return {"segment_count": 0, "start_index": None, "end_index": None}
+    first, last = in_range[0], in_range[-1]
+    start_idx = next((i for i, s in enumerate(segments) if s is first), None)
+    end_idx = next((i for i, s in enumerate(segments) if s is last), None)
+    return {"segment_count": len(in_range), "start_index": start_idx, "end_index": end_idx}
+
+
+def _patch_manifest_transcript(
+    work: Path, segments: list[dict], transcript_path: Path | None
+) -> None:
+    """Attach a retrofitted transcript to existing manifests in `work`.
+
+    Keeps manifest.json (full segments + per-chunk slices) and manifest_lite.json
+    (slices only) internally consistent so chunk-level quoting still works.
+    """
+    source = "captions" if segments else None
+    for name in ("manifest.json", "manifest_lite.json"):
+        path = work / name
+        if not path.exists():
+            continue
+        try:
+            manifest = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        manifest["transcript_source"] = source
+        manifest["transcript_segment_count"] = len(segments)
+        manifest["transcript_path"] = str(transcript_path) if transcript_path else None
+        if name == "manifest.json":
+            manifest["transcript_segments"] = segments
+        for chunk in manifest.get("chunks") or []:
+            chunk["transcript_slice"] = _transcript_slice(
+                segments, chunk.get("start_seconds") or 0.0, chunk.get("end_seconds") or 0.0
+            )
+        path.write_text(json.dumps(manifest, indent=2))
+
+
+def _run_captions_only(args) -> int:
+    """Retrofit transcript.txt for an out-dir from a URL, without re-downloading."""
+    if not is_url(args.source):
+        raise SystemExit("--captions-only requires a URL --source")
+    work = Path(args.out_dir).expanduser().resolve()
+    work.mkdir(parents=True, exist_ok=True)
+    print(f"[analyze-video] captions-only: fetching subtitles for {args.source}", file=sys.stderr)
+    sub = fetch_captions(
+        args.source,
+        work,
+        cookies=args.cookies,
+        cookies_from_browser=args.cookies_from_browser,
+    )
+    segments = parse_vtt(str(sub))
+    if not segments:
+        raise SystemExit(f"No usable transcript parsed from {sub}")
+    transcript_file = _write_transcript_file(work, segments)
+    _patch_manifest_transcript(work, segments, transcript_file)
+    print(
+        f"[analyze-video] wrote {len(segments)} transcript segments",
+        file=sys.stderr,
+    )
+    print(str(transcript_file) if transcript_file else "")
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(
         prog="analyze-video",
@@ -439,14 +507,29 @@ def main() -> int:
             "(so focused reruns don't re-download), keeping full timestamps intact."
         ),
     )
+    ap.add_argument(
+        "--captions-only",
+        action="store_true",
+        help=(
+            "Fetch subtitles for --source (a URL) and write transcript.txt into "
+            "--out-dir without downloading the video or extracting frames. "
+            "Retrofits a transcript onto an output dir whose video came from a "
+            "local file. Patches any existing manifest(_lite).json transcript "
+            "fields so chunk-level quoting stays consistent."
+        ),
+    )
     args = ap.parse_args()
+
+    if args.cookies and args.cookies_from_browser:
+        raise SystemExit("Use only one of --cookies or --cookies-from-browser")
+
+    if args.captions_only:
+        return _run_captions_only(args)
 
     if args.quick:
         # Quick mode: trim the frame budget. The sheet itself is still produced
         # as a fallback, but the manifest signals the skill to skip the preview.
         args.max_frames = min(args.max_frames, 40)
-    if args.cookies and args.cookies_from_browser:
-        raise SystemExit("Use only one of --cookies or --cookies-from-browser")
 
     max_frames = min(args.max_frames, HARD_MAX_FRAMES)
 
@@ -474,405 +557,414 @@ def main() -> int:
         # Lease + recency before fetching so concurrent runs and the pruner
         # won't evict the entry this run depends on.
         cache_utils.begin_use(cache_entry)
-    dl = download(
-        args.source,
-        download_dir,
-        cookies=args.cookies,
-        cookies_from_browser=args.cookies_from_browser,
-        force=args.force,
-    )
-    video_path = dl["video_path"]
-    _write_status(work, "downloaded")
+    try:
+        dl = download(
+            args.source,
+            download_dir,
+            cookies=args.cookies,
+            cookies_from_browser=args.cookies_from_browser,
+            force=args.force,
+        )
+        video_path = dl["video_path"]
+        _write_status(work, "downloaded")
 
-    # 2. Probe metadata
-    meta = get_metadata(video_path)
-    full_duration = meta["duration_seconds"]
+        # 2. Probe metadata
+        meta = get_metadata(video_path)
+        full_duration = meta["duration_seconds"]
 
-    start_sec = parse_time(args.start)
-    end_sec = parse_time(args.end)
+        start_sec = parse_time(args.start)
+        end_sec = parse_time(args.end)
 
-    if start_sec is not None and start_sec < 0:
-        raise SystemExit("--start must be non-negative")
-    if end_sec is not None and start_sec is not None and end_sec <= start_sec:
-        raise SystemExit("--end must be greater than --start")
-    if full_duration > 0 and start_sec is not None and start_sec >= full_duration:
-        raise SystemExit(f"--start {start_sec:.1f}s is past end of video ({full_duration:.1f}s)")
+        if start_sec is not None and start_sec < 0:
+            raise SystemExit("--start must be non-negative")
+        if end_sec is not None and start_sec is not None and end_sec <= start_sec:
+            raise SystemExit("--end must be greater than --start")
+        if full_duration > 0 and start_sec is not None and start_sec >= full_duration:
+            raise SystemExit(f"--start {start_sec:.1f}s is past end of video ({full_duration:.1f}s)")
 
-    focused = start_sec is not None or end_sec is not None
-    effective_start = start_sec if start_sec is not None else 0.0
-    effective_end = end_sec if end_sec is not None else full_duration
-    effective_duration = max(0.0, effective_end - effective_start)
+        focused = start_sec is not None or end_sec is not None
+        effective_start = start_sec if start_sec is not None else 0.0
+        effective_end = end_sec if end_sec is not None else full_duration
+        effective_duration = max(0.0, effective_end - effective_start)
 
-    # 3. Transcript: try captions first, then Whisper. If --whisper not specified,
-    #    try preferred backend and auto-fall-back to the other one if the first
-    #    fails (rate limits, transient errors). We fetch the full-video
-    #    transcript once and slice it per chunk later.
-    full_transcript_segments: list[dict] = []
-    transcript_source: str | None = None
-    _write_status(work, "transcribing")
-    if dl.get("subtitle_path"):
-        try:
-            full_transcript_segments = parse_vtt(dl["subtitle_path"])
-            transcript_source = "captions"
-        except Exception as exc:
-            print(f"[analyze-video] subtitle parse failed: {exc}", file=sys.stderr)
+        # 3. Transcript: try captions first, then Whisper. If --whisper not specified,
+        #    try preferred backend and auto-fall-back to the other one if the first
+        #    fails (rate limits, transient errors). We fetch the full-video
+        #    transcript once and slice it per chunk later.
+        full_transcript_segments: list[dict] = []
+        transcript_source: str | None = None
+        _write_status(work, "transcribing")
+        if dl.get("subtitle_path"):
+            try:
+                full_transcript_segments = parse_vtt(dl["subtitle_path"])
+                transcript_source = "captions"
+            except Exception as exc:
+                print(f"[analyze-video] subtitle parse failed: {exc}", file=sys.stderr)
 
-    if not full_transcript_segments and not args.no_whisper:
-        if args.whisper:
-            # User pinned a specific backend; honor that, no fallback.
-            backend, api_key = load_api_key(args.whisper)
-            attempts = [(backend, api_key)] if backend and api_key else []
-        else:
-            # Auto-fallback: try Groq first, then OpenAI (or whichever keys exist).
-            available = load_all_api_keys()
-            attempts = [
-                (b, available[b])
-                for b in ("groq", "openai")
-                if b in available
-            ]
+        if not full_transcript_segments and not args.no_whisper:
+            if args.whisper:
+                # User pinned a specific backend; honor that, no fallback.
+                backend, api_key = load_api_key(args.whisper)
+                attempts = [(backend, api_key)] if backend and api_key else []
+            else:
+                # Auto-fallback: try Groq first, then OpenAI (or whichever keys exist).
+                available = load_all_api_keys()
+                attempts = [
+                    (b, available[b])
+                    for b in ("groq", "openai")
+                    if b in available
+                ]
 
-        if not attempts:
-            hint = (
-                f"--whisper {args.whisper} was set but the matching API key is missing"
-                if args.whisper
-                else "no subtitles and no Whisper API key found"
-            )
-            setup_py = SCRIPT_DIR / "setup.py"
-            print(
-                f"[analyze-video] {hint}, run `python3 {setup_py}` to enable the "
-                "Whisper fallback",
-                file=sys.stderr,
-            )
-        else:
-            for i, (backend, api_key) in enumerate(attempts):
-                try:
-                    audio_out = (
-                        _focused_audio_path(work, effective_start, effective_end)
-                        if focused
-                        else work / "audio.mp3"
-                    )
-                    full_transcript_segments, used_backend = transcribe_video(
-                        video_path,
-                        audio_out,
-                        backend=backend,
-                        api_key=api_key,
-                        start_seconds=effective_start if focused else None,
-                        end_seconds=effective_end if focused else None,
-                    )
-                    transcript_source = f"whisper ({used_backend})"
-                    break
-                except SystemExit as exc:
-                    next_attempt = attempts[i + 1] if i + 1 < len(attempts) else None
-                    if next_attempt:
-                        print(
-                            f"[analyze-video] whisper backend '{backend}' failed: {exc}; "
-                            f"falling back to '{next_attempt[0]}'",
-                            file=sys.stderr,
-                        )
-                    else:
-                        print(
-                            f"[analyze-video] whisper failed (no more backends): {exc}",
-                            file=sys.stderr,
-                        )
-
-    # 4. Decide chunking strategy.
-    #    Detect a repetitive promo/outro at the very end (advisory). When
-    #    --trim-static-outro is set on an unfocused video, exclude that block
-    #    from the content window so frame extraction skips the ad cards.
-    trailing_promo: dict | None = None
-    content_end = effective_end
-    if not focused:
-        promo = detect_trailing_promo(full_transcript_segments, full_duration)
-        if promo:
-            suggested_end = promo["start_seconds"]
-            trimmed = False
-            # Only trim if a healthy amount of real content remains, and only for
-            # high-confidence detections, so a quiet legit ending isn't dropped.
-            min_keep = max(10.0, 0.4 * full_duration)
-            can_trim = (
-                args.trim_static_outro
-                and promo.get("confidence") == "high"
-                and min_keep <= suggested_end < content_end
-            )
-            if can_trim:
-                content_end = suggested_end
-                trimmed = True
+            if not attempts:
+                hint = (
+                    f"--whisper {args.whisper} was set but the matching API key is missing"
+                    if args.whisper
+                    else "no subtitles and no Whisper API key found"
+                )
+                setup_py = SCRIPT_DIR / "setup.py"
                 print(
-                    f"[analyze-video] trimming trailing promo/outro: dropping "
-                    f"{format_time(suggested_end)} to {format_time(full_duration)} "
-                    f"({promo['reason']})",
+                    f"[analyze-video] {hint}, run `python3 {setup_py}` to enable the "
+                    "Whisper fallback",
                     file=sys.stderr,
                 )
             else:
-                low = " (low confidence)" if promo.get("confidence") == "low" else ""
-                print(
-                    f"[analyze-video] heads up{low}: {promo['reason']} starting at "
-                    f"{format_time(suggested_end)}. Re-run with "
-                    f"--end {format_time(suggested_end)} (or --trim-static-outro) "
-                    f"to skip it.",
-                    file=sys.stderr,
+                for i, (backend, api_key) in enumerate(attempts):
+                    try:
+                        audio_out = (
+                            _focused_audio_path(work, effective_start, effective_end)
+                            if focused
+                            else work / "audio.mp3"
+                        )
+                        full_transcript_segments, used_backend = transcribe_video(
+                            video_path,
+                            audio_out,
+                            backend=backend,
+                            api_key=api_key,
+                            start_seconds=effective_start if focused else None,
+                            end_seconds=effective_end if focused else None,
+                        )
+                        transcript_source = f"whisper ({used_backend})"
+                        break
+                    except SystemExit as exc:
+                        next_attempt = attempts[i + 1] if i + 1 < len(attempts) else None
+                        if next_attempt:
+                            print(
+                                f"[analyze-video] whisper backend '{backend}' failed: {exc}; "
+                                f"falling back to '{next_attempt[0]}'",
+                                file=sys.stderr,
+                            )
+                        else:
+                            print(
+                                f"[analyze-video] whisper failed (no more backends): {exc}",
+                                file=sys.stderr,
+                            )
+
+        # 4. Decide chunking strategy.
+        #    Detect a repetitive promo/outro at the very end (advisory). When
+        #    --trim-static-outro is set on an unfocused video, exclude that block
+        #    from the content window so frame extraction skips the ad cards.
+        trailing_promo: dict | None = None
+        content_end = effective_end
+        if not focused:
+            promo = detect_trailing_promo(full_transcript_segments, full_duration)
+            if promo:
+                suggested_end = promo["start_seconds"]
+                trimmed = False
+                # Only trim if a healthy amount of real content remains, and only for
+                # high-confidence detections, so a quiet legit ending isn't dropped.
+                min_keep = max(10.0, 0.4 * full_duration)
+                can_trim = (
+                    args.trim_static_outro
+                    and promo.get("confidence") == "high"
+                    and min_keep <= suggested_end < content_end
                 )
-            trailing_promo = {
-                **promo,
-                "start_formatted": format_time(promo["start_seconds"]),
-                "end_formatted": format_time(promo["end_seconds"]),
-                "suggested_end_seconds": round(suggested_end, 2),
-                "suggested_end_formatted": format_time(suggested_end),
-                "trimmed": trimmed,
-            }
+                if can_trim:
+                    content_end = suggested_end
+                    trimmed = True
+                    print(
+                        f"[analyze-video] trimming trailing promo/outro: dropping "
+                        f"{format_time(suggested_end)} to {format_time(full_duration)} "
+                        f"({promo['reason']})",
+                        file=sys.stderr,
+                    )
+                else:
+                    low = " (low confidence)" if promo.get("confidence") == "low" else ""
+                    print(
+                        f"[analyze-video] heads up{low}: {promo['reason']} starting at "
+                        f"{format_time(suggested_end)}. Re-run with "
+                        f"--end {format_time(suggested_end)} (or --trim-static-outro) "
+                        f"to skip it.",
+                        file=sys.stderr,
+                    )
+                trailing_promo = {
+                    **promo,
+                    "start_formatted": format_time(promo["start_seconds"]),
+                    "end_formatted": format_time(promo["end_seconds"]),
+                    "suggested_end_seconds": round(suggested_end, 2),
+                    "suggested_end_formatted": format_time(suggested_end),
+                    "trimmed": trimmed,
+                }
 
-    _write_status(work, "transcript_ready", transcript_source=transcript_source)
+        _write_status(work, "transcript_ready", transcript_source=transcript_source)
 
-    if focused:
-        # Focus mode bypasses chunking. Single chunk = the focus range.
-        chunk_ranges = [(effective_start, effective_end)]
-        is_focus_chunk = True
-        chunked = False
-    elif args.no_chunking or not should_chunk(content_end, focused=False):
-        # Single-chunk path (short video or chunking disabled)
-        chunk_ranges = [(0.0, content_end)]
-        is_focus_chunk = False
-        chunked = False
-    else:
-        # Auto-chunked (over the content window, which may exclude a trimmed outro)
-        chunk_ranges = compute_chunks(content_end)
-        is_focus_chunk = False
-        chunked = True
+        if focused:
+            # Focus mode bypasses chunking. Single chunk = the focus range.
+            chunk_ranges = [(effective_start, effective_end)]
+            is_focus_chunk = True
+            chunked = False
+        elif args.no_chunking or not should_chunk(content_end, focused=False):
+            # Single-chunk path (short video or chunking disabled)
+            chunk_ranges = [(0.0, content_end)]
+            is_focus_chunk = False
+            chunked = False
+        else:
+            # Auto-chunked (over the content window, which may exclude a trimmed outro)
+            chunk_ranges = compute_chunks(content_end)
+            is_focus_chunk = False
+            chunked = True
 
-    if chunked:
-        print(
-            f"[analyze-video] auto-chunking: {len(chunk_ranges)} chunks "
-            f"of ~{int(chunk_ranges[0][1] - chunk_ranges[0][0])}s each",
-            file=sys.stderr,
-        )
-        print(
-            "[analyze-video] if this run is interrupted (e.g. a timeout), just "
-            "re-run the exact same command: completed chunks are reused and only "
-            "the unfinished one is redone (check status.json for progress).",
-            file=sys.stderr,
-        )
+        if chunked:
+            print(
+                f"[analyze-video] auto-chunking: {len(chunk_ranges)} chunks "
+                f"of ~{int(chunk_ranges[0][1] - chunk_ranges[0][0])}s each",
+                file=sys.stderr,
+            )
+            print(
+                "[analyze-video] if this run is interrupted (e.g. a timeout), just "
+                "re-run the exact same command: completed chunks are reused and only "
+                "the unfinished one is redone (check status.json for progress).",
+                file=sys.stderr,
+            )
 
-    # 5. Process each chunk
-    info = dl.get("info") or {}
-    resume_hint = "Interrupted? Re-run the same command to resume from here."
-    processed_chunks: list[dict] = []
-    _write_status(
-        work,
-        "extracting",
-        chunk_count=len(chunk_ranges),
-        chunks_completed=0,
-        resume_hint=resume_hint,
-    )
-    for i, (cs, ce) in enumerate(chunk_ranges):
-        # Mark the in-flight chunk *before* extracting it, so a process killed
-        # mid-chunk leaves a status that names exactly where it stopped.
+        # 5. Process each chunk
+        info = dl.get("info") or {}
+        resume_hint = "Interrupted? Re-run the same command to resume from here."
+        processed_chunks: list[dict] = []
         _write_status(
             work,
             "extracting",
             chunk_count=len(chunk_ranges),
-            chunks_completed=len(processed_chunks),
-            current_chunk=i + 1,
+            chunks_completed=0,
             resume_hint=resume_hint,
         )
-        chunk = _process_chunk(
-            chunk_index=i + 1,
-            chunk_count=len(chunk_ranges),
-            chunk_start=cs,
-            chunk_end=ce,
-            is_focus=is_focus_chunk,
-            video_path=video_path,
-            work=work,
-            args=args,
-            max_frames=max_frames,
-            full_transcript_segments=full_transcript_segments,
-        )
-        processed_chunks.append(chunk)
-        _write_status(
-            work,
-            "extracting",
-            chunk_count=len(chunk_ranges),
-            chunks_completed=len(processed_chunks),
-            resume_hint=resume_hint,
-        )
-        _write_partial_manifest(
-            work,
-            info=info,
-            full_duration=full_duration,
-            chunk_count=len(chunk_ranges),
-            processed_chunks=processed_chunks,
-            transcript_source=transcript_source,
-            segment_count=len(full_transcript_segments),
-        )
+        for i, (cs, ce) in enumerate(chunk_ranges):
+            # Mark the in-flight chunk *before* extracting it, so a process killed
+            # mid-chunk leaves a status that names exactly where it stopped.
+            _write_status(
+                work,
+                "extracting",
+                chunk_count=len(chunk_ranges),
+                chunks_completed=len(processed_chunks),
+                current_chunk=i + 1,
+                resume_hint=resume_hint,
+            )
+            chunk = _process_chunk(
+                chunk_index=i + 1,
+                chunk_count=len(chunk_ranges),
+                chunk_start=cs,
+                chunk_end=ce,
+                is_focus=is_focus_chunk,
+                video_path=video_path,
+                work=work,
+                args=args,
+                max_frames=max_frames,
+                full_transcript_segments=full_transcript_segments,
+            )
+            processed_chunks.append(chunk)
+            _write_status(
+                work,
+                "extracting",
+                chunk_count=len(chunk_ranges),
+                chunks_completed=len(processed_chunks),
+                resume_hint=resume_hint,
+            )
+            _write_partial_manifest(
+                work,
+                info=info,
+                full_duration=full_duration,
+                chunk_count=len(chunk_ranges),
+                processed_chunks=processed_chunks,
+                transcript_source=transcript_source,
+                segment_count=len(full_transcript_segments),
+            )
 
-    aspect = _aspect_ratio_label(meta.get("width"), meta.get("height"))
-    docx_dim = _docx_image_dimensions(meta.get("width"), meta.get("height"), aspect)
+        aspect = _aspect_ratio_label(meta.get("width"), meta.get("height"))
+        docx_dim = _docx_image_dimensions(meta.get("width"), meta.get("height"), aspect)
 
-    total_frames = sum(c["frame_count"] for c in processed_chunks)
-    preview_cost_warning = chunked and len(processed_chunks) >= PREVIEW_COST_WARNING_CHUNKS
+        total_frames = sum(c["frame_count"] for c in processed_chunks)
+        preview_cost_warning = chunked and len(processed_chunks) >= PREVIEW_COST_WARNING_CHUNKS
 
-    # Standalone, human-readable transcript next to the manifest. Written whenever
-    # a transcript exists so the skill can offer it both as a doc appendix and as
-    # a kept file after cleanup.
-    transcript_file = _write_transcript_file(work, full_transcript_segments)
+        # Standalone, human-readable transcript next to the manifest. Written whenever
+        # a transcript exists so the skill can offer it both as a doc appendix and as
+        # a kept file after cleanup.
+        transcript_file = _write_transcript_file(work, full_transcript_segments)
 
-    # 6. Build full manifest (schema_version 3). Top-level segments are the
-    #    canonical transcript; per-chunk transcript is just index pointers.
-    common_fields = {
-        "schema_version": 3,
-        "source": args.source,
-        "title": info.get("title"),
-        "uploader": info.get("uploader"),
-        "url": info.get("url"),
-        "duration_seconds": round(full_duration, 2),
-        "duration_formatted": format_time(full_duration),
-        "width": meta.get("width"),
-        "height": meta.get("height"),
-        "aspect_ratio": aspect,
-        "docx_image_dimensions": docx_dim,
-        "codec": meta.get("codec"),
-        "has_audio": meta.get("has_audio"),
-        "focus_range": (
-            {
-                "start_seconds": round(effective_start, 2),
-                "end_seconds": round(effective_end, 2),
-                "start_formatted": format_time(effective_start),
-                "end_formatted": format_time(effective_end),
-            }
-            if focused
-            else None
-        ),
-        "chunked": chunked,
-        "chunk_count": len(processed_chunks),
-        "total_frame_count": total_frames,
-        "preview_cost_warning": preview_cost_warning,
-        "quick_mode": bool(args.quick),
-        "trailing_promo": trailing_promo,
-        "transcript_source": transcript_source,
-        "transcript_segment_count": len(full_transcript_segments),
-        "transcript_path": str(transcript_file) if transcript_file else None,
-        "out_dir": str(work),
-        "suggested_docx_name": _suggested_docx_name(info.get("title"), args.source),
-    }
+        # 6. Build full manifest (schema_version 3). Top-level segments are the
+        #    canonical transcript; per-chunk transcript is just index pointers.
+        common_fields = {
+            "schema_version": 3,
+            "source": args.source,
+            "title": info.get("title"),
+            "uploader": info.get("uploader"),
+            "url": info.get("url"),
+            "duration_seconds": round(full_duration, 2),
+            "duration_formatted": format_time(full_duration),
+            "width": meta.get("width"),
+            "height": meta.get("height"),
+            "aspect_ratio": aspect,
+            "docx_image_dimensions": docx_dim,
+            "codec": meta.get("codec"),
+            "has_audio": meta.get("has_audio"),
+            "focus_range": (
+                {
+                    "start_seconds": round(effective_start, 2),
+                    "end_seconds": round(effective_end, 2),
+                    "start_formatted": format_time(effective_start),
+                    "end_formatted": format_time(effective_end),
+                }
+                if focused
+                else None
+            ),
+            "chunked": chunked,
+            "chunk_count": len(processed_chunks),
+            "total_frame_count": total_frames,
+            "preview_cost_warning": preview_cost_warning,
+            "quick_mode": bool(args.quick),
+            "trailing_promo": trailing_promo,
+            "transcript_source": transcript_source,
+            "transcript_segment_count": len(full_transcript_segments),
+            "transcript_path": str(transcript_file) if transcript_file else None,
+            "out_dir": str(work),
+            "suggested_docx_name": _suggested_docx_name(info.get("title"), args.source),
+        }
 
-    manifest = {
-        **common_fields,
-        "chunks": processed_chunks,
-        "transcript_segments": full_transcript_segments,
-    }
+        manifest = {
+            **common_fields,
+            "chunks": processed_chunks,
+            "transcript_segments": full_transcript_segments,
+        }
 
-    manifest_path = work / "manifest.json"
-    manifest_path.write_text(json.dumps(manifest, indent=2))
+        manifest_path = work / "manifest.json"
+        manifest_path.write_text(json.dumps(manifest, indent=2))
 
-    # 6b. Lightweight manifest: same shape minus transcript_segments. The skill
-    #     reads this by default; only fall back to manifest.json when raw
-    #     transcript text is needed (direct quotes, boundary refinement).
-    manifest_lite = {
-        **common_fields,
-        "chunks": processed_chunks,
-        "manifest_path": str(manifest_path),
-    }
-    (work / "manifest_lite.json").write_text(json.dumps(manifest_lite, indent=2))
+        # 6b. Lightweight manifest: same shape minus the heavyweight arrays. The
+        #     skill reads this by default; it drops the full transcript segments
+        #     AND the per-chunk frames[] arrays (which dominate size on long
+        #     videos and can push the file past the 256 KB Read-tool limit).
+        #     Per-frame paths live in manifest.json; select_frames.py reads them
+        #     from there via the manifest_path pointer recorded below.
+        lite_chunks = [
+            {k: v for k, v in chunk.items() if k != "frames"}
+            for chunk in processed_chunks
+        ]
+        manifest_lite = {
+            **common_fields,
+            "chunks": lite_chunks,
+            "manifest_path": str(manifest_path),
+        }
+        (work / "manifest_lite.json").write_text(json.dumps(manifest_lite, indent=2))
 
-    # 7. Human-readable report
-    report_lines: list[str] = []
-    report_lines.append("# analyze-video: pipeline report")
-    report_lines.append("")
-    report_lines.append(f"- **Source:** {args.source}")
-    if info.get("title"):
-        report_lines.append(f"- **Title:** {info['title']}")
-    if info.get("uploader"):
-        report_lines.append(f"- **Uploader:** {info['uploader']}")
-    report_lines.append(
-        f"- **Duration:** {format_time(full_duration)} ({full_duration:.1f}s)"
-    )
-    if focused:
-        report_lines.append(
-            f"- **Focus range:** {format_time(effective_start)} to "
-            f"{format_time(effective_end)} ({effective_duration:.1f}s)"
-        )
-    if meta.get("width") and meta.get("height"):
-        report_lines.append(
-            f"- **Resolution:** {meta['width']}x{meta['height']} "
-            f"({meta.get('codec') or 'unknown codec'}{', ' + aspect if aspect else ''})"
-        )
-    if chunked:
-        report_lines.append(
-            f"- **Chunks:** {len(processed_chunks)} (auto-chunked, "
-            f"10-min windows with 5s overlap)"
-        )
-    elif focused:
-        report_lines.append("- **Mode:** focused on user-specified range")
-    else:
-        report_lines.append("- **Mode:** single-pass (under 12-minute chunking threshold)")
-    report_lines.append(
-        f"- **Total frames:** {total_frames} across {len(processed_chunks)} chunk"
-        f"{'s' if len(processed_chunks) != 1 else ''}"
-    )
-    if full_transcript_segments:
-        report_lines.append(
-            f"- **Transcript:** {len(full_transcript_segments)} segments "
-            f"(via {transcript_source or 'captions'})"
-        )
-    else:
-        report_lines.append("- **Transcript:** none available")
-    report_lines.append(f"- **Manifest:** `{manifest_path.name}`")
-    report_lines.append("")
-
-    if preview_cost_warning:
-        report_lines.append(
-            f"> **Heads up:** This video chunked into {len(processed_chunks)} "
-            f"sections. Reading every contact sheet to preview the whole video "
-            f"will cost ~{len(processed_chunks) * 7}-{len(processed_chunks) * 12}k "
-            "tokens before any frames are selected. If the user has a specific "
-            "section in mind, re-running with `--start HH:MM:SS --end HH:MM:SS` "
-            "is much cheaper."
-        )
+        # 7. Human-readable report
+        report_lines: list[str] = []
+        report_lines.append("# analyze-video: pipeline report")
         report_lines.append("")
-
-    if trailing_promo:
-        if trailing_promo["trimmed"]:
+        report_lines.append(f"- **Source:** {args.source}")
+        if info.get("title"):
+            report_lines.append(f"- **Title:** {info['title']}")
+        if info.get("uploader"):
+            report_lines.append(f"- **Uploader:** {info['uploader']}")
+        report_lines.append(
+            f"- **Duration:** {format_time(full_duration)} ({full_duration:.1f}s)"
+        )
+        if focused:
             report_lines.append(
-                f"> **Trimmed trailing promo/outro:** excluded "
-                f"{trailing_promo['suggested_end_formatted']} to "
-                f"{trailing_promo['end_formatted']} from frame extraction "
-                f"({trailing_promo['reason']})."
+                f"- **Focus range:** {format_time(effective_start)} to "
+                f"{format_time(effective_end)} ({effective_duration:.1f}s)"
+            )
+        if meta.get("width") and meta.get("height"):
+            report_lines.append(
+                f"- **Resolution:** {meta['width']}x{meta['height']} "
+                f"({meta.get('codec') or 'unknown codec'}{', ' + aspect if aspect else ''})"
+            )
+        if chunked:
+            report_lines.append(
+                f"- **Chunks:** {len(processed_chunks)} (auto-chunked, "
+                f"10-min windows with 5s overlap)"
+            )
+        elif focused:
+            report_lines.append("- **Mode:** focused on user-specified range")
+        else:
+            report_lines.append("- **Mode:** single-pass (under 12-minute chunking threshold)")
+        report_lines.append(
+            f"- **Total frames:** {total_frames} across {len(processed_chunks)} chunk"
+            f"{'s' if len(processed_chunks) != 1 else ''}"
+        )
+        if full_transcript_segments:
+            report_lines.append(
+                f"- **Transcript:** {len(full_transcript_segments)} segments "
+                f"(via {transcript_source or 'captions'})"
             )
         else:
+            report_lines.append("- **Transcript:** none available")
+        report_lines.append(f"- **Manifest:** `{manifest_path.name}`")
+        report_lines.append("")
+
+        if preview_cost_warning:
             report_lines.append(
-                f"> **Possible promo/outro detected:** {trailing_promo['reason']} "
-                f"starting at {trailing_promo['suggested_end_formatted']}. Re-run "
-                f"with `--end {trailing_promo['suggested_end_formatted']}` or "
-                f"`--trim-static-outro` to skip it."
+                f"> **Heads up:** This video chunked into {len(processed_chunks)} "
+                f"sections. Reading every contact sheet to preview the whole video "
+                f"will cost ~{len(processed_chunks) * 7}-{len(processed_chunks) * 12}k "
+                "tokens before any frames are selected. If the user has a specific "
+                "section in mind, re-running with `--start HH:MM:SS --end HH:MM:SS` "
+                "is much cheaper."
             )
-        report_lines.append("")
+            report_lines.append("")
 
-    if not full_transcript_segments:
-        setup_py = SCRIPT_DIR / "setup.py"
-        report_lines.append(
-            "_No transcript available. Captions were missing and the Whisper "
-            "fallback was unavailable (no API key set, or `--no-whisper` was used). "
-            f"Run `python3 {setup_py}` to enable Whisper, then re-run._"
-        )
-        report_lines.append("")
+        if trailing_promo:
+            if trailing_promo["trimmed"]:
+                report_lines.append(
+                    f"> **Trimmed trailing promo/outro:** excluded "
+                    f"{trailing_promo['suggested_end_formatted']} to "
+                    f"{trailing_promo['end_formatted']} from frame extraction "
+                    f"({trailing_promo['reason']})."
+                )
+            else:
+                report_lines.append(
+                    f"> **Possible promo/outro detected:** {trailing_promo['reason']} "
+                    f"starting at {trailing_promo['suggested_end_formatted']}. Re-run "
+                    f"with `--end {trailing_promo['suggested_end_formatted']}` or "
+                    f"`--trim-static-outro` to skip it."
+                )
+            report_lines.append("")
 
-    (work / "report.md").write_text("\n".join(report_lines))
+        if not full_transcript_segments:
+            setup_py = SCRIPT_DIR / "setup.py"
+            report_lines.append(
+                "_No transcript available. Captions were missing and the Whisper "
+                "fallback was unavailable (no API key set, or `--no-whisper` was used). "
+                f"Run `python3 {setup_py}` to enable Whisper, then re-run._"
+            )
+            report_lines.append("")
 
-    # Pipeline finished: mark complete and drop the partial manifest so consumers
-    # use the authoritative manifest.json.
-    _write_status(work, "complete", manifest_path=str(manifest_path))
-    partial = work / "manifest_partial.json"
-    if partial.exists():
-        try:
-            partial.unlink()
-        except OSError:
-            pass
+        (work / "report.md").write_text("\n".join(report_lines))
 
-    # Release this run's cache lease and evict old/oversized cached downloads so
-    # the shared cache doesn't grow without bound. The just-used entry is
-    # protected from eviction. Housekeeping runs even for local/no-cache sources.
-    if cache_entry is not None:
-        cache_utils.end_use(cache_entry)
-    cache_utils.prune_downloads(protect=cache_entry)
+        # Pipeline finished: mark complete and drop the partial manifest so consumers
+        # use the authoritative manifest.json.
+        _write_status(work, "complete", manifest_path=str(manifest_path))
+        partial = work / "manifest_partial.json"
+        if partial.exists():
+            try:
+                partial.unlink()
+            except OSError:
+                pass
+
+    finally:
+        # Release this run's cache lease and evict old/oversized cached
+        # downloads so the shared cache doesn't grow without bound. Runs on
+        # every exit (incl. download failure) so a lease is never leaked.
+        if cache_entry is not None:
+            cache_utils.end_use(cache_entry)
+        cache_utils.prune_downloads(protect=cache_entry)
 
     # Final stdout: the lite manifest path (skill reads this; full manifest
     # path is recorded inside it under "manifest_path" if needed).

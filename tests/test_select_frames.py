@@ -91,3 +91,66 @@ class TestSelect:
         manifest = _make_manifest([chunk], duration=50.0)
         picks = select(manifest, 10)
         assert len(picks) == 10
+
+
+import json  # noqa: E402
+import pytest  # noqa: E402
+from select_frames import load_manifest_for_selection  # noqa: E402
+
+
+def _full_manifest():
+    return {
+        "duration_seconds": 20.0,
+        "chunks": [
+            {
+                "index": 1, "duration_seconds": 20.0,
+                "frames": [
+                    {"index": 1, "absolute_path": "/f/1.jpg",
+                     "timestamp_seconds": 1.0, "timestamp_formatted": "00:01"},
+                    {"index": 2, "absolute_path": "/f/2.jpg",
+                     "timestamp_seconds": 10.0, "timestamp_formatted": "00:10"},
+                ],
+            }
+        ],
+    }
+
+
+def _lite_manifest(manifest_path):
+    return {
+        "duration_seconds": 20.0,
+        "manifest_path": manifest_path,
+        "chunks": [{"index": 1, "duration_seconds": 20.0, "frame_count": 2}],
+    }
+
+
+class TestLoadManifestForSelection:
+    def test_full_manifest_returned_as_is(self, tmp_path):
+        p = tmp_path / "manifest.json"
+        p.write_text(json.dumps(_full_manifest()))
+        loaded = load_manifest_for_selection(p)
+        assert loaded["chunks"][0]["frames"]
+
+    def test_lite_upgrades_via_manifest_path(self, tmp_path):
+        full = tmp_path / "manifest.json"
+        full.write_text(json.dumps(_full_manifest()))
+        lite = tmp_path / "manifest_lite.json"
+        lite.write_text(json.dumps(_lite_manifest(str(full))))
+        loaded = load_manifest_for_selection(lite)
+        assert len(loaded["chunks"][0]["frames"]) == 2
+        # selection works end-to-end on the upgraded manifest
+        assert select(loaded, 2)
+
+    def test_lite_upgrades_via_sibling_when_path_moved(self, tmp_path):
+        # manifest_path points somewhere stale; sibling manifest.json is the truth.
+        full = tmp_path / "manifest.json"
+        full.write_text(json.dumps(_full_manifest()))
+        lite = tmp_path / "manifest_lite.json"
+        lite.write_text(json.dumps(_lite_manifest("/gone/old/manifest.json")))
+        loaded = load_manifest_for_selection(lite)
+        assert loaded["chunks"][0]["frames"]
+
+    def test_raises_when_no_full_manifest(self, tmp_path):
+        lite = tmp_path / "manifest_lite.json"
+        lite.write_text(json.dumps(_lite_manifest("/gone/manifest.json")))
+        with pytest.raises(SystemExit):
+            load_manifest_for_selection(lite)

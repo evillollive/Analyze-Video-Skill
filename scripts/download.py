@@ -45,6 +45,15 @@ def is_url(source: str) -> bool:
     return parsed.scheme in ("http", "https")
 
 
+def is_youtube(url: str) -> bool:
+    """True for youtube.com (and subdomains) or youtu.be URLs.
+
+    Uses exact host / suffix matching so non-YouTube domains are never affected.
+    """
+    host = (urlparse(url).hostname or "").lower().rstrip(".")
+    return host == "youtu.be" or host == "youtube.com" or host.endswith(".youtube.com")
+
+
 def resolve_local(path: str) -> dict:
     p = Path(path).expanduser().resolve()
     if not p.exists():
@@ -136,6 +145,19 @@ def _pick_video(out_dir: Path) -> Path | None:
     return None
 
 
+def _valid_video(out_dir: Path) -> Path | None:
+    """A picked video that is actually present and non-empty.
+
+    yt-dlp can leave a zero-byte or fragment file behind on a failed format
+    negotiation; treating that as success would let a broken download slip
+    through to ffprobe/frame extraction instead of the web-client retry.
+    """
+    video = _pick_video(out_dir)
+    if video is not None and video.stat().st_size > 0:
+        return video
+    return None
+
+
 def classify_download_error(stderr: str) -> dict:
     """Classify common yt-dlp access failures and return actionable guidance."""
     text = (stderr or "").lower()
@@ -195,22 +217,37 @@ def _result_from_dir(out_dir: Path, video: Path, url: str) -> dict:
     }
 
 
-def _source_marker_matches(out_dir: Path, url: str) -> bool:
+def _source_marker_matches(out_dir: Path, url: str, requested_auth: str = "none") -> bool:
     """True if this out_dir's recorded download source matches `url`.
 
     Prevents reusing a previously downloaded video when the user points the same
     --out-dir at a different URL. Reuse requires positive confirmation: a
     `.source.json` marker (written on download) or a matching URL in
     video.info.json. Absent any evidence, we re-download to be safe.
+
+    `requested_auth` guards against serving a cached *anonymous* capture to an
+    authenticated request: if cookies are now supplied but the cached download
+    was unauthenticated, we re-download so the authenticated session (which may
+    expose higher quality or members-only content) is honored.
     """
     marker = out_dir / ".source.json"
     if marker.exists():
         try:
             data = json.loads(marker.read_text())
             if data.get("url"):
-                return data["url"] == url
+                if data["url"] != url:
+                    return False
+                recorded_auth = data.get("auth", "none")
+                if requested_auth != "none" and recorded_auth == "none":
+                    return False
+                return True
         except (OSError, json.JSONDecodeError):
             pass
+    # info.json alone proves the URL but not the auth mode it was fetched under.
+    # Only trust it for anonymous requests so an authenticated run never reuses
+    # an unauthenticated capture.
+    if requested_auth != "none":
+        return False
     info_path = out_dir / "video.info.json"
     if info_path.exists():
         try:
@@ -238,6 +275,44 @@ def _clear_download_artifacts(out_dir: Path) -> None:
                 pass
 
 
+def _build_ytdlp_cmd(
+    ytdlp: str,
+    url: str,
+    output_template: str,
+    *,
+    cookie_path: Path | None,
+    cookies_from_browser: str | None,
+    player_client: str | None,
+) -> list[str]:
+    """Assemble the yt-dlp command, optionally pinning a YouTube player client.
+
+    When `player_client` is set we pass it via --extractor-args; this applies to
+    the whole invocation, so the subtitle fetch uses the same client too.
+    """
+    cmd = [
+        ytdlp,
+        "-N", "8",
+        "-f", "bv*[height<=720]+ba/b[height<=720]/bv+ba/b",
+        "--merge-output-format", "mp4",
+        "--write-info-json",
+        "--write-subs",
+        "--write-auto-subs",
+        "--sub-langs", "en,en-US,en-GB,en-orig",
+        "--sub-format", "vtt",
+        "--convert-subs", "vtt",
+        "--no-playlist",
+        "-o", output_template,
+    ]
+    if player_client:
+        cmd += ["--extractor-args", f"youtube:player-client={player_client}"]
+    if cookie_path is not None:
+        cmd += ["--cookies", str(cookie_path)]
+    if cookies_from_browser:
+        cmd += ["--cookies-from-browser", cookies_from_browser]
+    cmd.append(url)
+    return cmd
+
+
 def download_url(
     url: str,
     out_dir: Path,
@@ -254,22 +329,30 @@ def download_url(
         )
     if cookies and cookies_from_browser:
         raise SystemExit("Use only one of --cookies or --cookies-from-browser")
+    cookie_path: Path | None = None
     if cookies:
         cookie_path = Path(cookies).expanduser().resolve()
         if not cookie_path.exists():
             raise SystemExit(f"Cookie file not found: {cookie_path}")
 
+    if cookies:
+        requested_auth = "cookies"
+    elif cookies_from_browser:
+        requested_auth = "cookies_from_browser"
+    else:
+        requested_auth = "none"
+
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # Resume: a video already downloaded into out_dir is reused as-is (unless
     # --force), so a re-run after a timeout doesn't re-download the whole file.
-    # Only reuse when the recorded source matches this URL.
+    # Only reuse when the recorded source matches this URL and auth mode.
     if not force:
         existing = _pick_video(out_dir)
         if (
             existing is not None
             and existing.stat().st_size > 0
-            and _source_marker_matches(out_dir, url)
+            and _source_marker_matches(out_dir, url, requested_auth)
         ):
             print(
                 f"[download] reusing existing video {existing.name} (pass --force to re-download)",
@@ -277,64 +360,167 @@ def download_url(
             )
             return _result_from_dir(out_dir, existing, url)
 
-    # We're about to (re)download into a shared, long-lived cache directory. Clear
-    # any prior artifacts first so a stale subtitle/info.json from a different
-    # capture can't get paired with the new video. Best-effort: ignore failures
-    # (some sandboxes forbid deletes) since yt-dlp's -y still overwrites by name.
-    _clear_download_artifacts(out_dir)
-
     output_template = str(out_dir / "video.%(ext)s")
 
-    cmd = [
-        ytdlp,
-        "-N", "8",
-        "-f", "bv*[height<=720]+ba/b[height<=720]/bv+ba/b",
-        "--merge-output-format", "mp4",
-        "--write-info-json",
-        "--write-subs",
-        "--write-auto-subs",
-        "--sub-langs", "en,en-US,en-GB,en-orig",
-        "--sub-format", "vtt",
-        "--convert-subs", "vtt",
-        "--no-playlist",
-        "-o", output_template,
-    ]
-    if cookies:
-        cmd += ["--cookies", str(cookie_path)]
-    if cookies_from_browser:
-        cmd += ["--cookies-from-browser", cookies_from_browser]
-    cmd.append(url)
+    # Choose the client strategy. For public YouTube URLs with no cookies we lead
+    # with the android player client: it bypasses YouTube's n-challenge without a
+    # JavaScript runtime (which sandboxed/cloud yt-dlp installs lack) and avoids
+    # the 403s the default web client hits from server IPs. If that attempt fails
+    # to produce a usable video, we retry once with the default web client. When
+    # cookies are supplied we honor the authenticated web session instead, since
+    # the android client ignores cookies.
+    if is_youtube(url) and requested_auth == "none":
+        attempts: list[str | None] = ["android", None]
+    else:
+        attempts = [None]
 
-    # yt-dlp may exit non-zero if a subtitle variant fails (e.g. 429) even when
-    # the video itself downloaded fine. Treat "video file present" as success,
-    # but warn so partial downloads don't hide silently.
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.stdout:
-        print(result.stdout, file=sys.stderr, end="" if result.stdout.endswith("\n") else "\n")
-    if result.stderr:
-        print(result.stderr, file=sys.stderr, end="" if result.stderr.endswith("\n") else "\n")
-    video = _pick_video(out_dir)
+    result: subprocess.CompletedProcess | None = None
+    video: Path | None = None
+    used_client = "web"
+    for player_client in attempts:
+        # Clear prior artifacts before each attempt so a stale subtitle/info.json
+        # or a partial file from a failed attempt can't get paired with the next
+        # download. Best-effort: ignore failures (some sandboxes forbid deletes)
+        # since yt-dlp's -y still overwrites by name.
+        _clear_download_artifacts(out_dir)
+        cmd = _build_ytdlp_cmd(
+            ytdlp,
+            url,
+            output_template,
+            cookie_path=cookie_path,
+            cookies_from_browser=cookies_from_browser,
+            player_client=player_client,
+        )
+        if player_client:
+            print(f"[download] trying yt-dlp player-client={player_client}", file=sys.stderr)
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.stdout:
+            print(result.stdout, file=sys.stderr, end="" if result.stdout.endswith("\n") else "\n")
+        if result.stderr:
+            print(result.stderr, file=sys.stderr, end="" if result.stderr.endswith("\n") else "\n")
+        video = _valid_video(out_dir)
+        if video is not None:
+            used_client = "android" if player_client == "android" else "web"
+            break
+        if player_client != attempts[-1]:
+            print(
+                "[download] no usable video from this client, retrying with the "
+                "default web client...",
+                file=sys.stderr,
+            )
+
     if video is None:
-        classified = classify_download_error((result.stdout or "") + "\n" + (result.stderr or ""))
+        out = (result.stdout or "") + "\n" + (result.stderr or "") if result else ""
+        classified = classify_download_error(out)
+        rc = result.returncode if result else -1
         raise SystemExit(
-            f"yt-dlp did not produce a video file in {out_dir} (exit {result.returncode}; "
+            f"yt-dlp did not produce a video file in {out_dir} (exit {rc}; "
             f"{classified['kind']}). {classified['guidance']}"
         )
-    if result.returncode != 0:
+    if result is not None and result.returncode != 0:
         print(
-            f"[download] WARNING: yt-dlp exited {result.returncode} but video "
-            f"file exists — subtitle fetch may have failed",
+            f"[download] WARNING: yt-dlp exited {result.returncode} but a video "
+            f"file exists; subtitle fetch may have failed",
             file=sys.stderr,
         )
 
     # Record the source so a later resume can confirm this out_dir holds *this*
-    # URL before reusing the download.
+    # URL (and auth mode) before reusing the download.
     try:
-        (out_dir / ".source.json").write_text(json.dumps({"url": url}))
+        (out_dir / ".source.json").write_text(
+            json.dumps({"url": url, "auth": requested_auth, "client": used_client})
+        )
     except OSError:
         pass
 
     return _result_from_dir(out_dir, video, url)
+
+
+def _pick_caption(out_dir: Path, stem: str) -> Path | None:
+    candidates = sorted(out_dir.glob(f"{stem}*.vtt"))
+    if not candidates:
+        return None
+    english = [c for c in candidates if ".en" in c.name.lower()]
+    return english[0] if english else candidates[0]
+
+
+def fetch_captions(
+    url: str,
+    out_dir: Path,
+    *,
+    cookies: str | None = None,
+    cookies_from_browser: str | None = None,
+) -> Path | None:
+    """Fetch subtitles only (no video download) and return the VTT path.
+
+    Retrofits a transcript for an output directory whose video was processed from
+    a local file (so the caption pass never ran). Uses the same android-first
+    strategy as download_url for public YouTube URLs.
+    """
+    ytdlp = _resolve_tool("yt-dlp")
+    if ytdlp is None:
+        raise SystemExit(
+            "yt-dlp is not installed. Install with: brew install yt-dlp (macOS), "
+            "pipx install yt-dlp, or pip install --user yt-dlp"
+        )
+    if cookies and cookies_from_browser:
+        raise SystemExit("Use only one of --cookies or --cookies-from-browser")
+    cookie_path: Path | None = None
+    if cookies:
+        cookie_path = Path(cookies).expanduser().resolve()
+        if not cookie_path.exists():
+            raise SystemExit(f"Cookie file not found: {cookie_path}")
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    stem = "captions"
+    template = str(out_dir / f"{stem}.%(ext)s")
+
+    no_auth = not (cookies or cookies_from_browser)
+    attempts: list[str | None] = ["android", None] if (is_youtube(url) and no_auth) else [None]
+
+    result: subprocess.CompletedProcess | None = None
+    for player_client in attempts:
+        # Clear any prior captions so _pick_caption only ever matches a file the
+        # current attempt produced; otherwise a stale VTT from an earlier run
+        # would short-circuit the web-client fallback and the failure path.
+        for stale in out_dir.glob(f"{stem}*.vtt"):
+            try:
+                stale.unlink()
+            except OSError:
+                pass
+        cmd = [
+            ytdlp,
+            "--skip-download",
+            "--write-subs",
+            "--write-auto-subs",
+            "--sub-langs", "en,en-US,en-GB,en-orig",
+            "--sub-format", "vtt",
+            "--convert-subs", "vtt",
+            "--no-playlist",
+            "-o", template,
+        ]
+        if player_client:
+            cmd += ["--extractor-args", f"youtube:player-client={player_client}"]
+        if cookie_path is not None:
+            cmd += ["--cookies", str(cookie_path)]
+        if cookies_from_browser:
+            cmd += ["--cookies-from-browser", cookies_from_browser]
+        cmd.append(url)
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.stdout:
+            print(result.stdout, file=sys.stderr, end="" if result.stdout.endswith("\n") else "\n")
+        if result.stderr:
+            print(result.stderr, file=sys.stderr, end="" if result.stderr.endswith("\n") else "\n")
+        sub = _pick_caption(out_dir, stem)
+        if sub is not None:
+            return sub
+
+    out = (result.stdout or "") + "\n" + (result.stderr or "") if result else ""
+    classified = classify_download_error(out)
+    raise SystemExit(
+        f"yt-dlp did not produce subtitles for {url} ({classified['kind']}). "
+        f"{classified['guidance']}"
+    )
 
 
 def download(
