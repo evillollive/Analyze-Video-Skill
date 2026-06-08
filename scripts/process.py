@@ -25,6 +25,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import sys
 import time
 from pathlib import Path
@@ -121,6 +122,27 @@ def _write_partial_manifest(
         )
     except OSError:
         pass
+
+
+def _slugify(text: str, *, max_len: int = 60) -> str:
+    """Lowercase, hyphen-separated slug safe for filenames ('' if no usable chars)."""
+    slug = re.sub(r"[^a-zA-Z0-9]+", "-", text or "").strip("-").lower()
+    if len(slug) > max_len:
+        slug = slug[:max_len].rstrip("-")
+    return slug
+
+
+def _suggested_docx_name(title: str | None, source: str) -> str:
+    """Output filename derived from the video title, always ending in '-analysis.docx'.
+
+    Falls back to the source's basename (URL tail or local file stem) when the
+    title is missing or has no slug-safe characters.
+    """
+    base = _slugify(title or "")
+    if not base:
+        stem = Path(source.split("?")[0].rstrip("/")).stem
+        base = _slugify(stem) or "video"
+    return f"{base}-analysis.docx"
 
 
 def _aspect_ratio_label(width: int | None, height: int | None) -> str | None:
@@ -695,6 +717,7 @@ def main() -> int:
         "transcript_source": transcript_source,
         "transcript_segment_count": len(full_transcript_segments),
         "out_dir": str(work),
+        "suggested_docx_name": _suggested_docx_name(info.get("title"), args.source),
     }
 
     manifest = {

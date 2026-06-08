@@ -2,6 +2,11 @@
 
 All notable changes to `/analyze-video` are documented here.
 
+## [1.2.1] - 2026-06-08
+
+### Added
+- **Title-based output naming.** The produced Word document is now named after the video(s) analyzed plus the word "analysis" (for example `how-to-bake-bread-analysis.docx`) instead of a generic `output.docx`. `process.py` emits a ready-made, slug-safe `suggested_docx_name` in the manifest (falling back to the source's basename when a title isn't available), and SKILL.md instructs the builder to use it, including a combined name for multi-video documents.
+
 ## [1.1.0] - 2026-06-08
 
 Reliability fixes for long videos in sandboxed environments, a shared download cache, and a 2-up document layout. Driven by a second real-world run report.

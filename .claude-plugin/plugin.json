@@ -1,6 +1,6 @@
 {
   "name": "analyze-video",
-  "version": "1.1.0",
+  "version": "1.2.1",
   "description": "Analyze one or more videos (URLs or local files) and produce a Word document with embedded frames and a timestamp-based written analysis.",
   "author": {
     "name": "evillollive"

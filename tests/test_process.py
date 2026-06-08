@@ -11,6 +11,8 @@ from process import (
     _aspect_ratio_label,
     _docx_image_dimensions,
     _download_dir,
+    _slugify,
+    _suggested_docx_name,
     _write_status,
     _write_partial_manifest,
 )
@@ -125,3 +127,44 @@ class TestDownloadDir:
     def test_local_source_uses_out_dir(self, tmp_path):
         d = _download_dir("/some/local/video.mp4", tmp_path / "run", no_cache=False)
         assert d == tmp_path / "run" / "download"
+
+
+class TestSuggestedDocxName:
+    def test_slugify_basic(self):
+        assert _slugify("How to Bake Bread!") == "how-to-bake-bread"
+
+    def test_slugify_collapses_and_trims_separators(self):
+        assert _slugify("  --Multiple   Spaces & Symbols--  ") == "multiple-spaces-symbols"
+
+    def test_slugify_truncates_without_trailing_hyphen(self):
+        out = _slugify("a" * 40 + " " + "b" * 40, max_len=50)
+        assert len(out) <= 50
+        assert not out.endswith("-")
+
+    def test_slugify_empty_when_no_usable_chars(self):
+        assert _slugify("???") == ""
+
+    def test_name_from_title(self):
+        assert (
+            _suggested_docx_name("My Great Video", "https://youtu.be/abc")
+            == "my-great-video-analysis.docx"
+        )
+
+    def test_falls_back_to_url_basename(self):
+        assert (
+            _suggested_docx_name(None, "https://example.com/clips/cool-clip.mp4?t=10")
+            == "cool-clip-analysis.docx"
+        )
+
+    def test_falls_back_to_local_stem(self):
+        assert (
+            _suggested_docx_name("", "/home/me/My Recording.mov")
+            == "my-recording-analysis.docx"
+        )
+
+    def test_final_fallback_is_video(self):
+        assert _suggested_docx_name("???", "???") == "video-analysis.docx"
+
+    def test_always_ends_in_analysis_docx(self):
+        for title in ["Anything", "", None, "🎬🎬🎬"]:
+            assert _suggested_docx_name(title, "src").endswith("-analysis.docx")
