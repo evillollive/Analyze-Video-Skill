@@ -22,7 +22,7 @@ Do not try to bypass platform bot detection or access controls. If a site blocks
 
 Do not read every frame. The pipeline emits per-chunk contact sheets and a lightweight manifest so you can preview the video at low cost:
 
-1. Read `manifest_lite.json` first. It omits transcript text but includes chunk/frame paths, timestamps, contact-sheet paths, `docx_image_dimensions`, `suggested_docx_name`, quick-mode flags, and the full manifest path.
+1. Read `manifest_lite.json` first. It omits transcript text but includes chunk/frame paths, timestamps, contact-sheet paths, `docx_image_dimensions`, `suggested_docx_name`, `transcript_path`, quick-mode flags, and the full manifest path.
 2. Read contact sheets only when useful. For quick mode or very long videos, call `select_frames.py` directly and preview only the relevant chunks.
 3. Read selected full-resolution frames in one parallel batch per video.
 4. Read the full `manifest.json` only when transcript text is needed for direct quotes, section-writing, or transcript-boundary refinement.
@@ -137,6 +137,7 @@ Process videos sequentially. Do not parallelize video processing; it can saturat
 Per-video outputs include:
 - `manifest_lite.json`: lightweight default manifest, schema v3 minus transcript text.
 - `manifest.json`: full schema v3 manifest with top-level `transcript_segments`.
+- `transcript.txt`: human-readable transcript (`[mm:ss] text` per line), written whenever a transcript exists. Its path is also in `manifest_lite.transcript_path`.
 - `report.md`: human-readable pipeline report.
 - `status.json`: live stage marker (`downloading`, `extracting` chunk i of N, `complete`). Useful for checking progress mid-run.
 - `manifest_partial.json`: a partial manifest written as chunks finish; present only while a run is in flight or after it was interrupted. Removed on success.
@@ -236,6 +237,7 @@ Spec shape:
   "videos": [
     {
       "title": "Video title",
+      "source": "https://youtu.be/abc123",
       "meta": "Uploader · Duration · Source URL",
       "image_dimensions": { "width": 480, "height": 270 },
       "frame_layout": "2up",
@@ -262,13 +264,23 @@ Spec shape:
       "caption": "Chronological overview, 0:00 to 10:00.",
       "alt": "Grid of evenly spaced frames from the first ten minutes."
     }
+  ],
+  "appendix_transcript": [
+    {
+      "heading": "Video title",
+      "path": "/absolute/path/transcript.txt"
+    }
   ]
 }
 ```
 
+Always set each video's `source` to the original URL or local path the user gave (use `manifest_lite.source`, or `manifest_lite.url` for URLs). The builder renders it as a readable "Source:" line under the video title so the document records exactly what was analyzed. Do not put cache or download paths here.
+
 `frame_layout` controls how section frames are arranged: `"1up"` (default) renders one full-width frame per row, while `"2up"` places frames side by side in a borderless two-column table (good for tighter, comparison-style layouts). Set it at the spec top level and optionally override it per video or per section. Captions and required alt text are preserved in both layouts.
 
 Use `manifest_lite.docx_image_dimensions` as the per-video default. `build-docx.js` handles page sizing, image embedding, captions, and required alt text. Contact sheets in `appendix_contact_sheets` keep their own aspect ratio automatically (no `width`/`height` needed).
+
+`appendix_transcript` adds a full-transcript appendix. Give each entry a `heading` and a `path` pointing at the video's `manifest_lite.transcript_path` (the `transcript.txt` the pipeline writes). The builder reads the file itself, so never paste the transcript text into the spec. Only include this when the user asked for the transcript in the document and a transcript exists (`transcript_segment_count > 0`).
 
 **If `node` reports it can't find `docx` (EACCES / `Cannot find module 'docx'`):** the skill directory is read-only, so `npm install` there fails silently. The builder already tries `DOCX_NODE_MODULES`, `NODE_PATH`, `scripts/node_modules`, and finally installs into `~/.cache/analyze-video/node_modules`. To point it at an existing install instead, run:
 
@@ -280,13 +292,18 @@ Do **not** try to `npm install` into `${CLAUDE_SKILL_DIR}/scripts`; it may be mo
 
 ## Step 8: Validate and deliver
 
+Before building the final `.docx`, ask once for the batch (skip any option that doesn't apply, and only mention the transcript options when a transcript exists, i.e. `transcript_segment_count > 0`):
+
+> "A few delivery options: should I include the contact sheet(s) as a visual appendix in the document? Include the full transcript as an appendix? Keep standalone copies of the contact sheet(s) and/or the transcript next to the document? Also want a PDF version, and should I clean up the remaining working files afterward?"
+
+Then build with the chosen appendices:
+
+- **Contact sheets in the document:** add an `appendix_contact_sheets` entry (one per chunk, or one for a single-chunk video), pulling each `contact_sheet.absolute_path` from the manifest's chunks and captioning each with its chunk time range.
+- **Transcript in the document:** add an `appendix_transcript` entry per video, with `path` set to that video's `manifest_lite.transcript_path`.
+
+Both appendices are off by default; only add them when asked. Build the docx once, after the answers, so the requested appendices are included.
+
 Run the builder and confirm the `.docx` exists. If a docx validator is available, run it; otherwise skip validation silently. Present the document with a `computer://` link.
-
-At the end, ask once:
-
-> "Want a PDF version too, should I append the contact sheet(s) as a visual appendix, and should I clean up the working files (frames, audio, source video) but keep the docx?"
-
-If the contact-sheet appendix is requested, add an `appendix_contact_sheets` entry (one per chunk, or one for a single-chunk video) before building the docx. Pull each `contact_sheet.absolute_path` from the manifest's chunks, and caption each with its chunk time range. Skip this by default unless the user asks.
 
 If PDF requested:
 
@@ -294,7 +311,14 @@ If PDF requested:
 libreoffice --headless --convert-to pdf "$OUT_DIR/<filename>.docx" --outdir "$OUT_DIR/"
 ```
 
-If cleanup requested, remove per-video working directories and any spec/build scratch files, but keep the `.docx` and PDF. Note that a downloaded URL's source video lives in the shared cache (`~/.cache/analyze-video/downloads/<url-hash>/`), not under the out-dir, so removing the out-dir won't delete it; that cache is intentionally reused across runs. Use `--no-download-cache` if you need the source kept inside the out-dir for self-contained cleanup.
+**Keeping standalone files:** if the user wants to keep the contact sheet(s) and/or the transcript as separate files, copy them next to the final document *before* any cleanup, using clear, collision-safe names:
+
+- Transcript: copy each video's `transcript_path` to `<out-dir>/<video-slug>-transcript.txt`.
+- Contact sheets: copy each `contact_sheet.absolute_path` to `<out-dir>/contact_sheets/<video-slug>-chunk-N.jpg`.
+
+Report the kept file paths to the user.
+
+If cleanup requested, remove per-video working directories and any spec/build scratch files, but keep the `.docx`, the PDF, and any standalone files you just preserved above. Note that a downloaded URL's source video lives in the shared cache (`~/.cache/analyze-video/downloads/<url-hash>/`), not under the out-dir, so removing the out-dir won't delete it; that cache is intentionally reused across runs. Use `--no-download-cache` if you need the source kept inside the out-dir for self-contained cleanup.
 
 ## Failure modes
 

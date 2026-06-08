@@ -17,6 +17,7 @@
  *   "videos": [                                      // REQUIRED, 1+
  *     {
  *       "title": "Video Title",
+ *       "source": "https://youtu.be/... or /local/path.mp4",  // shown under title
  *       "meta": "Uploader · Duration · Source URL",
  *       "image_dimensions": { "width": 480, "height": 360 },  // overrides global
  *       "sections": [
@@ -43,6 +44,13 @@
  *       "caption": "Frames 0:00–10:00",               // optional, also used as alt
  *       "alt": "Accessible description of the grid",   // optional alt override
  *       "width": 600, "height": 800                    // optional; auto from JPEG if omitted
+ *     }
+ *   ],
+ *   "appendix_transcript": [                           // optional appendix
+ *     {
+ *       "heading": "Video Title",                       // optional H2
+ *       "path": "/abs/path/transcript.txt"              // preferred: builder reads the file
+ *       // or inline: "lines": ["[0:00] ...", ...]  or  "text": "[0:00] ...\n..."
  *     }
  *   ]
  * }
@@ -126,6 +134,28 @@ function meta(text) {
   return new Paragraph({
     spacing: { before: 0, after: 260 },
     children: [new TextRun({ text, italics: true, size: 20, color: '888888', font: 'Arial' })],
+  });
+}
+
+// Readable "Source: <url-or-path>" line under a video title. Kept at normal body
+// contrast (not the faint meta grey) so the provenance of the analyzed video is
+// legible and screen-reader friendly.
+function sourceLine(text) {
+  return new Paragraph({
+    spacing: { before: 0, after: 200 },
+    children: [
+      new TextRun({ text: 'Source: ', bold: true, size: 20, color: '333333', font: 'Arial' }),
+      new TextRun({ text: String(text), size: 20, color: '333333', font: 'Arial' }),
+    ],
+  });
+}
+
+// One transcript line (already formatted, typically "[12:34] spoken text").
+// Body-sized for readability; plain text so screen readers handle it cleanly.
+function transcriptLine(text) {
+  return new Paragraph({
+    spacing: { before: 0, after: 40 },
+    children: [new TextRun({ text: String(text), size: 20, font: 'Arial' })],
   });
 }
 
@@ -315,6 +345,28 @@ function contactSheetPara(filePath, alt, explicitDim) {
 // Spec -> children
 // ----------------------------------------------------------------------------
 
+// Resolve the text lines for one transcript-appendix entry. Prefers reading a
+// local transcript file by `path` (robust for long videos: the builder reads the
+// file directly instead of the caller re-emitting huge text into the spec).
+// Falls back to an inline `lines` array or a `text` string for small snippets.
+function transcriptLinesFor(entry) {
+  if (entry && entry.path) {
+    try {
+      const raw = fs.readFileSync(entry.path, 'utf-8');
+      return raw.split(/\r?\n/).map((l) => l.replace(/\s+$/, '')).filter((l) => l.length > 0);
+    } catch (err) {
+      return [`[missing transcript file: ${entry.path}]`];
+    }
+  }
+  if (Array.isArray(entry && entry.lines)) {
+    return entry.lines.map((l) => String(l)).filter((l) => l.trim().length > 0);
+  }
+  if (entry && typeof entry.text === 'string') {
+    return entry.text.split(/\r?\n/).map((l) => l.replace(/\s+$/, '')).filter((l) => l.length > 0);
+  }
+  return [];
+}
+
 function buildChildren(spec) {
   if (!spec || typeof spec !== 'object') {
     throw new Error('spec must be an object');
@@ -334,6 +386,7 @@ function buildChildren(spec) {
   for (const video of spec.videos) {
     if (!video || typeof video !== 'object') continue;
     if (video.title) children.push(h1(video.title));
+    if (video.source) children.push(sourceLine(video.source));
     if (video.meta) children.push(meta(video.meta));
     const videoDim = video.image_dimensions || globalDim;
     const videoLayout = video.frame_layout
@@ -390,6 +443,25 @@ function buildChildren(spec) {
       const alt = sheet.alt || sheet.caption || 'contact sheet: grid of video frames';
       children.push(contactSheetPara(sheet.path, alt, dim));
       if (sheet.caption) children.push(cap(sheet.caption));
+    }
+  }
+
+  // Optional appendix: full transcript text. Off unless the spec includes it.
+  // Each entry should carry a `path` to a transcript file (preferred) or inline
+  // `lines`/`text`; entries with no resolvable content are skipped.
+  const transcripts = Array.isArray(spec.appendix_transcript) ? spec.appendix_transcript : [];
+  const resolvedTranscripts = transcripts
+    .map((entry) => ({ entry, lines: transcriptLinesFor(entry) }))
+    .filter((t) => t.lines.length > 0);
+  if (resolvedTranscripts.length > 0) {
+    children.push(h1('Transcript Appendix'));
+    children.push(...body(
+      'The full transcript of each video (or chunk) is reproduced below for '
+      + 'reference. Timestamps mark when each line is spoken.'
+    ));
+    for (const { entry, lines } of resolvedTranscripts) {
+      if (entry.heading) children.push(h2(entry.heading));
+      for (const line of lines) children.push(transcriptLine(line));
     }
   }
   return children;

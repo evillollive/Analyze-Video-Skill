@@ -18,6 +18,8 @@ You paste a link. The skill does the rest:
 5. **Picks the best frames** and writes a detailed, timestamped analysis
 6. **Exports a polished `.docx`** with embedded screenshots, captions, and prose (one frame per row, or two-up side by side)
 
+Every document records the source link or file path it analyzed, and you can optionally append the contact sheet(s) and the full transcript, or keep those as standalone files next to the doc.
+
 One video or ten, it handles batches too.
 
 ## The clever bits

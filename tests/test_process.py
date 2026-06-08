@@ -15,6 +15,7 @@ from process import (
     _suggested_docx_name,
     _write_status,
     _write_partial_manifest,
+    _write_transcript_file,
 )
 
 
@@ -168,3 +169,31 @@ class TestSuggestedDocxName:
     def test_always_ends_in_analysis_docx(self):
         for title in ["Anything", "", None, "🎬🎬🎬"]:
             assert _suggested_docx_name(title, "src").endswith("-analysis.docx")
+
+
+class TestWriteTranscriptFile:
+    def test_writes_timestamped_lines(self, tmp_path):
+        segments = [
+            {"start": 0.0, "end": 4.0, "text": "Hello world."},
+            {"start": 83.4, "end": 90.0, "text": "Later moment."},
+        ]
+        path = _write_transcript_file(tmp_path, segments)
+        assert path == tmp_path / "transcript.txt"
+        content = path.read_text(encoding="utf-8")
+        assert content == "[00:00] Hello world.\n[01:23] Later moment.\n"
+
+    def test_skips_blank_segments(self, tmp_path):
+        segments = [
+            {"start": 0.0, "text": "  "},
+            {"start": 1.0, "text": "Real line."},
+        ]
+        path = _write_transcript_file(tmp_path, segments)
+        assert path.read_text(encoding="utf-8") == "[00:01] Real line.\n"
+
+    def test_no_segments_returns_none_and_writes_nothing(self, tmp_path):
+        assert _write_transcript_file(tmp_path, []) is None
+        assert not (tmp_path / "transcript.txt").exists()
+
+    def test_all_blank_segments_returns_none(self, tmp_path):
+        assert _write_transcript_file(tmp_path, [{"start": 0.0, "text": ""}]) is None
+        assert not (tmp_path / "transcript.txt").exists()

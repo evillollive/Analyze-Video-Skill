@@ -15,6 +15,7 @@ Writes everything under --out-dir, including:
   - chunks/chunk_N/frames/frame_NNNN.jpg     : extracted frames per chunk
   - chunks/chunk_N/contact_sheet.jpg         : tiled overview per chunk
   - manifest.json                            : structured pipeline output (schema_version 3)
+  - transcript.txt                           : human-readable transcript (only if one exists)
   - report.md                                : human-readable summary
 
 The skill's SKILL.md handles multi-video orchestration, frame selection,
@@ -174,6 +175,27 @@ def _docx_image_dimensions(width: int | None, height: int | None, aspect: str | 
     if width and height:
         return {"width": 480, "height": int(round(480 * height / width))}
     return {"width": 480, "height": 270}
+
+
+def _write_transcript_file(work: Path, segments: list[dict]) -> Path | None:
+    """Write a human-readable transcript.txt (one '[time] text' line per segment).
+
+    Returns the path, or None when there are no segments. Always written when a
+    transcript exists so that keeping it after cleanup just means not deleting it.
+    """
+    if not segments:
+        return None
+    lines = []
+    for seg in segments:
+        text = (seg.get("text") or "").strip()
+        if not text:
+            continue
+        lines.append(f"[{format_time(seg.get('start') or 0.0)}] {text}")
+    if not lines:
+        return None
+    path = work / "transcript.txt"
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path
 
 
 def _focused_audio_path(work: Path, start_seconds: float, end_seconds: float) -> Path:
@@ -682,6 +704,11 @@ def main() -> int:
     total_frames = sum(c["frame_count"] for c in processed_chunks)
     preview_cost_warning = chunked and len(processed_chunks) >= PREVIEW_COST_WARNING_CHUNKS
 
+    # Standalone, human-readable transcript next to the manifest. Written whenever
+    # a transcript exists so the skill can offer it both as a doc appendix and as
+    # a kept file after cleanup.
+    transcript_file = _write_transcript_file(work, full_transcript_segments)
+
     # 6. Build full manifest (schema_version 3). Top-level segments are the
     #    canonical transcript; per-chunk transcript is just index pointers.
     common_fields = {
@@ -716,6 +743,7 @@ def main() -> int:
         "trailing_promo": trailing_promo,
         "transcript_source": transcript_source,
         "transcript_segment_count": len(full_transcript_segments),
+        "transcript_path": str(transcript_file) if transcript_file else None,
         "out_dir": str(work),
         "suggested_docx_name": _suggested_docx_name(info.get("title"), args.source),
     }

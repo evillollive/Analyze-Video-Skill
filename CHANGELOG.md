@@ -2,6 +2,14 @@
 
 All notable changes to `/analyze-video` are documented here.
 
+## [1.3.0] - 2026-06-08
+
+### Added
+- **Source recorded in the document.** Each video's analysis now shows a readable "Source:" line (the original URL or local path) directly under its title, so the finished document records exactly what was analyzed. Driven by a new per-video `source` spec field.
+- **Standalone transcript file.** When a transcript is available, `process.py` writes a human-readable `transcript.txt` (`[mm:ss] text` per line) next to the manifest and exposes its location as `transcript_path`.
+- **Optional transcript appendix.** `build-docx.js` accepts an `appendix_transcript` array; each entry points at a `transcript.txt` by `path` (the builder reads the file directly, so long transcripts don't bloat the spec) with inline `lines`/`text` as a fallback.
+- **Keep-artifacts options.** At delivery the skill now offers to include the contact sheet(s) and/or the full transcript as in-document appendices, and to keep standalone copies (slug-named, collision-safe) next to the finished document even when the working files are cleaned up.
+
 ## [1.2.1] - 2026-06-08
 
 ### Added
