@@ -188,16 +188,7 @@ function imgPara(filePath, dim, alt) {
   const w = (dim && typeof dim.width === 'number' && dim.width > 0) ? dim.width : 480;
   const h = (dim && typeof dim.height === 'number' && dim.height > 0) ? dim.height : 270;
   const transformation = { width: w, height: h };
-  if (!fs.existsSync(filePath)) {
-    // Skip missing frames gracefully — return a placeholder caption
-    return new Paragraph({
-      spacing: { before: 220, after: 0 },
-      children: [new TextRun({
-        text: `[missing frame: ${filePath}]`,
-        italics: true, size: 18, color: 'CC0000', font: 'Arial',
-      })],
-    });
-  }
+  if (!fs.existsSync(filePath)) throw new Error(`missing frame: ${filePath}`);
   return new Paragraph({
     spacing: { before: 220, after: 0 },
     children: [new ImageRun({
@@ -370,6 +361,69 @@ function transcriptLinesFor(entry) {
   return [];
 }
 
+function validateSpecPaths(spec) {
+  const issues = [];
+  const videos = Array.isArray(spec.videos) ? spec.videos : [];
+  for (let vi = 0; vi < videos.length; vi += 1) {
+    const video = videos[vi] || {};
+    const sections = Array.isArray(video.sections) ? video.sections : [];
+    for (let si = 0; si < sections.length; si += 1) {
+      const section = sections[si] || {};
+      const frames = Array.isArray(section.frames) ? section.frames : [];
+      for (let fi = 0; fi < frames.length; fi += 1) {
+        const frame = frames[fi];
+        const label = `videos[${vi}].sections[${si}].frames[${fi}].path`;
+        if (!frame || !frame.path) {
+          issues.push(`${label}: missing required path`);
+          continue;
+        }
+        if (!path.isAbsolute(frame.path)) {
+          issues.push(`${label}: not absolute: ${frame.path}`);
+          continue;
+        }
+        if (!fs.existsSync(frame.path)) {
+          issues.push(`${label}: file not found: ${frame.path}`);
+        }
+      }
+    }
+  }
+
+  const sheets = Array.isArray(spec.appendix_contact_sheets) ? spec.appendix_contact_sheets : [];
+  for (let i = 0; i < sheets.length; i += 1) {
+    const sheet = sheets[i];
+    const label = `appendix_contact_sheets[${i}].path`;
+    if (!sheet || !sheet.path) {
+      issues.push(`${label}: missing required path`);
+      continue;
+    }
+    if (!path.isAbsolute(sheet.path)) {
+      issues.push(`${label}: not absolute: ${sheet.path}`);
+      continue;
+    }
+    if (!fs.existsSync(sheet.path)) {
+      issues.push(`${label}: file not found: ${sheet.path}`);
+    }
+  }
+
+  const transcripts = Array.isArray(spec.appendix_transcript) ? spec.appendix_transcript : [];
+  for (let i = 0; i < transcripts.length; i += 1) {
+    const t = transcripts[i];
+    const label = `appendix_transcript[${i}].path`;
+    if (!t || !t.path) continue; // inline text/lines are valid alternatives
+    if (!path.isAbsolute(t.path)) {
+      issues.push(`${label}: not absolute: ${t.path}`);
+      continue;
+    }
+    if (!fs.existsSync(t.path)) {
+      issues.push(`${label}: file not found: ${t.path}`);
+    }
+  }
+
+  if (issues.length) {
+    throw new Error(`spec path validation failed:\n- ${issues.join('\n- ')}`);
+  }
+}
+
 function buildChildren(spec) {
   if (!spec || typeof spec !== 'object') {
     throw new Error('spec must be an object');
@@ -471,6 +525,7 @@ function buildChildren(spec) {
 }
 
 async function buildDoc(spec) {
+  validateSpecPaths(spec);
   const children = buildChildren(spec);
   const doc = new Document({
     sections: [{

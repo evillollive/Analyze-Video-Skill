@@ -263,7 +263,7 @@ python3 "${SKILL_DIR}/scripts/validate_spec_paths.py" --spec "$OUT_DIR/spec.json
 node "${SKILL_DIR}/scripts/build-docx.js" --spec "$OUT_DIR/spec.json"
 ```
 
-`validate_spec_paths.py` is mandatory. It verifies that all spec-referenced frame/contact-sheet/transcript paths are absolute and exist before doc build.
+`validate_spec_paths.py` is mandatory. It verifies that all spec-referenced frame/contact-sheet/transcript paths are absolute and exist before doc build. `build-docx.js` now enforces the same checks and fails fast if stale or missing paths slip through.
 
 Name the output document after the video and the word "analysis". For a single video, use the manifest's `suggested_docx_name` (already slug-safe and title-based, e.g. `how-to-bake-bread-analysis.docx`) and place it in the out-dir, so `out` is `"$OUT_DIR/<suggested_docx_name>"`. For a combined multi-video doc, build a similar name from the videos analyzed (for example the first video's title slug plus `-and-2-more`) and always end it with `-analysis.docx`.
 
