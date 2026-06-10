@@ -2,6 +2,20 @@
 
 All notable changes to `/analyze-video` are documented here.
 
+## [1.6.2] - 2026-06-10
+
+Patch release focused on workflow hardening for mixed-host execution and safer docx spec builds.
+
+### Added
+- **Pre-build spec path validator.** Added `scripts/validate_spec_paths.py` to verify that all frame, contact-sheet, and transcript file paths referenced by `spec.json` are absolute and exist before running `build-docx.js`.
+- **Spec-validator test coverage.** Added `tests/test_validate_spec_paths.py` with pass/fail cases for existing paths, missing files, and relative paths.
+
+### Changed
+- **SKILL workflow contract for host/sandbox runs.** `SKILL.md` now explicitly requires setup and processing to run on the same host environment, with a host-side `setup.py --check` revalidation step before processing when execution context changes.
+- **Long-run execution guidance.** `SKILL.md` now documents that short-timeout shells should not be used for long video processing and directs long runs to a host-side tool.
+- **Frame-selection and build gating hardening.** `SKILL.md` now requires running `select_frames.py` in the current session, and requires running `validate_spec_paths.py` before invoking `build-docx.js`.
+- **Failure-mode guidance expansion.** Added explicit troubleshooting for setup/process host mismatch, PATH drift after Linux installs, and stale prior-session frame paths.
+
 ## [1.6.1] - 2026-06-10
 
 Patch release focused on local-file workflows when the original source was a URL.
