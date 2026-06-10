@@ -41,6 +41,16 @@ SKILL_DIR="${CLAUDE_SKILL_DIR:-$(cd "$(dirname "$0")" 2>/dev/null && pwd)}"
 
 Use `"$SKILL_DIR/scripts/..."` consistently. Never hardcode `~/.cache/analyze-video/scripts/...`; runnable scripts live under `"$SKILL_DIR/scripts/"`.
 
+Execution host contract:
+- `setup.py` and `process.py` must run on the same host environment.
+- If preflight/setup ran in a sandbox but processing will run host-side (for example via Desktop Commander), run preflight again on the host before processing:
+
+```bash
+python3 "${SKILL_DIR}/scripts/setup.py" --check
+```
+
+- Treat setup state as host-local. Do not assume a sandbox "ready" state applies to the host machine.
+
 Run once per session:
 
 ```bash
@@ -83,11 +93,12 @@ Infer focus ranges from the request and pass them with `--start` and `--end`. Do
 
 Ask once for the batch:
 
-1. **Frames per video** if the user did not specify. Suggest:
+1. **Frames per video** if the user did not specify. This is a required question unless the user explicitly says "pick for me" or equivalent. Suggest:
    - Under 2 min: 6 to 8
    - 2 to 5 min: 8 to 12
    - 5 to 15 min: 12 to 20
    - Over 15 min: 16 to 25, or a focused range
+   If the user explicitly delegates frame-count choice, default to 20 for videos over 15 minutes and state that assumption.
 2. **Output format** only for 2+ videos:
    - One combined `.docx` (default)
    - Separate `.docx` per video
@@ -144,6 +155,10 @@ python3 "${SKILL_DIR}/scripts/process.py" \
 ```
 
 If `--source` is a local file downloaded from a URL, also pass `--source-url "<original-url>"` so `process.py` can auto-recover the real title and captions transcript.
+
+Tool-runtime constraint:
+- If the execution shell has a short timeout budget (for example 45 seconds), do not run full-length processing there.
+- For long videos, run `process.py` in a host-side shell tool that can complete long-running commands, then continue analysis from the produced manifests.
 
 Process videos sequentially. Do not parallelize video processing; it can saturate network, CPU, disk, and token budget. `process.py` prints the path to `manifest_lite.json` on stdout. Progress and warnings go to stderr.
 
@@ -209,6 +224,8 @@ python3 "${SKILL_DIR}/scripts/select_frames.py" "$VIDEO_DIR/manifest_lite.json" 
 
 You can pass `manifest_lite.json` or `manifest.json`; the helper transparently loads the full manifest for the per-frame paths.
 
+Always run `select_frames.py` in the current session before spec build. Do not reuse selected-frame paths from prior-session notes or summaries.
+
 The output is a JSON list of selected frames with `chunk_index`, `frame_index`, `absolute_path`, and timestamps. Refine the picks after looking at contact sheets when needed:
 - Shift toward visible scene transitions.
 - Include opening and closing frames if visually distinct.
@@ -242,8 +259,11 @@ For combined multi-video docs, add an "Observations Across Videos" section cover
 Do not write JavaScript at runtime. Build a JSON spec and pass it to the bundled builder:
 
 ```bash
+python3 "${SKILL_DIR}/scripts/validate_spec_paths.py" --spec "$OUT_DIR/spec.json" &&
 node "${SKILL_DIR}/scripts/build-docx.js" --spec "$OUT_DIR/spec.json"
 ```
+
+`validate_spec_paths.py` is mandatory. It verifies that all spec-referenced frame/contact-sheet/transcript paths are absolute and exist before doc build.
 
 Name the output document after the video and the word "analysis". For a single video, use the manifest's `suggested_docx_name` (already slug-safe and title-based, e.g. `how-to-bake-bread-analysis.docx`) and place it in the out-dir, so `out` is `"$OUT_DIR/<suggested_docx_name>"`. For a combined multi-video doc, build a similar name from the videos analyzed (for example the first video's title slug plus `-and-2-more`) and always end it with `-analysis.docx`.
 
@@ -333,7 +353,7 @@ Then build with only the appendices the user explicitly approved:
 
 Build the docx once, after the answers, so only the requested appendices are included.
 
-Run the builder and confirm the `.docx` exists. If a docx validator is available, run it; otherwise skip validation silently. Present the document with a `computer://` link.
+Run the builder and confirm the `.docx` exists. If path validation fails, rebuild the spec from the current `select_frames.py` output and re-run validation before build-docx. If a docx validator is available, run it; otherwise skip validation silently. Present the document with a `computer://` link.
 
 If PDF requested:
 
@@ -353,18 +373,22 @@ If cleanup requested, remove per-video working directories and any spec/build sc
 ## Failure modes
 
 - **Setup preflight failed**: run installer. Missing Whisper keys are optional; required local dependencies are not.
+- **Setup/process host mismatch**: if setup was run in one environment (for example Linux sandbox) and processing will run in another (for example Mac host), re-run `python3 "${SKILL_DIR}/scripts/setup.py" --check` on the actual execution host before `process.py`.
+- **Runner timeout on long videos**: if the current shell has a short timeout budget, run `process.py` in a host-side shell tool that supports long-running commands, then resume from generated manifests.
 - **Download blocked by login, age gate, bot check, members-only, or private access**: explain the specific access issue. For public YouTube URLs, `download.py` already tries the android player client first (it bypasses YouTube's n-challenge without a JavaScript runtime and avoids the 403s the web client hits from server/cloud IPs), then falls back to the web client automatically. If access still fails and the user can view the video and authorizes it, retry with `--cookies-from-browser <browser>` or `--cookies <file>`. Otherwise ask for a local file. Note: `--cookies-from-browser` only works when yt-dlp runs on the SAME OS as the browser. In a Linux sandbox it cannot read a macOS/Windows browser's cookie store, so run yt-dlp host-side (e.g. via a Mac/Windows shell tool) for cookie-based access, then point `process.py` at the resulting local file.
 - **Rate limited**: wait before retrying. User-authorized browser cookies may help if the content is accessible in their browser.
 - **Geo restricted**: ask for a local file or another source the user can access from this environment.
-- **No transcript**: proceed frames-only and note it in the docx. If the source is a YouTube URL but the video was processed from a separately downloaded local file (so the caption pass never ran), retrofit the transcript without re-downloading: `python3 scripts/process.py --captions-only --source <url> --out-dir <video-dir>`. This fetches auto-subs (android client), writes `transcript.txt`, and patches any existing `manifest(_lite).json` transcript fields.
+- **No transcript**: proceed frames-only and note it in the docx. If the source is a YouTube URL but the video was processed from a separately downloaded local file (so the caption pass never ran), retrofit the transcript without re-downloading: `python3 "${SKILL_DIR}/scripts/process.py" --captions-only --source <url> --out-dir <video-dir>`. This fetches auto-subs (android client), writes `transcript.txt`, and patches any existing `manifest(_lite).json` transcript fields.
 - **Whisper backend failed**: when both keys exist and `--whisper` was not pinned, `process.py` tries Groq then OpenAI. If both fail, proceed frames-only.
 - **Whisper audio too large**: rerun with a focused `--start`/`--end` range or use a source with native captions.
 - **Long-video preview warning**: prefer focused reruns or quick mode rather than reading every contact sheet.
 - **yt-dlp "No supported JavaScript runtime" warning**: harmless for most sources (including any with native captions) and for public YouTube URLs (the android-first path needs no JS runtime). Some sites need JS-based extraction; if a download fails for that reason, install a JS runtime yt-dlp supports (e.g. Deno) or use a local file. This is a yt-dlp requirement, not a skill bug.
 - **yt-dlp can't find Node / n-challenge fails**: prefer a pipx/pip-installed `yt-dlp` over a frozen standalone binary. The standalone binary cannot reliably locate a system Node.js for subprocess-based extraction even with `PATH` exported, whereas the pip-installed version uses the system interpreter. `setup.py` installs the pip version.
+- **yt-dlp installed but not on PATH (Linux)**: apply the exact `export PATH=...` line from setup in the same shell invocation that runs `process.py`, or run by absolute tool path.
+- **Spec has stale/missing frame paths**: re-run `select_frames.py` in the current session and re-generate `spec.json`; do not reuse prior-session frame paths.
 
 ## Security notes
 
 The skill does not upload source video, persist cookies, post to platform accounts, or access platform accounts by default. Cookie-based retries must be initiated only after user consent and should use the user's own authorized browser/session.
 
-Bundled runtime: `scripts/process.py`, `download.py`, `frames.py`, `transcribe.py`, `whisper.py`, `setup.py`, `select_frames.py`, and `build-docx.js`.
+Bundled runtime: `scripts/process.py`, `download.py`, `frames.py`, `transcribe.py`, `whisper.py`, `setup.py`, `select_frames.py`, `validate_spec_paths.py`, and `build-docx.js`.
