@@ -11,6 +11,7 @@ from process import (
     _aspect_ratio_label,
     _docx_image_dimensions,
     _download_dir,
+    _looks_like_local_title,
     _slugify,
     _suggested_docx_name,
     _write_status,
@@ -169,6 +170,20 @@ class TestSuggestedDocxName:
     def test_always_ends_in_analysis_docx(self):
         for title in ["Anything", "", None, "🎬🎬🎬"]:
             assert _suggested_docx_name(title, "src").endswith("-analysis.docx")
+
+
+class TestLooksLikeLocalTitle:
+    def test_matches_exact_filename(self):
+        assert _looks_like_local_title("video.mp4", "/tmp/video.mp4") is True
+
+    def test_matches_stem(self):
+        assert _looks_like_local_title("video", "/tmp/video.mp4") is True
+
+    def test_generic_video_names(self):
+        assert _looks_like_local_title("video.mov", "/tmp/whatever.mp4") is True
+
+    def test_real_remote_title_not_local_placeholder(self):
+        assert _looks_like_local_title("Episode 4: The Reveal", "/tmp/video.mp4") is False
 
 
 class TestWriteTranscriptFile:

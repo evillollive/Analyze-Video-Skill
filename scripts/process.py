@@ -35,7 +35,7 @@ from pathlib import Path
 SCRIPT_DIR = Path(__file__).parent.resolve()
 sys.path.insert(0, str(SCRIPT_DIR))
 
-from download import download, fetch_captions, is_url  # noqa: E402
+from download import download, fetch_captions, fetch_title, is_url  # noqa: E402
 import cache_utils  # noqa: E402
 from frames import (  # noqa: E402
     HARD_MAX_FRAMES,
@@ -146,6 +146,27 @@ def _suggested_docx_name(title: str | None, source: str) -> str:
         stem = Path(source.split("?")[0].rstrip("/")).stem
         base = _slugify(stem) or "video"
     return f"{base}-analysis.docx"
+
+
+def _looks_like_local_title(title: str | None, source: str) -> bool:
+    """True when `title` appears to be just the local filename/stem placeholder."""
+    if not title:
+        return True
+    title_lower = title.strip().lower()
+    source_name = Path(source).name.lower()
+    source_stem = Path(source).stem.lower()
+    if title_lower in {source_name, source_stem}:
+        return True
+    generic = {
+        "video",
+        "video.mp4",
+        "video.mov",
+        "video.mkv",
+        "video.webm",
+        "video.m4v",
+        "video.avi",
+    }
+    return title_lower in generic
 
 
 def _aspect_ratio_label(width: int | None, height: int | None) -> str | None:
@@ -404,6 +425,14 @@ def main() -> int:
     )
     ap.add_argument("--source", required=True, help="Video URL or local file path")
     ap.add_argument(
+        "--source-url",
+        default=None,
+        help=(
+            "Original source URL when --source is a local file downloaded separately. "
+            "Used to recover title metadata and caption transcript without re-downloading media."
+        ),
+    )
+    ap.add_argument(
         "--out-dir",
         required=True,
         help="Output directory (typically a per-video subfolder of session outputs)",
@@ -523,6 +552,9 @@ def main() -> int:
     if args.cookies and args.cookies_from_browser:
         raise SystemExit("Use only one of --cookies or --cookies-from-browser")
 
+    if args.source_url and not is_url(args.source_url):
+        raise SystemExit("--source-url must be an http(s) URL")
+
     if args.captions_only:
         return _run_captions_only(args)
 
@@ -537,6 +569,9 @@ def main() -> int:
     work.mkdir(parents=True, exist_ok=True)
     print(f"[analyze-video] working dir: {work}", file=sys.stderr)
     _write_status(work, "starting", source=args.source)
+
+    local_source = not is_url(args.source)
+    source_url = args.source if is_url(args.source) else args.source_url
 
     # 1. Download
     print(
@@ -659,6 +694,34 @@ def main() -> int:
                                 file=sys.stderr,
                             )
 
+        # Local-file fallback: if the user provided the original URL (for example,
+        # a YouTube video downloaded separately to bypass access friction), recover
+        # captions from that URL without re-downloading media.
+        if not full_transcript_segments and local_source and source_url:
+            try:
+                print(
+                    "[analyze-video] no transcript from local source, fetching captions from --source-url...",
+                    file=sys.stderr,
+                )
+                sub = fetch_captions(
+                    source_url,
+                    work,
+                    cookies=args.cookies,
+                    cookies_from_browser=args.cookies_from_browser,
+                )
+                full_transcript_segments = parse_vtt(str(sub))
+                if full_transcript_segments:
+                    transcript_source = "captions (source-url)"
+                    print(
+                        f"[analyze-video] recovered {len(full_transcript_segments)} transcript segments from --source-url",
+                        file=sys.stderr,
+                    )
+            except SystemExit as exc:
+                print(
+                    f"[analyze-video] source-url transcript fallback failed: {exc}",
+                    file=sys.stderr,
+                )
+
         # 4. Decide chunking strategy.
         #    Detect a repetitive promo/outro at the very end (advisory). When
         #    --trim-static-outro is set on an unfocused video, exclude that block
@@ -738,6 +801,19 @@ def main() -> int:
 
         # 5. Process each chunk
         info = dl.get("info") or {}
+        if local_source and source_url and _looks_like_local_title(info.get("title"), args.source):
+            recovered_title = fetch_title(
+                source_url,
+                cookies=args.cookies,
+                cookies_from_browser=args.cookies_from_browser,
+            )
+            if recovered_title:
+                info["title"] = recovered_title
+                info["url"] = source_url
+                print(
+                    f"[analyze-video] recovered title from --source-url: {recovered_title}",
+                    file=sys.stderr,
+                )
         resume_hint = "Interrupted? Re-run the same command to resume from here."
         processed_chunks: list[dict] = []
         _write_status(
@@ -806,7 +882,7 @@ def main() -> int:
             "source": args.source,
             "title": info.get("title"),
             "uploader": info.get("uploader"),
-            "url": info.get("url"),
+            "url": info.get("url") or source_url,
             "duration_seconds": round(full_duration, 2),
             "duration_formatted": format_time(full_duration),
             "width": meta.get("width"),

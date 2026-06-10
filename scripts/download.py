@@ -523,6 +523,55 @@ def fetch_captions(
     )
 
 
+def fetch_title(
+    url: str,
+    *,
+    cookies: str | None = None,
+    cookies_from_browser: str | None = None,
+) -> str | None:
+    """Fetch a video's remote title without downloading media.
+
+    Uses the same client strategy as download/captions: android-first for public
+    YouTube URLs, otherwise default web client.
+    """
+    ytdlp = _resolve_tool("yt-dlp")
+    if ytdlp is None:
+        raise SystemExit(
+            "yt-dlp is not installed. Install with: brew install yt-dlp (macOS), "
+            "pipx install yt-dlp, or pip install --user yt-dlp"
+        )
+    if cookies and cookies_from_browser:
+        raise SystemExit("Use only one of --cookies or --cookies-from-browser")
+    cookie_path: Path | None = None
+    if cookies:
+        cookie_path = Path(cookies).expanduser().resolve()
+        if not cookie_path.exists():
+            raise SystemExit(f"Cookie file not found: {cookie_path}")
+
+    no_auth = not (cookies or cookies_from_browser)
+    attempts: list[str | None] = ["android", None] if (is_youtube(url) and no_auth) else [None]
+
+    for player_client in attempts:
+        cmd = [ytdlp, "--no-playlist", "--get-title"]
+        if player_client:
+            cmd += ["--extractor-args", f"youtube:player-client={player_client}"]
+        if cookie_path is not None:
+            cmd += ["--cookies", str(cookie_path)]
+        if cookies_from_browser:
+            cmd += ["--cookies-from-browser", cookies_from_browser]
+        cmd.append(url)
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode == 0:
+            title = (result.stdout or "").strip().splitlines()
+            if title:
+                return title[0].strip()
+        if result.stdout:
+            print(result.stdout, file=sys.stderr, end="" if result.stdout.endswith("\n") else "\n")
+        if result.stderr:
+            print(result.stderr, file=sys.stderr, end="" if result.stderr.endswith("\n") else "\n")
+    return None
+
+
 def download(
     source: str,
     out_dir: Path,

@@ -39,12 +39,12 @@ SKILL_DIR="${CLAUDE_SKILL_DIR:-$(cd "$(dirname "$0")" 2>/dev/null && pwd)}"
 #   SKILL_DIR=$(dirname "$(find / -name SKILL.md -path '*analyze-video*' 2>/dev/null | head -1)")
 ```
 
-Use `"$SKILL_DIR/scripts/..."` in place of `"${CLAUDE_SKILL_DIR}/scripts/..."` whenever the variable might be unset.
+Use `"$SKILL_DIR/scripts/..."` consistently. Never hardcode `~/.cache/analyze-video/scripts/...`; runnable scripts live under `"$SKILL_DIR/scripts/"`.
 
 Run once per session:
 
 ```bash
-python3 "${CLAUDE_SKILL_DIR}/scripts/setup.py" --check
+python3 "${SKILL_DIR}/scripts/setup.py" --check
 ```
 
 Exit-code contract: `0` means local dependencies are ready. Any non-zero exit means "not ready" (the script currently uses `2` for missing dependencies). Treat only `0` as ready; never assume a specific non-zero value. A Whisper API key is optional; without one, videos with native captions still get transcript analysis and captionless videos are processed frames-only.
@@ -52,7 +52,7 @@ Exit-code contract: `0` means local dependencies are ready. Any non-zero exit me
 If preflight exits non-zero, run:
 
 ```bash
-python3 "${CLAUDE_SKILL_DIR}/scripts/setup.py"
+python3 "${SKILL_DIR}/scripts/setup.py"
 ```
 
 The installer:
@@ -65,9 +65,9 @@ The installer:
 If the user wants transcript fallback for captionless videos, ask whether they have a Groq key (preferred) or OpenAI key, then write it with:
 
 ```bash
-python3 "${CLAUDE_SKILL_DIR}/scripts/setup.py" --set-key groq "<KEY>"
+python3 "${SKILL_DIR}/scripts/setup.py" --set-key groq "<KEY>"
 # or:
-python3 "${CLAUDE_SKILL_DIR}/scripts/setup.py" --set-key openai "<KEY>"
+python3 "${SKILL_DIR}/scripts/setup.py" --set-key openai "<KEY>"
 ```
 
 ## Step 1: Parse the request
@@ -102,7 +102,7 @@ Create one numbered output directory per video under the session outputs directo
 OUT_DIR="<absolute path to session outputs>"
 VIDEO_DIR="$OUT_DIR/video_1"
 
-python3 "${CLAUDE_SKILL_DIR}/scripts/process.py" \
+python3 "${SKILL_DIR}/scripts/process.py" \
   --source "<url-or-path>" \
   --out-dir "$VIDEO_DIR"
 ```
@@ -110,7 +110,7 @@ python3 "${CLAUDE_SKILL_DIR}/scripts/process.py" \
 For focused processing:
 
 ```bash
-python3 "${CLAUDE_SKILL_DIR}/scripts/process.py" \
+python3 "${SKILL_DIR}/scripts/process.py" \
   --source "<url-or-path>" \
   --out-dir "$VIDEO_DIR" \
   --start 2:30 --end 3:15
@@ -119,7 +119,7 @@ python3 "${CLAUDE_SKILL_DIR}/scripts/process.py" \
 For quick mode:
 
 ```bash
-python3 "${CLAUDE_SKILL_DIR}/scripts/process.py" \
+python3 "${SKILL_DIR}/scripts/process.py" \
   --source "<url-or-path>" \
   --out-dir "$VIDEO_DIR" \
   --quick
@@ -128,7 +128,7 @@ python3 "${CLAUDE_SKILL_DIR}/scripts/process.py" \
 For user-authorized retry after a login/bot/access block:
 
 ```bash
-python3 "${CLAUDE_SKILL_DIR}/scripts/process.py" \
+python3 "${SKILL_DIR}/scripts/process.py" \
   --source "<url>" \
   --out-dir "$VIDEO_DIR" \
   --cookies-from-browser safari
@@ -137,11 +137,13 @@ python3 "${CLAUDE_SKILL_DIR}/scripts/process.py" \
 or:
 
 ```bash
-python3 "${CLAUDE_SKILL_DIR}/scripts/process.py" \
+python3 "${SKILL_DIR}/scripts/process.py" \
   --source "<url>" \
   --out-dir "$VIDEO_DIR" \
   --cookies "/path/to/cookies.txt"
 ```
+
+If `--source` is a local file downloaded from a URL, also pass `--source-url "<original-url>"` so `process.py` can auto-recover the real title and captions transcript.
 
 Process videos sequentially. Do not parallelize video processing; it can saturate network, CPU, disk, and token budget. `process.py` prints the path to `manifest_lite.json` on stdout. Progress and warnings go to stderr.
 
@@ -164,7 +166,7 @@ Per-video outputs include:
 
 Downloaded URLs are cached once per URL under `~/.cache/analyze-video/downloads/<url-hash>/` and reused across runs, so a focused `--start`/`--end` rerun (even in a different `--out-dir`) does not re-download the whole video. The full video is always fetched, so timestamps stay correct. Pass `--force` to refresh a cached download, or `--no-download-cache` to keep the source under the out-dir instead.
 
-The download cache is self-managing: at the end of each run, `process.py` evicts entries older than 14 days and trims the cache back under a 5 GB total (least-recently-used first), never touching the file the current (or a concurrent) run is using. Tune the limits with `ANALYZE_VIDEO_CACHE_MAX_AGE_DAYS` and `ANALYZE_VIDEO_CACHE_MAX_GB` (set either to `0` to disable that limit). To wipe every cached download by hand, run `python3 "${CLAUDE_SKILL_DIR}/scripts/setup.py" --clear-cache` (this leaves the `docx` module cache intact). `setup.py --json` reports the current cache size as `download_cache_bytes`.
+The download cache is self-managing: at the end of each run, `process.py` evicts entries older than 14 days and trims the cache back under a 5 GB total (least-recently-used first), never touching the file the current (or a concurrent) run is using. Tune the limits with `ANALYZE_VIDEO_CACHE_MAX_AGE_DAYS` and `ANALYZE_VIDEO_CACHE_MAX_GB` (set either to `0` to disable that limit). To wipe every cached download by hand, run `python3 "${SKILL_DIR}/scripts/setup.py" --clear-cache` (this leaves the `docx` module cache intact). `setup.py --json` reports the current cache size as `download_cache_bytes`.
 
 ### Trimming a trailing promo/outro
 
@@ -202,7 +204,7 @@ Each chunk includes `transcript_slice` with `start_index`, `end_index`, and `seg
 Use the helper instead of re-deriving the frame-selection math:
 
 ```bash
-python3 "${CLAUDE_SKILL_DIR}/scripts/select_frames.py" "$VIDEO_DIR/manifest_lite.json" <N>
+python3 "${SKILL_DIR}/scripts/select_frames.py" "$VIDEO_DIR/manifest_lite.json" <N>
 ```
 
 You can pass `manifest_lite.json` or `manifest.json`; the helper transparently loads the full manifest for the per-frame paths.
@@ -230,7 +232,7 @@ Be concrete and observational. Avoid vague summaries such as "the presenter expl
 For caption style, consult:
 
 ```bash
-${CLAUDE_SKILL_DIR}/templates/caption_guide.md
+${SKILL_DIR}/templates/caption_guide.md
 ```
 
 For combined multi-video docs, add an "Observations Across Videos" section covering shared structure, visual style, themes, and differences.
@@ -240,7 +242,7 @@ For combined multi-video docs, add an "Observations Across Videos" section cover
 Do not write JavaScript at runtime. Build a JSON spec and pass it to the bundled builder:
 
 ```bash
-node "${CLAUDE_SKILL_DIR}/scripts/build-docx.js" --spec "$OUT_DIR/spec.json"
+node "${SKILL_DIR}/scripts/build-docx.js" --spec "$OUT_DIR/spec.json"
 ```
 
 Name the output document after the video and the word "analysis". For a single video, use the manifest's `suggested_docx_name` (already slug-safe and title-based, e.g. `how-to-bake-bread-analysis.docx`) and place it in the out-dir, so `out` is `"$OUT_DIR/<suggested_docx_name>"`. For a combined multi-video doc, build a similar name from the videos analyzed (for example the first video's title slug plus `-and-2-more`) and always end it with `-analysis.docx`.
@@ -304,10 +306,10 @@ Use `manifest_lite.docx_image_dimensions` as the per-video default. `build-docx.
 **If `node` reports it can't find `docx` (EACCES / `Cannot find module 'docx'`):** the skill directory is read-only, so `npm install` there fails silently. The builder already tries `DOCX_NODE_MODULES`, `NODE_PATH`, `scripts/node_modules`, and finally installs into `~/.cache/analyze-video/node_modules`. To point it at an existing install instead, run:
 
 ```bash
-NODE_PATH=/path/to/dir/containing/node_modules node "${CLAUDE_SKILL_DIR}/scripts/build-docx.js" --spec "$OUT_DIR/spec.json"
+NODE_PATH=/path/to/dir/containing/node_modules node "${SKILL_DIR}/scripts/build-docx.js" --spec "$OUT_DIR/spec.json"
 ```
 
-Do **not** try to `npm install` into `${CLAUDE_SKILL_DIR}/scripts`; it may be mounted read-only.
+Do **not** try to `npm install` into `${SKILL_DIR}/scripts`; it may be mounted read-only.
 
 ## Step 8: Validate and deliver
 

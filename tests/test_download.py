@@ -110,6 +110,7 @@ from download import (  # noqa: E402
     _valid_video,
     _source_marker_matches,
     fetch_captions,
+    fetch_title,
     download_url,
 )
 import subprocess as _subprocess  # noqa: E402
@@ -280,6 +281,46 @@ class TestFetchCaptions:
             assert False, "expected SystemExit"
         except SystemExit:
             pass
+
+
+class TestFetchTitle:
+    def test_youtube_uses_android_first(self, monkeypatch):
+        monkeypatch.setattr("download._resolve_tool", lambda name: "yt-dlp")
+
+        calls = []
+
+        def run(cmd, capture_output=True, text=True):
+            calls.append(cmd)
+            return _subprocess.CompletedProcess(cmd, 0, stdout="Real Title\n", stderr="")
+
+        monkeypatch.setattr("download.subprocess.run", run)
+        title = fetch_title("https://youtu.be/x")
+        assert title == "Real Title"
+        assert any("youtube:player-client=android" in str(part) for part in calls[0])
+
+    def test_falls_back_to_web_when_android_fails(self, monkeypatch):
+        monkeypatch.setattr("download._resolve_tool", lambda name: "yt-dlp")
+        calls = []
+
+        def run(cmd, capture_output=True, text=True):
+            calls.append(cmd)
+            is_android = any("youtube:player-client=android" == part for part in cmd)
+            if is_android:
+                return _subprocess.CompletedProcess(cmd, 1, stdout="", stderr="403")
+            return _subprocess.CompletedProcess(cmd, 0, stdout="Recovered Title\n", stderr="")
+
+        monkeypatch.setattr("download.subprocess.run", run)
+        title = fetch_title("https://www.youtube.com/watch?v=x")
+        assert title == "Recovered Title"
+        assert len(calls) == 2
+
+    def test_returns_none_when_all_attempts_fail(self, monkeypatch):
+        monkeypatch.setattr("download._resolve_tool", lambda name: "yt-dlp")
+        monkeypatch.setattr(
+            "download.subprocess.run",
+            lambda *a, **k: _subprocess.CompletedProcess([], 1, stdout="", stderr="blocked"),
+        )
+        assert fetch_title("https://vimeo.com/1") is None
 
     def test_stale_vtt_does_not_short_circuit_failure(self, tmp_path, monkeypatch):
         # A leftover captions file from a prior run must not be returned when the
