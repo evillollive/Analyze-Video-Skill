@@ -81,6 +81,15 @@ jobs:
             -f lavfi -i testsrc=size=320x240:rate=10:duration=4 \
             -f lavfi -i sine=frequency=440:duration=4 \
             -c:v libx264 -pix_fmt yuv420p -c:a aac -shortest sample.mp4
+          # process.py now requires a same-host setup fingerprint. The constrained
+          # integration keeps docx uninstalled on purpose (to exercise builder
+          # fallback in read-only scripts), so seed only the host setup state here.
+          python - <<PY
+          import sys
+          sys.path.insert(0, "$SKILL/scripts")
+          import host_env
+          host_env.write_setup_state()
+          PY
           # Mirror sandbox mounts: the skill's scripts dir is read-only. The
           # pipeline must still run, and the docx builder must self-install into
           # the writable per-user cache instead of failing on the read-only dir.
