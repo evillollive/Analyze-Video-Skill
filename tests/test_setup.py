@@ -69,6 +69,14 @@ class TestStatus:
                 with patch.object(setup, "_have_api_key", return_value=(False, None)):
                     assert setup.cmd_check() == 0
 
+    def test_status_includes_host_fingerprint(self):
+        with patch.object(setup, "_docx_available", return_value=True):
+            with patch.object(setup, "_check_binaries", return_value=[]):
+                with patch.object(setup, "_have_api_key", return_value=(False, None)):
+                    status = setup._status()
+                    assert "host_fingerprint" in status
+                    assert "setup_state_file" in status
+
 
 class TestDocxAvailable:
     def test_detects_cache_node_modules(self, tmp_path, monkeypatch):

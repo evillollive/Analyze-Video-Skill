@@ -95,8 +95,12 @@ Analyze-Video-Skill/
 │   ├── whisper.py               # Groq/OpenAI Whisper client
 │   ├── env_utils.py             # Shared config reader
 │   ├── setup.py                 # First-run installer + preflight checks
+│   ├── host_env.py              # Host fingerprint + setup state helpers
 │   ├── build-docx.js            # Word document renderer
 │   ├── select_frames.py         # Frame selection helper
+│   ├── validate_spec_paths.py   # Fails fast on stale/missing asset paths
+│   ├── lint_spec_quality.py     # Spec structure/content quality guard
+│   ├── run_guarded_pipeline.py  # Orchestrates setup, process, selection, and build gates
 │   └── build-skill.sh           # Packages everything into a .skill bundle
 ├── tests/                       # tests covering parsing, math, setup, and security
 └── templates/

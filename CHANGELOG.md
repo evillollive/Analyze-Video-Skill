@@ -2,6 +2,23 @@
 
 All notable changes to `/analyze-video` are documented here.
 
+## [1.6.3] - 2026-06-10
+
+Patch release focused on fail-fast guardrails that prevent mixed-host, stale-spec, and timeout-planning mistakes before a long run starts.
+
+### Added
+- **Host fingerprint state helpers.** Added `scripts/host_env.py` so setup can persist host identity and process can verify it is running on the same host context.
+- **Guarded pipeline entrypoint.** Added `scripts/run_guarded_pipeline.py` to run setup preflight, process, frame-selection proof, optional spec validation/quality lint, and docx build in one enforced sequence.
+- **Spec quality linter.** Added `scripts/lint_spec_quality.py` to catch weak sections before docx build (missing sections/frames and low-signal body/caption warnings).
+- **Coverage for new guardrails.** Added `tests/test_host_env.py` and `tests/test_lint_spec_quality.py`, plus timeout-planning tests in `tests/test_process.py`.
+
+### Changed
+- **Setup now records host state.** `scripts/setup.py --check` and install paths now write setup host state, and JSON status now reports current and last setup host fingerprints.
+- **Process now enforces setup/process host consistency.** `scripts/process.py` now fails early when setup state is missing or from a different host, unless explicitly overridden with `--allow-host-mismatch`.
+- **Timeout planning gate.** `scripts/process.py` now supports `--runner-timeout-seconds` and `--expected-duration-minutes` to fail fast when an unfocused run is unlikely to finish in the current runner budget.
+- **Workflow docs now include guarded/linted build path.** `SKILL.md` now documents `run_guarded_pipeline.py` and requires both path validation and quality lint before `build-docx.js`.
+- **README script inventory updated.** `README.md` now documents the new runtime guard/validation scripts.
+
 ## [1.6.2] - 2026-06-10
 
 Patch release focused on workflow hardening for mixed-host execution and safer docx spec builds.

@@ -141,6 +141,11 @@ try:
 except ImportError:  # pragma: no cover
     cache_utils = None
 
+try:
+    import host_env
+except ImportError:  # pragma: no cover
+    host_env = None
+
 
 def _read_env_key(name: str) -> str | None:
     if _shared_read_env_key is not None:
@@ -447,6 +452,15 @@ def _status() -> dict:
     else:
         status = "needs_docx"
 
+    current_host = host_env.current_host_fingerprint() if host_env is not None else {
+        "platform": platform.system(),
+        "release": platform.release(),
+        "machine": platform.machine(),
+        "hostname": None,
+        "id": None,
+    }
+    setup_state = host_env.read_setup_state() if host_env is not None else None
+
     return {
         "status": status,
         "first_run": is_first_run(),
@@ -459,6 +473,9 @@ def _status() -> dict:
             cache_utils.dir_size(cache_utils.DOWNLOADS_DIR) if cache_utils is not None else 0
         ),
         "platform": platform.system(),
+        "host_fingerprint": current_host,
+        "last_setup_host": (setup_state or {}).get("host"),
+        "setup_state_file": str(host_env.SETUP_STATE_FILE) if host_env is not None else None,
     }
 
 
@@ -472,6 +489,8 @@ def cmd_check() -> int:
     """
     s = _status()
     if s["status"] in {"ready", "ready_no_whisper_key"}:
+        if host_env is not None:
+            host_env.write_setup_state()
         return 0
 
     parts = []
@@ -597,6 +616,8 @@ def cmd_install() -> int:
 
     if has_key:
         _write_setup_complete()
+        if host_env is not None:
+            host_env.write_setup_state()
         backend_note = "" if docx_ready else " (docx pending; see note above)"
         print(f"[setup] ready. whisper backend: {backend}{backend_note}")
         if installed_deps:
@@ -605,6 +626,8 @@ def cmd_install() -> int:
 
     print("")
     _write_setup_complete()
+    if host_env is not None:
+        host_env.write_setup_state()
     if docx_ready:
         print("[setup] ready for frames and native captions. Optional: add a Whisper API key.")
     else:

@@ -118,6 +118,15 @@ python3 "${SKILL_DIR}/scripts/process.py" \
   --out-dir "$VIDEO_DIR"
 ```
 
+Preferred guarded entrypoint (enforces preflight + frame intent + spec gates):
+
+```bash
+python3 "${SKILL_DIR}/scripts/run_guarded_pipeline.py" \
+  --source "<url-or-path>" \
+  --out-dir "$VIDEO_DIR" \
+  --frames 20
+```
+
 For focused processing:
 
 ```bash
@@ -260,6 +269,7 @@ Do not write JavaScript at runtime. Build a JSON spec and pass it to the bundled
 
 ```bash
 python3 "${SKILL_DIR}/scripts/validate_spec_paths.py" --spec "$OUT_DIR/spec.json" &&
+python3 "${SKILL_DIR}/scripts/lint_spec_quality.py" --spec "$OUT_DIR/spec.json" &&
 node "${SKILL_DIR}/scripts/build-docx.js" --spec "$OUT_DIR/spec.json"
 ```
 
@@ -391,4 +401,4 @@ If cleanup requested, remove per-video working directories and any spec/build sc
 
 The skill does not upload source video, persist cookies, post to platform accounts, or access platform accounts by default. Cookie-based retries must be initiated only after user consent and should use the user's own authorized browser/session.
 
-Bundled runtime: `scripts/process.py`, `download.py`, `frames.py`, `transcribe.py`, `whisper.py`, `setup.py`, `select_frames.py`, `validate_spec_paths.py`, and `build-docx.js`.
+Bundled runtime: `scripts/process.py`, `download.py`, `frames.py`, `transcribe.py`, `whisper.py`, `setup.py`, `select_frames.py`, `validate_spec_paths.py`, `lint_spec_quality.py`, `run_guarded_pipeline.py`, and `build-docx.js`.

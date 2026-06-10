@@ -9,6 +9,7 @@ if SCRIPTS_DIR not in sys.path:
 
 from process import (
     _aspect_ratio_label,
+    _check_runner_timeout,
     _docx_image_dimensions,
     _download_dir,
     _looks_like_local_title,
@@ -184,6 +185,36 @@ class TestLooksLikeLocalTitle:
 
     def test_real_remote_title_not_local_placeholder(self):
         assert _looks_like_local_title("Episode 4: The Reveal", "/tmp/video.mp4") is False
+
+
+class TestRunnerTimeoutCheck:
+    def test_no_timeout_budget_noop(self):
+        _check_runner_timeout(
+            runner_timeout_seconds=None,
+            expected_duration_minutes=90,
+            focused=False,
+            quick=False,
+        )
+
+    def test_focused_run_skips_timeout_guard(self):
+        _check_runner_timeout(
+            runner_timeout_seconds=45,
+            expected_duration_minutes=120,
+            focused=True,
+            quick=False,
+        )
+
+    def test_raises_when_expected_exceeds_timeout(self):
+        try:
+            _check_runner_timeout(
+                runner_timeout_seconds=60,
+                expected_duration_minutes=5,
+                focused=False,
+                quick=False,
+            )
+            assert False, "expected SystemExit"
+        except SystemExit as exc:
+            assert "exceeds runner timeout" in str(exc)
 
 
 class TestWriteTranscriptFile:

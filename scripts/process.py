@@ -53,6 +53,7 @@ from frames import (  # noqa: E402
 )
 from transcribe import detect_trailing_promo, filter_range, parse_vtt  # noqa: E402
 from whisper import load_all_api_keys, load_api_key, transcribe_video  # noqa: E402
+import host_env  # noqa: E402
 
 
 # Soft-warn the skill when chunking produces this many or more contact sheets,
@@ -167,6 +168,64 @@ def _looks_like_local_title(title: str | None, source: str) -> bool:
         "video.avi",
     }
     return title_lower in generic
+
+
+def _enforce_setup_host_match(*, allow_host_mismatch: bool) -> None:
+    state = host_env.read_setup_state()
+    if not state:
+        setup_py = SCRIPT_DIR / "setup.py"
+        raise SystemExit(
+            "setup host state missing. Run preflight on this host first:\n"
+            f"  python3 {setup_py} --check"
+        )
+    current = host_env.current_host_fingerprint()
+    if host_env.host_matches(state, current):
+        return
+    if allow_host_mismatch:
+        print(
+            "[analyze-video] WARNING: setup/process host mismatch override enabled",
+            file=sys.stderr,
+        )
+        return
+    recorded = state.get("host") or {}
+    raise SystemExit(
+        "setup/process host mismatch detected.\n"
+        f"  setup host: {recorded.get('platform')}/{recorded.get('machine')} "
+        f"{recorded.get('hostname')}\n"
+        f"  run host:   {current.get('platform')}/{current.get('machine')} "
+        f"{current.get('hostname')}\n"
+        "Run setup preflight on the run host:\n"
+        f"  python3 {SCRIPT_DIR / 'setup.py'} --check\n"
+        "Or pass --allow-host-mismatch only if this is intentional."
+    )
+
+
+def _check_runner_timeout(
+    *,
+    runner_timeout_seconds: int | None,
+    expected_duration_minutes: float | None,
+    focused: bool,
+    quick: bool,
+) -> None:
+    if runner_timeout_seconds is None or runner_timeout_seconds <= 0:
+        return
+    if focused or quick:
+        return
+    if expected_duration_minutes is None:
+        if runner_timeout_seconds <= 60:
+            print(
+                "[analyze-video] WARNING: runner timeout is very short for full-video processing; "
+                "use a long-running host-side shell for long videos.",
+                file=sys.stderr,
+            )
+        return
+    expected_seconds = expected_duration_minutes * 60.0
+    if expected_seconds > runner_timeout_seconds:
+        raise SystemExit(
+            f"expected duration (~{expected_duration_minutes:.1f} min) exceeds runner timeout "
+            f"({runner_timeout_seconds}s). Use a long-running host-side shell or pass a focused "
+            "--start/--end range."
+        )
 
 
 def _aspect_ratio_label(width: int | None, height: int | None) -> str | None:
@@ -433,6 +492,32 @@ def main() -> int:
         ),
     )
     ap.add_argument(
+        "--allow-host-mismatch",
+        action="store_true",
+        help=(
+            "Bypass setup/process host consistency check. Use only when you intentionally "
+            "split setup and processing across hosts."
+        ),
+    )
+    ap.add_argument(
+        "--runner-timeout-seconds",
+        type=int,
+        default=None,
+        help=(
+            "Optional timeout budget of the executing shell. When paired with "
+            "--expected-duration-minutes, process.py fails fast if the run is unlikely to finish."
+        ),
+    )
+    ap.add_argument(
+        "--expected-duration-minutes",
+        type=float,
+        default=None,
+        help=(
+            "Optional expected source duration in minutes for timeout planning. Useful in "
+            "runner environments with strict command time limits."
+        ),
+    )
+    ap.add_argument(
         "--out-dir",
         required=True,
         help="Output directory (typically a per-video subfolder of session outputs)",
@@ -555,6 +640,8 @@ def main() -> int:
     if args.source_url and not is_url(args.source_url):
         raise SystemExit("--source-url must be an http(s) URL")
 
+    _enforce_setup_host_match(allow_host_mismatch=args.allow_host_mismatch)
+
     if args.captions_only:
         return _run_captions_only(args)
 
@@ -572,6 +659,13 @@ def main() -> int:
 
     local_source = not is_url(args.source)
     source_url = args.source if is_url(args.source) else args.source_url
+    focused_for_timeout = args.start is not None or args.end is not None
+    _check_runner_timeout(
+        runner_timeout_seconds=args.runner_timeout_seconds,
+        expected_duration_minutes=args.expected_duration_minutes,
+        focused=focused_for_timeout,
+        quick=bool(args.quick),
+    )
 
     # 1. Download
     print(
