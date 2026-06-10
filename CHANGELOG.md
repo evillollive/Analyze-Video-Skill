@@ -2,6 +2,19 @@
 
 All notable changes to `/analyze-video` are documented here.
 
+## [1.6.1] - 2026-06-10
+
+Patch release focused on local-file workflows when the original source was a URL.
+
+### Added
+- **`--source-url` for local-file runs.** `process.py` now accepts `--source-url <original-url>` when `--source` is a local video file, so the pipeline can recover missing metadata from the original remote source.
+- **Automatic transcript recovery from `--source-url`.** If a local-file run has no transcript after the normal caption/Whisper path, `process.py` now fetches captions from `--source-url` (without re-downloading media) and writes `transcript.txt` before manifest output.
+- **Remote title recovery helper.** `download.py` adds `fetch_title()` (yt-dlp, android-first for public YouTube) so local placeholder titles can be replaced with the real video title.
+
+### Changed
+- **Title fallback for local files.** When local metadata title looks like a filename placeholder (for example `video.mp4`), `process.py` now recovers the remote title from `--source-url` and uses it for `suggested_docx_name`.
+- **SKILL.md path consistency.** Command examples now consistently use `"$SKILL_DIR/scripts/..."` and explicitly warn against hardcoding `~/.cache/analyze-video/scripts/...`.
+
 ## [1.6.0] - 2026-06-08
 
 Reliability fixes driven by a real-world YouTube run inside a Linux sandbox: bot detection on cloud IPs, the 256 KB manifest Read limit, and transcript gaps on locally-downloaded files.
