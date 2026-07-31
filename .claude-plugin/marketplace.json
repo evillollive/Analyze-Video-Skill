@@ -1,7 +1,7 @@
 {
   "name": "Analyze-Video-Skill",
   "metadata": {
-    "description": "Turn one or more videos (URLs or local files) into a polished Word document with embedded frames, timestamped analysis, and captions."
+    "description": "Paste a video link and get a timestamped Word report with screenshots, captions, and concrete visual analysis."
   },
   "owner": {
     "name": "evillollive"
@@ -9,7 +9,7 @@
   "plugins": [
     {
       "name": "analyze-video",
-      "description": "Analyze one or more videos (URLs or local files) and produce a Word document with embedded frames and a timestamp-based written analysis.",
+      "description": "Turn one or more video URLs or local files into a polished Word document with selected screenshots, captions, and timestamped analysis.",
       "author": {
         "name": "evillollive"
       },

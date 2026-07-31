@@ -1,0 +1,99 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="675" viewBox="0 0 1200 675" role="img" aria-labelledby="title desc">
+  <title id="title">analyze-video preview</title>
+  <desc id="desc">A stylized preview showing a video contact sheet next to a generated Word report with screenshots and timestamped analysis.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0b1020"/>
+      <stop offset="1" stop-color="#172554"/>
+    </linearGradient>
+    <linearGradient id="panel" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#e5eefb"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="18" stdDeviation="18" flood-color="#000000" flood-opacity="0.28"/>
+    </filter>
+  </defs>
+
+  <rect width="1200" height="675" fill="url(#bg)"/>
+
+  <text x="64" y="76" fill="#ffffff" font-family="Arial, sans-serif" font-size="36" font-weight="700">/analyze-video</text>
+  <text x="64" y="116" fill="#bfdbfe" font-family="Arial, sans-serif" font-size="22">Paste a video link. Get a timestamped Word report with screenshots.</text>
+
+  <g filter="url(#shadow)">
+    <rect x="64" y="160" width="512" height="396" rx="18" fill="#111827"/>
+    <text x="92" y="202" fill="#dbeafe" font-family="Arial, sans-serif" font-size="20" font-weight="700">Contact sheet preview</text>
+    <text x="92" y="230" fill="#93c5fd" font-family="Arial, sans-serif" font-size="14">Scan the whole video before reading selected frames</text>
+
+    <g transform="translate(92 260)">
+      <rect width="428" height="244" rx="10" fill="#020617"/>
+      <g fill="#1d4ed8">
+        <rect x="12" y="12" width="90" height="48" rx="6"/>
+        <rect x="116" y="12" width="90" height="48" rx="6"/>
+        <rect x="220" y="12" width="90" height="48" rx="6"/>
+        <rect x="324" y="12" width="90" height="48" rx="6"/>
+      </g>
+      <g fill="#2563eb">
+        <rect x="12" y="74" width="90" height="48" rx="6"/>
+        <rect x="116" y="74" width="90" height="48" rx="6"/>
+        <rect x="220" y="74" width="90" height="48" rx="6"/>
+        <rect x="324" y="74" width="90" height="48" rx="6"/>
+      </g>
+      <g fill="#3b82f6">
+        <rect x="12" y="136" width="90" height="48" rx="6"/>
+        <rect x="116" y="136" width="90" height="48" rx="6"/>
+        <rect x="220" y="136" width="90" height="48" rx="6"/>
+        <rect x="324" y="136" width="90" height="48" rx="6"/>
+      </g>
+      <g fill="#60a5fa">
+        <rect x="12" y="198" width="90" height="34" rx="6"/>
+        <rect x="116" y="198" width="90" height="34" rx="6"/>
+        <rect x="220" y="198" width="90" height="34" rx="6"/>
+        <rect x="324" y="198" width="90" height="34" rx="6"/>
+      </g>
+      <g fill="#eff6ff" font-family="Arial, sans-serif" font-size="12">
+        <text x="20" y="43">00:04</text>
+        <text x="124" y="43">00:18</text>
+        <text x="228" y="43">00:31</text>
+        <text x="332" y="43">00:45</text>
+        <text x="20" y="105">01:02</text>
+        <text x="124" y="105">01:19</text>
+        <text x="228" y="105">01:36</text>
+        <text x="332" y="105">01:52</text>
+      </g>
+    </g>
+  </g>
+
+  <g filter="url(#shadow)">
+    <rect x="624" y="160" width="512" height="396" rx="18" fill="url(#panel)"/>
+    <text x="660" y="206" fill="#111827" font-family="Arial, sans-serif" font-size="28" font-weight="700">Video Analysis Report</text>
+    <text x="660" y="236" fill="#64748b" font-family="Arial, sans-serif" font-size="15">Generated docx with sections, timestamps, frames, and captions</text>
+
+    <rect x="660" y="274" width="192" height="108" rx="10" fill="#2563eb"/>
+    <circle cx="736" cy="328" r="28" fill="#dbeafe" opacity="0.9"/>
+    <path d="M728 311 L756 328 L728 345 Z" fill="#1d4ed8"/>
+
+    <text x="884" y="288" fill="#1e3a8a" font-family="Arial, sans-serif" font-size="16" font-weight="700">Opening (0:00 to 0:45)</text>
+    <rect x="884" y="306" width="206" height="8" rx="4" fill="#94a3b8"/>
+    <rect x="884" y="326" width="170" height="8" rx="4" fill="#cbd5e1"/>
+    <rect x="884" y="346" width="196" height="8" rx="4" fill="#cbd5e1"/>
+    <rect x="884" y="366" width="138" height="8" rx="4" fill="#cbd5e1"/>
+
+    <rect x="660" y="420" width="430" height="1" fill="#cbd5e1"/>
+    <text x="660" y="456" fill="#1e3a8a" font-family="Arial, sans-serif" font-size="16" font-weight="700">Live demo (1:02 to 2:10)</text>
+    <rect x="660" y="476" width="380" height="8" rx="4" fill="#94a3b8"/>
+    <rect x="660" y="496" width="330" height="8" rx="4" fill="#cbd5e1"/>
+    <rect x="660" y="516" width="410" height="8" rx="4" fill="#cbd5e1"/>
+  </g>
+
+  <g font-family="Arial, sans-serif" font-size="16">
+    <rect x="64" y="594" width="180" height="40" rx="20" fill="#1d4ed8"/>
+    <text x="92" y="620" fill="#ffffff">yt-dlp + ffmpeg</text>
+    <rect x="264" y="594" width="160" height="40" rx="20" fill="#2563eb"/>
+    <text x="294" y="620" fill="#ffffff">Contact sheets</text>
+    <rect x="444" y="594" width="170" height="40" rx="20" fill="#3b82f6"/>
+    <text x="475" y="620" fill="#ffffff">Optional Whisper</text>
+    <rect x="634" y="594" width="132" height="40" rx="20" fill="#60a5fa"/>
+    <text x="668" y="620" fill="#0f172a">Word docx</text>
+  </g>
+</svg>

@@ -2,6 +2,15 @@
 
 All notable changes to `/analyze-video` are documented here.
 
+## [Unreleased]
+
+Discovery and sharing improvements.
+
+### Added
+- README landing-page refresh with a stronger value proposition, CI badge, install-in-60-seconds flow, Copilot App/manual workflow notes, and search-friendly phrases.
+- Lightweight SVG preview image for the README.
+- `docs/SHARING.md` with launch checklist, demo script, community sharing plan, trust/safety language, and copy/paste posts.
+
 ## [1.6.3] - 2026-06-10
 
 Patch release focused on fail-fast guardrails that prevent mixed-host, stale-spec, and timeout-planning mistakes before a long run starts.
@@ -138,7 +147,6 @@ First stable release. Reliability, resume, and real-world failure-handling overh
 ### Fixed
 - Local files no longer lose their downloaded subtitle or report the bare filename as the title.
 - Frame extraction no longer wipes and re-extracts every chunk on each run, which previously prevented long videos from ever completing in a single pass.
-
 ## [0.4.0] — 2026-06-03
 
 Safety, failure-mode, and documentation alignment release.
