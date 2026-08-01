@@ -129,13 +129,18 @@ def format_time(seconds: float) -> str:
 def get_metadata(video_path: str) -> dict:
     ffprobe = _require_tool("ffprobe")
 
+    # Ask only for the fields below instead of every stream/format entry: on files
+    # with many streams (multi-audio, subtitles, attached art) the full dump
+    # carries tags, dispositions, and side data that are parsed only to be
+    # discarded. `codec_type` is kept so audio can still be detected. Stream
+    # ordering and selection are unchanged, so results match the full dump.
     result = subprocess.run(
         [
             ffprobe,
             "-v", "quiet",
             "-print_format", "json",
-            "-show_format",
-            "-show_streams",
+            "-show_entries",
+            "format=duration,size:stream=codec_type,codec_name,width,height,duration",
             video_path,
         ],
         capture_output=True,
@@ -261,9 +266,21 @@ def _signature_key(signature: dict) -> str:
     return "fr_" + hashlib.sha1(blob).hexdigest()[:12]
 
 
-def _frames_from_dir(out_dir: Path, fps: float, start_seconds: float | None) -> list[dict]:
+def _list_frames(frames_dir: Path) -> list[Path]:
+    """Sorted frame files in a directory ([] if it doesn't exist)."""
+    if not frames_dir.exists():
+        return []
+    return sorted(frames_dir.glob("frame_*.jpg"))
+
+
+def _frames_from_dir(
+    out_dir: Path,
+    fps: float,
+    start_seconds: float | None,
+    frame_files: list[Path] | None = None,
+) -> list[dict]:
     offset = start_seconds or 0.0
-    frames = sorted(out_dir.glob("frame_*.jpg"))
+    frames = _list_frames(out_dir) if frame_files is None else frame_files
     return [
         {
             "index": i + 1,
@@ -301,7 +318,7 @@ def extract(
     # different input lands elsewhere, so we never delete another run's files.
     frames_dir = out_dir / _signature_key(signature)
     sig_path = frames_dir / ".extract.json"
-    existing = sorted(frames_dir.glob("frame_*.jpg")) if frames_dir.exists() else []
+    existing = _list_frames(frames_dir)
 
     # Resume: reuse a completed extraction whose inputs are unchanged. This is
     # what lets a re-run after a timeout pick up where it left off instead of
@@ -309,7 +326,11 @@ def extract(
     if not force and existing and sig_path.exists():
         try:
             if json.loads(sig_path.read_text()) == signature:
-                return _frames_from_dir(frames_dir, fps, start_seconds), frames_dir
+                # Reuse the listing we already have instead of re-globbing.
+                return (
+                    _frames_from_dir(frames_dir, fps, start_seconds, frame_files=existing),
+                    frames_dir,
+                )
         except (OSError, json.JSONDecodeError):
             pass
 
@@ -367,6 +388,7 @@ def make_contact_sheet(
     cols: int = 8,
     tile_width: int = 200,
     quality: int = 5,
+    frame_count: int | None = None,
 ) -> Path:
     """Tile every frame_*.jpg in frames_dir into a single contact sheet.
 
@@ -375,16 +397,20 @@ def make_contact_sheet(
     timestamp each tile corresponds to. No text overlay (keeps ffmpeg simple
     and avoids font dependencies).
 
+    Pass ``frame_count`` when the caller already knows it (it comes back from
+    ``extract``) to skip re-listing the directory.
+
     Returns the contact sheet path. Raises SystemExit on failure or if no
     frames are present.
     """
     ffmpeg = _require_tool("ffmpeg")
 
-    frame_files = sorted(frames_dir.glob("frame_*.jpg"))
-    if not frame_files:
+    if frame_count is None:
+        frame_count = len(_list_frames(frames_dir))
+    if not frame_count:
         raise SystemExit(f"No frames found in {frames_dir} to tile")
 
-    rows = (len(frame_files) + cols - 1) // cols
+    rows = (frame_count + cols - 1) // cols
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     cmd = [
@@ -473,7 +499,13 @@ if __name__ == "__main__":
 
     sheet_path: str | None = None
     if contact_sheet:
-        sheet_path = str(make_contact_sheet(frames_dir, out.parent / "contact_sheet.jpg"))
+        sheet_path = str(
+            make_contact_sheet(
+                frames_dir,
+                out.parent / "contact_sheet.jpg",
+                frame_count=len(frames),
+            )
+        )
 
     print(json.dumps(
         {

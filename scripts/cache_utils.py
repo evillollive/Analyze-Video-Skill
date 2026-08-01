@@ -170,13 +170,18 @@ def end_use(entry: Path) -> None:
         pass
 
 
-def _remove(entry: Path) -> int:
-    """rmtree an entry, returning bytes freed (best-effort)."""
-    before = dir_size(entry)
+def _remove(entry: Path, known_size: int | None = None) -> int:
+    """rmtree an entry, returning bytes freed (best-effort).
+
+    Pass ``known_size`` when the caller already measured the entry: sizing is a
+    full recursive walk over a multi-GB video directory, so re-measuring here
+    would double the I/O for every eviction.
+    """
+    before = dir_size(entry) if known_size is None else known_size
     try:
         shutil.rmtree(entry)
     except OSError:
-        return before - dir_size(entry)
+        return max(0, before - dir_size(entry))
     return before
 
 
@@ -187,19 +192,31 @@ def clear_downloads() -> dict:
     are skipped so clearing the cache can't crash an in-progress analysis.
     """
     now = time.time()
-    entries = [e for e in _cache_entries() if not _leased(e, now)]
-    before = sum(dir_size(e) for e in entries)
-    skipped = len([e for e in _cache_entries() if _leased(e, now)])
+    # One directory listing and one size walk per entry. The previous version
+    # listed the cache twice and sized each entry up to three times (before, and
+    # again after deletion), which is expensive on multi-GB video directories.
+    entries: list[Path] = []
+    skipped = 0
+    for entry in _cache_entries():
+        if _leased(entry, now):
+            skipped += 1
+        else:
+            entries.append(entry)
+
+    sizes = {entry: dir_size(entry) for entry in entries}
+    freed = 0
     failed = 0
     for entry in entries:
         try:
             shutil.rmtree(entry)
+            freed += sizes[entry]
         except OSError:
             failed += 1
-    after = sum(dir_size(e) for e in entries if e.exists())
+            # Partial deletion is possible, so measure what actually went away.
+            freed += max(0, sizes[entry] - dir_size(entry))
     return {
         "removed": len(entries) - failed,
-        "freed_bytes": max(0, before - after),
+        "freed_bytes": max(0, freed),
         "failed": failed,
         "skipped": skipped,
     }
@@ -227,6 +244,10 @@ def prune_downloads(
     removed = 0
     freed = 0
 
+    # Size every candidate exactly once up front and reuse the measurement for
+    # both eviction passes. Sizing is a full recursive walk, so the old version
+    # (measure for the size cap, then measure again inside _remove) walked
+    # multi-GB directories twice.
     protected_size = 0
     candidates: list[Path] = []
     for entry in _cache_entries():
@@ -234,13 +255,14 @@ def prune_downloads(
             protected_size += dir_size(entry)
             continue
         candidates.append(entry)
+    sizes = {entry: dir_size(entry) for entry in candidates}
 
     # Age-based eviction.
     if max_age > 0:
         survivors: list[Path] = []
         for entry in candidates:
             if now - _recency(entry) > max_age:
-                f = _remove(entry)
+                f = _remove(entry, known_size=sizes.get(entry))
                 if not entry.exists():
                     removed += 1
                     freed += f
@@ -252,13 +274,12 @@ def prune_downloads(
 
     # Size-based eviction (oldest first) until under the cap.
     if max_bytes > 0:
-        sizes = {e: dir_size(e) for e in candidates}
-        total = protected_size + sum(sizes.values())
+        total = protected_size + sum(sizes[e] for e in candidates)
         if total > max_bytes:
             for entry in sorted(candidates, key=_recency):
                 if total <= max_bytes:
                     break
-                f = _remove(entry)
+                f = _remove(entry, known_size=sizes.get(entry))
                 if not entry.exists():
                     removed += 1
                     freed += f

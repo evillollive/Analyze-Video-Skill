@@ -2,15 +2,27 @@
 
 All notable changes to `/analyze-video` are documented here.
 
-## [Unreleased]
+## [1.7.0] - 2026-08-01
 
-Discovery and sharing improvements.
+Performance release: parallel chunk extraction plus a pass over the hot paths, and a transcript fix for focused Whisper runs. Discovery and sharing improvements.
 
 ### Added
 - **Parallel chunk extraction.** `process.py` now extracts auto-chunked videos several chunks at a time instead of strictly one after another, cutting wall-clock time on long videos (measured ~1.9x faster on a 40-minute 720p source). Concurrency is auto-picked from the core count and capped at 4; the new `--jobs N` flag overrides it, and `--jobs 1` restores the sequential path. Manifest output is byte-identical either way, and `status.json` / `manifest_partial.json` still advance as an ordered chunk prefix so resume behavior is unchanged.
+- **`SegmentIndex` for transcript lookups.** `transcribe.py` gained a reusable binary-search index over time-sorted segments, with `range_indices()` and `filter_range()`. It refuses to build on unsorted input so callers fall back to a linear scan rather than silently returning wrong slices.
 - README landing-page refresh with a stronger value proposition, CI badge, install-in-60-seconds flow, Copilot App/manual workflow notes, and search-friendly phrases.
 - Lightweight SVG preview image for the README.
 - `docs/SHARING.md` with launch checklist, demo script, community sharing plan, trust/safety language, and copy/paste posts.
+
+### Fixed
+- **Focused Whisper runs lost their transcript.** With `--start`/`--end` on a captionless video, audio is trimmed before upload, so Whisper returned timestamps starting at 0 while the rest of the pipeline works in absolute video time. Every chunk's `transcript_slice` came back empty even though the audio transcribed correctly. Whisper segments from a focused run are now re-based onto the full video's timeline.
+
+### Changed
+- **Transcript slicing is no longer quadratic.** Per-chunk slicing did a linear filter plus two more full identity scans to recover indices, making it O(chunks x segments). It now goes through a `SegmentIndex` built once per run (measured 1.8x faster on a 2-hour transcript, 4.5x on a 5-hour one).
+- **`_patch_manifest_transcript` computes each slice once.** It previously recomputed every chunk's slice separately for `manifest.json` and `manifest_lite.json`; results are now cached by range and reused.
+- **Download-cache maintenance walks each entry once.** `clear_downloads()` listed the cache twice and sized each entry up to three times, and `prune_downloads()` re-measured inside `_remove()` despite already holding the sizes. Sizing is a full recursive walk over multi-GB video directories, so these are now measured once and reused.
+- **Narrower `ffprobe` query.** `get_metadata()` asked for every stream and format entry but reads a handful of fields; it now requests only those (~90% smaller JSON payload, identical results).
+- **Fewer directory listings during extraction.** The frames directory was globbed up to three times per chunk (twice in `extract()`, once in `make_contact_sheet()`); the listing is now shared.
+- **Single-pass promo keyword matching.** `detect_trailing_promo()` scanned each tail phrase against 14 keywords separately; it now uses one compiled alternation regex.
 
 ## [1.6.3] - 2026-06-10
 

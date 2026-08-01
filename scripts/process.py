@@ -53,7 +53,11 @@ from frames import (  # noqa: E402
     parse_time,
     should_chunk,
 )
-from transcribe import detect_trailing_promo, filter_range, parse_vtt  # noqa: E402
+from transcribe import (  # noqa: E402
+    SegmentIndex,
+    detect_trailing_promo,
+    parse_vtt,
+)
 from whisper import load_all_api_keys, load_api_key, transcribe_video  # noqa: E402
 import host_env  # noqa: E402
 
@@ -317,6 +321,7 @@ def _process_chunk(
     args,
     max_frames: int,
     full_transcript_segments: list[dict],
+    transcript_index: SegmentIndex | None = None,
 ) -> dict:
     """Extract frames + contact sheet + transcript slice indices for one chunk."""
     chunk_dir = work / "chunks" / f"chunk_{chunk_index}"
@@ -364,29 +369,19 @@ def _process_chunk(
             chunk_sheet_path,
             cols=args.contact_sheet_cols,
             tile_width=tile_width,
+            frame_count=len(chunk_frames),
         )
 
     # Per-chunk transcript = indices into the top-level segments array (no
     # duplicated text). The agent (or select_frames.py) can slice on demand.
-    if full_transcript_segments:
-        chunk_segments = filter_range(full_transcript_segments, chunk_start, chunk_end)
-        seg_count = len(chunk_segments)
-        if seg_count:
-            first = chunk_segments[0]
-            last = chunk_segments[-1]
-            # Use id() comparison to find exact segment objects, avoiding
-            # list.index() which matches by value and breaks on duplicates.
-            start_idx = next(
-                (i for i, s in enumerate(full_transcript_segments) if s is first), None
-            )
-            end_idx = next(
-                (i for i, s in enumerate(full_transcript_segments) if s is last), None
-            )
-        else:
-            start_idx, end_idx = None, None
-    else:
-        seg_count = 0
-        start_idx, end_idx = None, None
+    # `transcript_index` is built once by the caller, so this is two binary
+    # searches per chunk instead of a full scan of every segment.
+    slice_info = _slice_indices(
+        full_transcript_segments, transcript_index, chunk_start, chunk_end
+    )
+    seg_count = slice_info["segment_count"]
+    start_idx = slice_info["start_index"]
+    end_idx = slice_info["end_index"]
 
     return {
         "index": chunk_index,
@@ -424,17 +419,60 @@ def _process_chunk(
     }
 
 
-def _transcript_slice(segments: list[dict], start: float, end: float) -> dict:
-    """Index range into `segments` covering [start, end] (matches _process_chunk)."""
+def _segment_index(segments: list[dict]) -> SegmentIndex | None:
+    """Build a reusable time index for a transcript.
+
+    Returns ``None`` for an empty or non-time-sorted transcript, in which case
+    callers fall back to a single linear pass.
+    """
+    if not segments:
+        return None
+    return SegmentIndex.build(segments)
+
+
+def _slice_indices(
+    segments: list[dict],
+    index: SegmentIndex | None,
+    start: float | None,
+    end: float | None,
+) -> dict:
+    """``transcript_slice`` payload: how many segments cover [start, end], and where.
+
+    Chunked videos ask this once per chunk against the same transcript. Doing it
+    through a prebuilt index keeps the whole pass O(chunks log n) instead of the
+    O(chunks x segments) it used to be (a linear filter plus two more linear
+    identity scans to recover the indices).
+    """
     if not segments:
         return {"segment_count": 0, "start_index": None, "end_index": None}
-    in_range = filter_range(segments, start, end)
-    if not in_range:
-        return {"segment_count": 0, "start_index": None, "end_index": None}
-    first, last = in_range[0], in_range[-1]
-    start_idx = next((i for i, s in enumerate(segments) if s is first), None)
-    end_idx = next((i for i, s in enumerate(segments) if s is last), None)
-    return {"segment_count": len(in_range), "start_index": start_idx, "end_index": end_idx}
+    if index is not None:
+        first, last, count = index.range_indices(start, end)
+        return {"segment_count": count, "start_index": first, "end_index": last}
+
+    # Unsorted transcript: one linear pass that still yields the indices directly.
+    lo = float("-inf") if start is None else start
+    hi = float("inf") if end is None else end
+    first_idx: int | None = None
+    last_idx: int | None = None
+    count = 0
+    for i, seg in enumerate(segments):
+        seg_end = seg.get("end")
+        seg_end = seg["start"] if seg_end is None else seg_end
+        if seg_end >= lo and seg["start"] <= hi:
+            if first_idx is None:
+                first_idx = i
+            last_idx = i
+            count += 1
+    return {"segment_count": count, "start_index": first_idx, "end_index": last_idx}
+
+
+def _transcript_slice(segments: list[dict], start: float, end: float) -> dict:
+    """Index range into `segments` covering [start, end] (matches _process_chunk).
+
+    One-shot helper. Callers slicing many ranges should build a
+    :class:`SegmentIndex` once and go through :func:`_slice_indices`.
+    """
+    return _slice_indices(segments, _segment_index(segments), start, end)
 
 
 def _patch_manifest_transcript(
@@ -446,6 +484,19 @@ def _patch_manifest_transcript(
     (slices only) internally consistent so chunk-level quoting still works.
     """
     source = "captions" if segments else None
+    index = _segment_index(segments)
+    # Both manifests describe the same chunk ranges, so slices are computed once
+    # and reused rather than recomputed per manifest.
+    slice_cache: dict[tuple[float, float], dict] = {}
+
+    def slice_for(start: float, end: float) -> dict:
+        key = (start, end)
+        cached = slice_cache.get(key)
+        if cached is None:
+            cached = _slice_indices(segments, index, start, end)
+            slice_cache[key] = cached
+        return dict(cached)
+
     for name in ("manifest.json", "manifest_lite.json"):
         path = work / name
         if not path.exists():
@@ -460,10 +511,32 @@ def _patch_manifest_transcript(
         if name == "manifest.json":
             manifest["transcript_segments"] = segments
         for chunk in manifest.get("chunks") or []:
-            chunk["transcript_slice"] = _transcript_slice(
-                segments, chunk.get("start_seconds") or 0.0, chunk.get("end_seconds") or 0.0
+            chunk["transcript_slice"] = slice_for(
+                chunk.get("start_seconds") or 0.0, chunk.get("end_seconds") or 0.0
             )
         path.write_text(json.dumps(manifest, indent=2))
+
+
+def _shift_segments(segments: list[dict], offset_seconds: float) -> list[dict]:
+    """Re-base segment timestamps onto the full video's timeline.
+
+    Whisper only ever sees the audio it was given. On a focused run the audio is
+    trimmed to start at ``--start``, so the returned timestamps begin at 0 while
+    the rest of the pipeline (chunk ranges, frame timestamps, manifest slices)
+    works in absolute video time. Without this shift a focused Whisper run
+    transcribes fine but every chunk's transcript_slice comes back empty.
+    """
+    if not offset_seconds:
+        return segments
+    shifted: list[dict] = []
+    for seg in segments:
+        moved = dict(seg)
+        moved["start"] = round(seg["start"] + offset_seconds, 2)
+        end = seg.get("end")
+        if end is not None:
+            moved["end"] = round(end + offset_seconds, 2)
+        shifted.append(moved)
+    return shifted
 
 
 def _run_captions_only(args) -> int:
@@ -800,6 +873,12 @@ def main() -> int:
                             start_seconds=effective_start if focused else None,
                             end_seconds=effective_end if focused else None,
                         )
+                        if focused:
+                            # Whisper timestamps are relative to the trimmed audio;
+                            # the rest of the pipeline works in absolute video time.
+                            full_transcript_segments = _shift_segments(
+                                full_transcript_segments, effective_start
+                            )
                         transcript_source = f"whisper ({used_backend})"
                         break
                     except SystemExit as exc:
@@ -938,6 +1017,8 @@ def main() -> int:
                 )
         resume_hint = "Interrupted? Re-run the same command to resume from here."
         processed_chunks: list[dict] = []
+        # Built once and shared by every chunk (read-only, so safe across threads).
+        transcript_index = _segment_index(full_transcript_segments)
         jobs = _resolve_jobs(getattr(args, "jobs", None), len(chunk_ranges))
         _write_status(
             work,
@@ -960,6 +1041,7 @@ def main() -> int:
                 args=args,
                 max_frames=max_frames,
                 full_transcript_segments=full_transcript_segments,
+                transcript_index=transcript_index,
             )
 
         if jobs > 1:
