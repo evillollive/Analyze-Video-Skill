@@ -26,9 +26,11 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 
@@ -59,6 +61,23 @@ import host_env  # noqa: E402
 # Soft-warn the skill when chunking produces this many or more contact sheets,
 # because the preview cost (one Read per chunk) becomes substantial.
 PREVIEW_COST_WARNING_CHUNKS = 5
+
+# Chunk extraction is ffmpeg-bound (decode + scale + JPEG encode), and each chunk
+# is independent, so chunks run in parallel. ffmpeg is already internally
+# multi-threaded, so we deliberately stay well below the core count to avoid
+# oversubscribing the CPU (which slows every worker down).
+DEFAULT_MAX_PARALLEL_CHUNKS = 4
+
+
+def _resolve_jobs(requested: int | None, chunk_count: int) -> int:
+    """Number of chunks to extract concurrently (never more than there are chunks)."""
+    if chunk_count <= 1:
+        return 1
+    if requested is not None and requested > 0:
+        return min(requested, chunk_count)
+    cpus = os.cpu_count() or 1
+    return max(1, min(DEFAULT_MAX_PARALLEL_CHUNKS, cpus // 2 or 1, chunk_count))
+
 
 # Shared, per-user cache for downloaded source videos. Keying by URL means the
 # full download happens once and any later run (including a focused --start/--end
@@ -529,6 +548,15 @@ def main() -> int:
         help=f"Cap on frame count per video/chunk (default 100, hard max {HARD_MAX_FRAMES})",
     )
     ap.add_argument("--resolution", type=int, default=512, help="Frame width in pixels (default 512)")
+    ap.add_argument(
+        "--jobs",
+        type=int,
+        default=None,
+        help=(
+            "Number of chunks to extract in parallel (default: auto, up to "
+            f"{DEFAULT_MAX_PARALLEL_CHUNKS}). Use 1 to force sequential extraction."
+        ),
+    )
     ap.add_argument("--fps", type=float, default=None, help="Override auto-fps (clamped to 2 fps)")
     ap.add_argument("--start", type=str, default=None, help="Range start (SS, MM:SS, or HH:MM:SS)")
     ap.add_argument("--end", type=str, default=None, help="Range end (SS, MM:SS, or HH:MM:SS)")
@@ -910,6 +938,7 @@ def main() -> int:
                 )
         resume_hint = "Interrupted? Re-run the same command to resume from here."
         processed_chunks: list[dict] = []
+        jobs = _resolve_jobs(getattr(args, "jobs", None), len(chunk_ranges))
         _write_status(
             work,
             "extracting",
@@ -917,18 +946,10 @@ def main() -> int:
             chunks_completed=0,
             resume_hint=resume_hint,
         )
-        for i, (cs, ce) in enumerate(chunk_ranges):
-            # Mark the in-flight chunk *before* extracting it, so a process killed
-            # mid-chunk leaves a status that names exactly where it stopped.
-            _write_status(
-                work,
-                "extracting",
-                chunk_count=len(chunk_ranges),
-                chunks_completed=len(processed_chunks),
-                current_chunk=i + 1,
-                resume_hint=resume_hint,
-            )
-            chunk = _process_chunk(
+
+        def _run_chunk(item: tuple[int, tuple[float, float]]) -> dict:
+            i, (cs, ce) = item
+            return _process_chunk(
                 chunk_index=i + 1,
                 chunk_count=len(chunk_ranges),
                 chunk_start=cs,
@@ -940,23 +961,76 @@ def main() -> int:
                 max_frames=max_frames,
                 full_transcript_segments=full_transcript_segments,
             )
-            processed_chunks.append(chunk)
-            _write_status(
-                work,
-                "extracting",
-                chunk_count=len(chunk_ranges),
-                chunks_completed=len(processed_chunks),
-                resume_hint=resume_hint,
+
+        if jobs > 1:
+            print(
+                f"[analyze-video] extracting {len(chunk_ranges)} chunks "
+                f"{jobs} at a time",
+                file=sys.stderr,
             )
-            _write_partial_manifest(
-                work,
-                info=info,
-                full_duration=full_duration,
-                chunk_count=len(chunk_ranges),
-                processed_chunks=processed_chunks,
-                transcript_source=transcript_source,
-                segment_count=len(full_transcript_segments),
-            )
+            done: dict[int, dict] = {}
+            with ThreadPoolExecutor(max_workers=jobs) as pool:
+                futures = {
+                    pool.submit(_run_chunk, (i, rng)): i
+                    for i, rng in enumerate(chunk_ranges)
+                }
+                for future in as_completed(futures):
+                    done[futures[future]] = future.result()
+                    # Persist only the contiguous completed prefix, so a partial
+                    # manifest is always chunks 1..N with no holes.
+                    prefix: list[dict] = []
+                    for i in range(len(chunk_ranges)):
+                        if i not in done:
+                            break
+                        prefix.append(done[i])
+                    _write_status(
+                        work,
+                        "extracting",
+                        chunk_count=len(chunk_ranges),
+                        chunks_completed=len(prefix),
+                        current_chunk=min(len(prefix) + 1, len(chunk_ranges)),
+                        resume_hint=resume_hint,
+                    )
+                    if prefix:
+                        _write_partial_manifest(
+                            work,
+                            info=info,
+                            full_duration=full_duration,
+                            chunk_count=len(chunk_ranges),
+                            processed_chunks=prefix,
+                            transcript_source=transcript_source,
+                            segment_count=len(full_transcript_segments),
+                        )
+            processed_chunks = [done[i] for i in sorted(done)]
+        else:
+            for i, (cs, ce) in enumerate(chunk_ranges):
+                # Mark the in-flight chunk *before* extracting it, so a process killed
+                # mid-chunk leaves a status that names exactly where it stopped.
+                _write_status(
+                    work,
+                    "extracting",
+                    chunk_count=len(chunk_ranges),
+                    chunks_completed=len(processed_chunks),
+                    current_chunk=i + 1,
+                    resume_hint=resume_hint,
+                )
+                processed_chunks.append(_run_chunk((i, (cs, ce))))
+                _write_status(
+                    work,
+                    "extracting",
+                    chunk_count=len(chunk_ranges),
+                    chunks_completed=len(processed_chunks),
+                    resume_hint=resume_hint,
+                )
+                _write_partial_manifest(
+                    work,
+                    info=info,
+                    full_duration=full_duration,
+                    chunk_count=len(chunk_ranges),
+                    processed_chunks=processed_chunks,
+                    transcript_source=transcript_source,
+                    segment_count=len(full_transcript_segments),
+                )
 
         aspect = _aspect_ratio_label(meta.get("width"), meta.get("height"))
         docx_dim = _docx_image_dimensions(meta.get("width"), meta.get("height"), aspect)
