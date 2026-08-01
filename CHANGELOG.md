@@ -7,6 +7,7 @@ All notable changes to `/analyze-video` are documented here.
 Discovery and sharing improvements.
 
 ### Added
+- **Parallel chunk extraction.** `process.py` now extracts auto-chunked videos several chunks at a time instead of strictly one after another, cutting wall-clock time on long videos (measured ~1.9x faster on a 40-minute 720p source). Concurrency is auto-picked from the core count and capped at 4; the new `--jobs N` flag overrides it, and `--jobs 1` restores the sequential path. Manifest output is byte-identical either way, and `status.json` / `manifest_partial.json` still advance as an ordered chunk prefix so resume behavior is unchanged.
 - README landing-page refresh with a stronger value proposition, CI badge, install-in-60-seconds flow, Copilot App/manual workflow notes, and search-friendly phrases.
 - Lightweight SVG preview image for the README.
 - `docs/SHARING.md` with launch checklist, demo script, community sharing plan, trust/safety language, and copy/paste posts.

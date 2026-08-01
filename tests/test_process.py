@@ -305,3 +305,28 @@ class TestPatchManifestTranscript:
 
     def test_no_manifests_is_noop(self, tmp_path):
         _patch_manifest_transcript(tmp_path, _segs(), tmp_path / "t.txt")  # must not raise
+
+
+from process import DEFAULT_MAX_PARALLEL_CHUNKS, _resolve_jobs  # noqa: E402
+
+
+class TestResolveJobs:
+    def test_single_chunk_never_parallel(self):
+        assert _resolve_jobs(None, 1) == 1
+        assert _resolve_jobs(8, 1) == 1
+        assert _resolve_jobs(None, 0) == 1
+
+    def test_explicit_request_is_capped_by_chunk_count(self):
+        assert _resolve_jobs(8, 3) == 3
+        assert _resolve_jobs(2, 10) == 2
+
+    def test_explicit_one_forces_sequential(self):
+        assert _resolve_jobs(1, 10) == 1
+
+    def test_auto_is_bounded(self):
+        jobs = _resolve_jobs(None, 10)
+        assert 1 <= jobs <= DEFAULT_MAX_PARALLEL_CHUNKS
+
+    def test_non_positive_request_falls_back_to_auto(self):
+        assert _resolve_jobs(0, 6) == _resolve_jobs(None, 6)
+        assert _resolve_jobs(-3, 6) == _resolve_jobs(None, 6)
