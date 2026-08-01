@@ -173,7 +173,7 @@ Process videos sequentially. Do not parallelize video processing; it can saturat
 
 Per-video outputs include:
 - `manifest_lite.json`: lightweight default manifest, schema v3 minus transcript text and per-frame arrays.
-- `manifest.json`: full schema v3 manifest with top-level `transcript_segments`.
+- `manifest.json`: full schema v3 manifest with top-level `transcript_segments`. Segment timestamps are always absolute positions in the source video, including on a focused `--start`/`--end` run.
 - `transcript.txt`: human-readable transcript (`[mm:ss] text` per line), written whenever a transcript exists. Its path is also in `manifest_lite.transcript_path`.
 - `report.md`: human-readable pipeline report.
 - `status.json`: live stage marker (`downloading`, `extracting` chunk i of N, `complete`). Useful for checking progress mid-run.

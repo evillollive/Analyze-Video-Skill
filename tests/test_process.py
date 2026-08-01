@@ -330,3 +330,64 @@ class TestResolveJobs:
     def test_non_positive_request_falls_back_to_auto(self):
         assert _resolve_jobs(0, 6) == _resolve_jobs(None, 6)
         assert _resolve_jobs(-3, 6) == _resolve_jobs(None, 6)
+
+
+from process import _segment_index, _shift_segments, _slice_indices  # noqa: E402
+
+
+class TestShiftSegments:
+    def test_zero_offset_returns_same_object(self):
+        segs = [{"start": 1.0, "end": 2.0, "text": "a"}]
+        assert _shift_segments(segs, 0.0) is segs
+
+    def test_shifts_start_and_end(self):
+        segs = [{"start": 0.0, "end": 2.0, "text": "a"}, {"start": 3.0, "end": 5.0, "text": "b"}]
+        out = _shift_segments(segs, 300.0)
+        assert [(s["start"], s["end"]) for s in out] == [(300.0, 302.0), (303.0, 305.0)]
+
+    def test_does_not_mutate_input(self):
+        segs = [{"start": 0.0, "end": 2.0, "text": "a"}]
+        _shift_segments(segs, 10.0)
+        assert segs[0]["start"] == 0.0
+
+    def test_missing_end_is_left_absent(self):
+        out = _shift_segments([{"start": 1.0, "text": "x"}], 10.0)
+        assert out[0]["start"] == 11.0
+        assert "end" not in out[0]
+
+    def test_focused_whisper_slice_is_recovered(self):
+        """A focused Whisper run returns 0-based times; chunks slice absolutely."""
+        whisper = [{"start": s, "end": s + 2.0, "text": f"l{s}"} for s in range(0, 60, 3)]
+        # Without the shift the chunk slice is empty even though audio transcribed.
+        assert _slice_indices(whisper, _segment_index(whisper), 300.0, 360.0) == {
+            "segment_count": 0, "start_index": None, "end_index": None,
+        }
+        shifted = _shift_segments(whisper, 300.0)
+        assert _slice_indices(shifted, _segment_index(shifted), 300.0, 360.0) == {
+            "segment_count": 20, "start_index": 0, "end_index": 19,
+        }
+
+
+class TestSliceIndices:
+    def test_empty_segments(self):
+        assert _slice_indices([], None, 0.0, 10.0) == {
+            "segment_count": 0, "start_index": None, "end_index": None,
+        }
+
+    def test_unsorted_segments_fall_back_to_linear(self):
+        segs = [
+            {"start": 9.0, "end": 10.0, "text": "c"},
+            {"start": 1.0, "end": 2.0, "text": "a"},
+        ]
+        assert _segment_index(segs) is None  # refuses to index unsorted input
+        assert _slice_indices(segs, None, 0.0, 3.0) == {
+            "segment_count": 1, "start_index": 1, "end_index": 1,
+        }
+
+    def test_long_held_cue_starting_before_window_is_found(self):
+        segs = [
+            {"start": 0.0, "end": 500.0, "text": "held card"},
+            {"start": 310.0, "end": 312.0, "text": "speech"},
+        ]
+        got = _slice_indices(segs, _segment_index(segs), 300.0, 360.0)
+        assert got == {"segment_count": 2, "start_index": 0, "end_index": 1}

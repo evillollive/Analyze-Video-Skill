@@ -6,6 +6,7 @@ scrolls). We dedupe consecutive identical cues and merge their time ranges.
 """
 from __future__ import annotations
 
+import bisect
 import re
 import sys
 from pathlib import Path
@@ -67,17 +68,118 @@ def _dedupe(segments: list[dict]) -> list[dict]:
     return out
 
 
+def _seg_end(seg: dict) -> float:
+    """A segment's end, falling back to its start when the cue has no end."""
+    end = seg.get("end")
+    return seg["start"] if end is None else end
+
+
+class SegmentIndex:
+    """O(log n) time-range lookups over a transcript, built once and reused.
+
+    A linear scan per query is fine one-off, but chunked videos query the same
+    transcript once per chunk (and again when a manifest is patched), which makes
+    the naive version O(chunks x segments). Building this index once turns each
+    query into two binary searches.
+
+    Requires segments sorted by ``start`` (parse_vtt and Whisper both emit that).
+    ``build`` returns ``None`` for unsorted input so callers can fall back to the
+    linear path rather than silently returning wrong slices.
+    """
+
+    __slots__ = ("segments", "_starts", "_max_ends")
+
+    def __init__(self, segments: list[dict], starts: list[float], max_ends: list[float]):
+        self.segments = segments
+        self._starts = starts
+        self._max_ends = max_ends
+
+    @classmethod
+    def build(cls, segments: list[dict]) -> SegmentIndex | None:
+        starts: list[float] = []
+        max_ends: list[float] = []
+        running = float("-inf")
+        previous = float("-inf")
+        for seg in segments:
+            start = seg["start"]
+            if start < previous:
+                return None  # unsorted; caller falls back to a linear scan
+            previous = start
+            starts.append(start)
+            # Running max, so a long held cue that *starts* before the window but
+            # extends into it is still found by the lower-bound search.
+            running = max(running, _seg_end(seg))
+            max_ends.append(running)
+        return cls(segments, starts, max_ends)
+
+    def bounds(self, start_seconds: float | None, end_seconds: float | None) -> tuple[int, int]:
+        """Half-open ``[lo, hi)`` index window that can contain overlapping segments.
+
+        The window is a superset: entries inside it still need the per-segment
+        ``end >= lo`` test, because a short cue can be nested inside a longer one.
+        """
+        if not self.segments:
+            return 0, 0
+        lo = float("-inf") if start_seconds is None else start_seconds
+        hi = float("inf") if end_seconds is None else end_seconds
+        # start <= hi  ->  everything left of this point
+        hi_idx = bisect.bisect_right(self._starts, hi)
+        # Nothing before this point has an end reaching lo.
+        lo_idx = bisect.bisect_left(self._max_ends, lo)
+        return (lo_idx, hi_idx) if lo_idx < hi_idx else (0, 0)
+
+    def range_indices(
+        self, start_seconds: float | None, end_seconds: float | None
+    ) -> tuple[int | None, int | None, int]:
+        """``(first_index, last_index, count)`` of segments overlapping the range.
+
+        Indices are absolute positions in the underlying segment list, which is
+        exactly what the manifest's ``transcript_slice`` records.
+        """
+        lo_idx, hi_idx = self.bounds(start_seconds, end_seconds)
+        lo = float("-inf") if start_seconds is None else start_seconds
+        first: int | None = None
+        last: int | None = None
+        count = 0
+        for i in range(lo_idx, hi_idx):
+            if _seg_end(self.segments[i]) >= lo:
+                if first is None:
+                    first = i
+                last = i
+                count += 1
+        return first, last, count
+
+    def filter_range(
+        self, start_seconds: float | None, end_seconds: float | None
+    ) -> list[dict]:
+        """Segments overlapping ``[start, end]`` (same result as ``filter_range``)."""
+        if start_seconds is None and end_seconds is None:
+            return self.segments
+        lo_idx, hi_idx = self.bounds(start_seconds, end_seconds)
+        lo = float("-inf") if start_seconds is None else start_seconds
+        return [
+            seg for seg in self.segments[lo_idx:hi_idx] if _seg_end(seg) >= lo
+        ]
+
+
 def filter_range(
     segments: list[dict],
     start_seconds: float | None,
     end_seconds: float | None,
 ) -> list[dict]:
-    """Return segments whose time range overlaps [start, end]."""
+    """Return segments whose time range overlaps [start, end].
+
+    One-shot helper. For repeated queries against the same transcript (per-chunk
+    slicing), build a :class:`SegmentIndex` once instead.
+    """
     if start_seconds is None and end_seconds is None:
         return segments
+    index = SegmentIndex.build(segments)
+    if index is not None:
+        return index.filter_range(start_seconds, end_seconds)
     lo = start_seconds if start_seconds is not None else float("-inf")
     hi = end_seconds if end_seconds is not None else float("inf")
-    return [seg for seg in segments if seg["end"] >= lo and seg["start"] <= hi]
+    return [seg for seg in segments if _seg_end(seg) >= lo and seg["start"] <= hi]
 
 
 def format_transcript(segments: list[dict]) -> str:
@@ -98,6 +200,10 @@ _PROMO_KEYWORDS = (
     "link in", "patreon", "notification", "hit the bell", "smash that",
     "watch the full", "next episode", "comment below", "follow us",
 )
+
+# One alternation instead of a substring scan per keyword: phrases are already
+# normalized to lowercase alphanumerics, so a plain alternation is exact.
+_PROMO_KEYWORD_RE = re.compile("|".join(re.escape(kw) for kw in _PROMO_KEYWORDS))
 
 
 def _normalize_phrase(text: str) -> str:
@@ -176,9 +282,7 @@ def detect_trailing_promo(
     unique_phrases = sorted(set(run_norms))
     unique_count = len(unique_phrases)
     repeated_present = any(n in repeated for n in run_norms)
-    keyword_present = any(
-        any(kw in n for kw in _PROMO_KEYWORDS) for n in run_norms
-    )
+    keyword_present = any(_PROMO_KEYWORD_RE.search(n) for n in run_norms)
     # High confidence when the block genuinely repeats, has several cues, or
     # carries explicit promo language. A lone quiet cue stays low-confidence.
     high_confidence = repeated_present or len(run_norms) >= 3 or keyword_present
