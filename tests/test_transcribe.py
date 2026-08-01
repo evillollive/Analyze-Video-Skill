@@ -177,3 +177,48 @@ class TestDetectTrailingPromo:
 
     def test_empty_transcript(self):
         assert detect_trailing_promo([], full_duration=120) is None
+
+
+from transcribe import SegmentIndex  # noqa: E402
+
+
+class TestSegmentIndex:
+    def _segs(self):
+        return [
+            {"start": 0.0, "end": 2.0, "text": "a"},
+            {"start": 3.0, "end": 5.0, "text": "b"},
+            {"start": 6.0, "end": 9.0, "text": "c"},
+        ]
+
+    def test_build_refuses_unsorted(self):
+        assert SegmentIndex.build([{"start": 5.0, "end": 6.0}, {"start": 1.0, "end": 2.0}]) is None
+
+    def test_build_accepts_equal_starts(self):
+        assert SegmentIndex.build([{"start": 1.0, "end": 2.0}, {"start": 1.0, "end": 3.0}]) is not None
+
+    def test_filter_range_matches_linear(self):
+        segs = self._segs()
+        idx = SegmentIndex.build(segs)
+        for lo, hi in [(0, 9), (4, 11), (4, 9), (2, 2), (10, 20), (-5, -1)]:
+            expected = [s for s in segs if s["end"] >= lo and s["start"] <= hi]
+            assert idx.filter_range(lo, hi) == expected, (lo, hi)
+
+    def test_range_indices_reports_absolute_positions(self):
+        idx = SegmentIndex.build(self._segs())
+        assert idx.range_indices(3, 7) == (1, 2, 2)
+        assert idx.range_indices(100, 200) == (None, None, 0)
+
+    def test_none_bounds_returns_everything(self):
+        segs = self._segs()
+        assert SegmentIndex.build(segs).filter_range(None, None) == segs
+
+    def test_empty_index(self):
+        idx = SegmentIndex.build([])
+        assert idx.range_indices(0, 10) == (None, None, 0)
+        assert idx.filter_range(0, 10) == []
+
+    def test_segment_without_end_uses_start(self):
+        segs = [{"start": 4.0, "text": "no end"}]
+        idx = SegmentIndex.build(segs)
+        assert idx.range_indices(3, 5) == (0, 0, 1)
+        assert idx.range_indices(6, 8) == (None, None, 0)
