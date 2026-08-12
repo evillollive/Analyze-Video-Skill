@@ -46,6 +46,20 @@ except ImportError:  # pragma: no cover
     def _resolve_tool(name: str) -> str | None:
         return shutil.which(name)
 
+try:
+    import cache_utils as _cache_utils
+except ImportError:  # pragma: no cover
+    _cache_utils = None
+
+
+def backend_model(backend: str) -> str:
+    """Whisper model name used for a backend (part of the cache identity)."""
+    if backend == "groq":
+        return GROQ_MODEL
+    if backend == "openai":
+        return OPENAI_MODEL
+    raise SystemExit(f"Unknown whisper backend: {backend}")
+
 
 def load_api_key(preferred: str | None = None) -> tuple[str, str] | tuple[None, None]:
     """Return (backend, api_key). Prefers Groq, falls back to OpenAI.
@@ -346,11 +360,18 @@ def transcribe_video(
     api_key: str | None = None,
     start_seconds: float | None = None,
     end_seconds: float | None = None,
+    use_cache: bool = True,
+    refresh_cache: bool = False,
 ) -> tuple[list[dict], str]:
     """Run the full flow: extract audio (or reuse if present), upload, parse segments.
 
     Returns (segments, backend_used). Raises SystemExit on any failure.
     Reuses audio_out if it already exists (saves time on retries / re-runs).
+
+    A successful transcription is cached (keyed by the source video's identity,
+    the requested range, and the backend/model), so a repeat run skips both the
+    audio extraction and the paid API call. Pass ``use_cache=False`` to opt out
+    entirely, or ``refresh_cache=True`` to ignore an existing entry and rewrite it.
     """
     if backend is None or api_key is None:
         detected_backend, detected_key = load_api_key()
@@ -364,6 +385,27 @@ def transcribe_video(
             f"in the environment or in {CONFIG_FILE}. "
             f"Run `python3 {setup_py}` to configure."
         )
+
+    # Cache lookup first: a hit skips the full-video audio decode *and* the
+    # upload, which is the whole point of caching this step.
+    signature: dict = {}
+    if use_cache and _cache_utils is not None:
+        signature = _cache_utils.transcript_signature(
+            video_path,
+            backend=backend,
+            model=backend_model(backend),
+            start_seconds=start_seconds,
+            end_seconds=end_seconds,
+        )
+        if signature and not refresh_cache:
+            cached = _cache_utils.read_transcript(signature)
+            if cached:
+                print(
+                    f"[analyze-video] reusing cached {backend} transcript "
+                    f"({len(cached)} segments); skipping audio extraction and upload",
+                    file=sys.stderr,
+                )
+                return cached, backend
 
     if audio_out.exists() and audio_out.stat().st_size > 0:
         _check_audio_size(audio_out)
@@ -400,6 +442,9 @@ def transcribe_video(
         )
 
     segments = transcribe_audio(audio_path, backend, api_key)
+
+    if signature:
+        _cache_utils.write_transcript(signature, segments)
 
     print(
         f"[analyze-video] transcribed {len(segments)} segments via {backend}",

@@ -872,6 +872,10 @@ def main() -> int:
                             api_key=api_key,
                             start_seconds=effective_start if focused else None,
                             end_seconds=effective_end if focused else None,
+                            # --no-download-cache means "keep this run self-contained",
+                            # and --force means "redo the work", so both opt out.
+                            use_cache=not args.no_download_cache,
+                            refresh_cache=bool(args.force),
                         )
                         if focused:
                             # Whisper timestamps are relative to the trimmed audio;
@@ -1291,6 +1295,7 @@ def main() -> int:
         if cache_entry is not None:
             cache_utils.end_use(cache_entry)
         cache_utils.prune_downloads(protect=cache_entry)
+        cache_utils.prune_transcripts()
 
     # Final stdout: the lite manifest path (skill reads this; full manifest
     # path is recorded inside it under "manifest_path" if needed).

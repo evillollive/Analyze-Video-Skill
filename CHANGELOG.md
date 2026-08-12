@@ -2,6 +2,15 @@
 
 All notable changes to `/analyze-video` are documented here.
 
+## [Unreleased]
+
+### Added
+- **Whisper transcript cache.** Transcribing is the most expensive non-download step in the pipeline — it decodes the whole video's audio, uploads it, and pays for a Whisper API call — and nothing reused the result. The documented recovery path for an interrupted run is "re-run the exact same command", and a focused re-run normally lands in a *different* out-dir, so neither the extracted audio nor the API response was reused and every repeat run paid full price again. Successful transcriptions are now cached at `~/.cache/analyze-video/transcripts/`, and a repeat run skips the audio extraction and the upload entirely.
+
+  Entries are keyed by the source file's size and mtime plus the requested `--start`/`--end` range and the backend/model, so a re-downloaded or edited video re-transcribes rather than serving a stale transcript. Keying on file identity instead of path means a cached download reused from a different out-dir still hits. The stored signature is re-verified on read, so a hash collision or an older cache format is treated as a miss. Writes go through a temp file and `os.replace()`, so a run killed mid-write cannot leave a truncated entry. Cache misses, unreadable files, and read-only sandboxes all fall back to transcribing as before.
+
+  `--force` re-transcribes and overwrites the entry; `--no-download-cache` opts out entirely for a self-contained run. Entries are small, so they are kept for 90 days (`ANALYZE_VIDEO_TRANSCRIPT_CACHE_MAX_AGE_DAYS`, `0` disables), pruned at the end of each run alongside the download cache, and removed by `setup.py --clear-cache`.
+
 ## [1.7.0] - 2026-08-01
 
 Performance release: parallel chunk extraction plus a pass over the hot paths, and a transcript fix for focused Whisper runs. Discovery and sharing improvements.
