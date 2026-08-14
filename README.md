@@ -155,7 +155,7 @@ Analyze-Video-Skill/
 ├── scripts/
 │   ├── process.py               # Main pipeline entry point
 │   ├── download.py              # yt-dlp wrapper and failure classification
-│   ├── cache_utils.py           # Self-pruning download cache
+│   ├── cache_utils.py           # Self-pruning download + transcript caches
 │   ├── frames.py                # Frame extraction and contact sheets
 │   ├── transcribe.py            # VTT parser and deduper
 │   ├── whisper.py               # Groq/OpenAI Whisper client
@@ -185,12 +185,15 @@ Everything runs locally on your machine. Here's exactly what goes where:
 - The video file, extracted frames, contact sheets, manifests, and final `.docx`
 - Your config at `~/.config/analyze-video/.env` with owner-only permissions
 - Downloaded source videos cached at `~/.cache/analyze-video/downloads/`
+- Whisper transcripts cached at `~/.cache/analyze-video/transcripts/`
 
 The download cache manages itself: at the end of each run it evicts entries older than 14 days and trims total size back under 5 GB, least-recently-used first. It never removes a download an active run is using. Tune limits with `ANALYZE_VIDEO_CACHE_MAX_AGE_DAYS` and `ANALYZE_VIDEO_CACHE_MAX_GB` (set either to `0` to disable that limit), or wipe the cache with:
 
 ```bash
 python3 scripts/setup.py --clear-cache
 ```
+
+Transcripts are cached too, because transcribing is the most expensive non-download step: it decodes the whole video's audio, uploads it, and pays for a Whisper API call. A repeat run on the same video and range reuses the stored result and skips all three. Entries are keyed by the source file's identity plus the requested range and backend/model, so a re-downloaded or edited video always re-transcribes. They are tiny, so they are kept for 90 days (`ANALYZE_VIDEO_TRANSCRIPT_CACHE_MAX_AGE_DAYS`, `0` to disable) and cleared by `--clear-cache` along with the downloads. Use `--force` to re-transcribe and overwrite the entry, or `--no-download-cache` to keep a run fully self-contained.
 
 **Sent to an API only when needed:**
 

@@ -659,7 +659,10 @@ def _fmt_bytes(n: int) -> str:
 
 
 def cmd_clear_cache() -> int:
-    """Delete all cached source-video downloads. Leaves the docx cache intact."""
+    """Delete all cached source-video downloads and Whisper transcripts.
+
+    Leaves the docx cache intact.
+    """
     if cache_utils is None:
         print("[setup] cache utilities unavailable", file=sys.stderr)
         return 2
@@ -669,6 +672,17 @@ def cmd_clear_cache() -> int:
     failed = result.get("failed", 0)
     skipped = result.get("skipped", 0)
     print(f"[setup] cleared download cache: removed {removed} item(s), freed {freed}")
+
+    transcripts = cache_utils.clear_transcripts()
+    t_removed = transcripts.get("removed", 0)
+    t_failed = transcripts.get("failed", 0)
+    if t_removed or t_failed:
+        print(
+            f"[setup] cleared transcript cache: removed {t_removed} item(s), "
+            f"freed {_fmt_bytes(transcripts.get('freed_bytes', 0))}"
+        )
+    failed += t_failed
+
     if skipped:
         print(
             f"[setup] skipped {skipped} item(s) in use by a running analysis",

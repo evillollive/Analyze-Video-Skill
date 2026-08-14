@@ -6,6 +6,12 @@ The pipeline caches each downloaded source video under
 Left unmanaged that grows without bound (full-size videos), so this module adds
 age- and size-based eviction plus a manual clear.
 
+It also caches Whisper transcripts under `~/.cache/analyze-video/transcripts/`.
+Transcription is the single most expensive non-download step (a full-video audio
+decode, an upload, and a paid API call), and the pipeline's documented recovery
+path is "re-run the exact same command". Without a cache every such re-run pays
+for it again, so results are keyed by the audio's identity and reused.
+
 Safety rules (deliberately strict, because this deletes files):
 - Only ever touch entries directly under DOWNLOADS_DIR whose name is exactly a
   16-character lowercase hex cache key. Anything else (including the sibling
@@ -19,6 +25,8 @@ Safety rules (deliberately strict, because this deletes files):
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import re
 import shutil
@@ -28,6 +36,7 @@ from pathlib import Path
 
 CACHE_ROOT = Path.home() / ".cache" / "analyze-video"
 DOWNLOADS_DIR = CACHE_ROOT / "downloads"
+TRANSCRIPTS_DIR = CACHE_ROOT / "transcripts"
 
 # Cache keys are sha256(url)[:16]; only dirs matching this are ever deleted.
 ENTRY_NAME_RE = re.compile(r"^[0-9a-f]{16}$")
@@ -39,6 +48,11 @@ LEASE_TTL_SECONDS = 6 * 3600
 
 DEFAULT_MAX_AGE_DAYS = 14.0
 DEFAULT_MAX_SIZE_GB = 5.0
+
+# Transcripts are a few hundred kB at most, so they are kept far longer than
+# downloads and are bounded by age alone.
+DEFAULT_TRANSCRIPT_MAX_AGE_DAYS = 90.0
+TRANSCRIPT_SCHEMA_VERSION = 1
 
 
 def _env_float(name: str, default: float) -> float:
@@ -286,3 +300,176 @@ def prune_downloads(
                     total -= sizes.get(entry, 0)
 
     return {"removed": removed, "freed_bytes": freed}
+
+
+# ---------------------------------------------------------------------------
+# Whisper transcript cache
+# ---------------------------------------------------------------------------
+# Transcribing is the most expensive non-download step in the pipeline: it
+# decodes the whole video's audio, uploads it, and pays for a Whisper API call.
+# The pipeline's documented recovery path for an interrupted run is "re-run the
+# exact same command", and a focused re-run normally lands in a *different*
+# out-dir, so neither the extracted audio nor the API result was reused. Caching
+# the parsed segments makes every repeat run skip transcription entirely.
+
+
+def transcript_max_age_seconds() -> float:
+    """Age limit for cached transcripts in seconds (0 disables age eviction)."""
+    days = _env_float(
+        "ANALYZE_VIDEO_TRANSCRIPT_CACHE_MAX_AGE_DAYS", DEFAULT_TRANSCRIPT_MAX_AGE_DAYS
+    )
+    return max(0.0, days) * 86400.0
+
+
+def transcript_signature(
+    video_path: str | Path,
+    *,
+    backend: str,
+    model: str,
+    start_seconds: float | None = None,
+    end_seconds: float | None = None,
+) -> dict:
+    """Fingerprint the inputs that determine a transcription's result.
+
+    Keyed on the source file's size + mtime rather than its path, so the same
+    cached download reused from a different out-dir still hits. A swapped or
+    re-downloaded video changes the signature and forces a fresh transcription.
+    Returns ``{}`` when the video cannot be stat'd, which disables caching.
+    """
+    try:
+        st = os.stat(video_path)
+    except OSError:
+        return {}
+    return {
+        "schema": TRANSCRIPT_SCHEMA_VERSION,
+        "video_sig": f"{st.st_size}:{st.st_mtime_ns}",
+        "backend": backend,
+        "model": model,
+        "start_seconds": None if start_seconds is None else round(start_seconds, 3),
+        "end_seconds": None if end_seconds is None else round(end_seconds, 3),
+    }
+
+
+def transcript_key(signature: dict) -> str | None:
+    """Stable cache filename stem for a transcript signature."""
+    if not signature:
+        return None
+    blob = json.dumps(signature, sort_keys=True).encode("utf-8")
+    return "tr_" + hashlib.sha256(blob).hexdigest()[:24]
+
+
+def _transcript_path(signature: dict) -> Path | None:
+    key = transcript_key(signature)
+    return None if key is None else TRANSCRIPTS_DIR / f"{key}.json"
+
+
+def read_transcript(signature: dict) -> list[dict] | None:
+    """Cached segments for `signature`, or None on any miss.
+
+    The stored signature is re-checked so a hash collision or an older cache
+    format can never feed the wrong transcript into a run.
+    """
+    path = _transcript_path(signature)
+    if path is None:
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, ValueError):
+        return None
+    if not isinstance(payload, dict) or payload.get("signature") != signature:
+        return None
+    segments = payload.get("segments")
+    if not isinstance(segments, list) or not segments:
+        return None
+    # Refresh recency so an actively reused transcript survives age eviction.
+    try:
+        os.utime(path, None)
+    except OSError:
+        pass
+    return segments
+
+
+def write_transcript(signature: dict, segments: list[dict]) -> Path | None:
+    """Persist segments for `signature`. Best-effort; returns the path or None.
+
+    Written via a temp file + replace so a run killed mid-write can't leave a
+    truncated JSON file that a later run would have to parse and discard.
+    """
+    path = _transcript_path(signature)
+    if path is None or not segments:
+        return None
+    payload = {
+        "signature": signature,
+        "created_at": time.time(),
+        "segment_count": len(segments),
+        "segments": segments,
+    }
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    try:
+        TRANSCRIPTS_DIR.mkdir(parents=True, exist_ok=True)
+        tmp.write_text(json.dumps(payload), encoding="utf-8")
+        os.replace(tmp, path)
+    except OSError:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        return None
+    return path
+
+
+def _transcript_entries() -> list[Path]:
+    """Cached transcript files (`tr_*.json` directly under TRANSCRIPTS_DIR)."""
+    try:
+        if not TRANSCRIPTS_DIR.is_dir() or TRANSCRIPTS_DIR.is_symlink():
+            return []
+        return [
+            p
+            for p in TRANSCRIPTS_DIR.glob("tr_*.json")
+            if p.is_file() and not p.is_symlink()
+        ]
+    except OSError:
+        return []
+
+
+def prune_transcripts(max_age: float | None = None) -> dict:
+    """Drop cached transcripts older than the age limit. Best-effort."""
+    if max_age is None:
+        max_age = transcript_max_age_seconds()
+    if max_age <= 0:
+        return {"removed": 0, "freed_bytes": 0}
+    now = time.time()
+    removed = 0
+    freed = 0
+    for path in _transcript_entries():
+        try:
+            stat = path.stat()
+            if now - stat.st_mtime <= max_age:
+                continue
+            size = stat.st_size
+            path.unlink()
+        except OSError:
+            continue
+        removed += 1
+        freed += size
+    return {"removed": removed, "freed_bytes": freed}
+
+
+def clear_transcripts() -> dict:
+    """Remove every cached transcript. Returns removed/freed/failed counts."""
+    removed = 0
+    freed = 0
+    failed = 0
+    for path in _transcript_entries():
+        try:
+            size = path.stat().st_size
+        except OSError:
+            size = 0
+        try:
+            path.unlink()
+        except OSError:
+            failed += 1
+            continue
+        removed += 1
+        freed += size
+    return {"removed": removed, "freed_bytes": freed, "failed": failed}
