@@ -258,21 +258,71 @@ def _source_marker_matches(out_dir: Path, url: str, requested_auth: str = "none"
     return False
 
 
-def _clear_download_artifacts(out_dir: Path) -> None:
+def _is_partial(path: Path) -> bool:
+    """True for a yt-dlp in-progress file (a resumable partial download).
+
+    yt-dlp streams each format into `<name>.part` (plus a `.ytdl` progress
+    sidecar and `.part-FragN` fragment files) and renames only once the format
+    is complete, so these are exactly the files a resumed download can continue
+    from instead of re-fetching.
+    """
+    name = path.name
+    return name.endswith((".part", ".ytdl")) or ".part-Frag" in name
+
+
+def _clear_download_artifacts(out_dir: Path, *, keep_partials: bool = False) -> None:
     """Best-effort removal of prior download artifacts in a cache directory.
 
     Removes the video, its sidecar subtitles, info.json, and the source marker so
     a re-download can't be paired with a leftover subtitle/title from a different
     capture. Deletion failures are ignored (read-only/locked sandboxes); yt-dlp's
     own overwrite still handles same-named files.
+
+    ``keep_partials`` spares yt-dlp's in-progress files so an interrupted
+    download of the *same* URL and auth mode resumes from where it stopped.
+    Only the caller can know that the leftovers belong to this request, so it
+    defaults off.
     """
     patterns = ("video.*", "video", ".source.json")
     for pattern in patterns:
         for stale in out_dir.glob(pattern):
+            if keep_partials and _is_partial(stale):
+                continue
             try:
                 stale.unlink()
             except OSError:
                 pass
+
+
+def _discard_partials(out_dir: Path) -> None:
+    """Drop leftover in-progress files (called once a download has succeeded).
+
+    yt-dlp removes its own partials, so anything left belongs to an abandoned
+    attempt with different formats. Clearing it keeps the shared download cache
+    from accruing dead weight that also counts toward its size cap.
+    """
+    for stale in out_dir.glob("video.*"):
+        if not _is_partial(stale):
+            continue
+        try:
+            stale.unlink()
+        except OSError:
+            pass
+
+
+def _write_source_marker(out_dir: Path, url: str, auth: str, client: str, complete: bool) -> None:
+    """Record what this directory holds (or is in the middle of fetching).
+
+    Written *before* each attempt as well as after success: a run killed
+    mid-download otherwise leaves `.part` files that the next run cannot prove
+    belong to this URL, forcing a full re-download.
+    """
+    try:
+        (out_dir / ".source.json").write_text(
+            json.dumps({"url": url, "auth": auth, "client": client, "complete": complete})
+        )
+    except OSError:
+        pass
 
 
 def _build_ytdlp_cmd(
@@ -374,15 +424,35 @@ def download_url(
     else:
         attempts = [None]
 
+    # A prior run may have been killed mid-download (the documented recovery path
+    # is "re-run the exact same command"). yt-dlp resumes `.part` files by
+    # default, but only if they survive: check the marker it left behind *before*
+    # the loop rewrites it, so partials from a matching URL and auth mode can be
+    # handed back to yt-dlp instead of re-fetched.
+    resume_partials = not force and _source_marker_matches(out_dir, url, requested_auth)
+    if resume_partials and any(_is_partial(p) for p in out_dir.glob("video.*")):
+        print(
+            f"[download] found an interrupted download in {out_dir}; "
+            "resuming instead of starting over",
+            file=sys.stderr,
+        )
+
     result: subprocess.CompletedProcess | None = None
     video: Path | None = None
     used_client = "web"
     for player_client in attempts:
+        client_label = "android" if player_client == "android" else "web"
         # Clear prior artifacts before each attempt so a stale subtitle/info.json
-        # or a partial file from a failed attempt can't get paired with the next
-        # download. Best-effort: ignore failures (some sandboxes forbid deletes)
-        # since yt-dlp's -y still overwrites by name.
-        _clear_download_artifacts(out_dir)
+        # from a different capture can't get paired with the next download.
+        # Best-effort: ignore failures (some sandboxes forbid deletes) since
+        # yt-dlp's -y still overwrites by name. In-progress files are exempt when
+        # they belong to this same URL and auth mode; they are named per format,
+        # so yt-dlp only resumes the ones matching the format it selects and
+        # ignores the rest. Leftovers are swept once a download succeeds.
+        _clear_download_artifacts(out_dir, keep_partials=resume_partials)
+        # Record the in-flight request so a run killed mid-download leaves proof
+        # of which URL and auth mode its `.part` files belong to.
+        _write_source_marker(out_dir, url, requested_auth, client_label, complete=False)
         cmd = _build_ytdlp_cmd(
             ytdlp,
             url,
@@ -400,7 +470,7 @@ def download_url(
             print(result.stderr, file=sys.stderr, end="" if result.stderr.endswith("\n") else "\n")
         video = _valid_video(out_dir)
         if video is not None:
-            used_client = "android" if player_client == "android" else "web"
+            used_client = client_label
             break
         if player_client != attempts[-1]:
             print(
@@ -424,14 +494,13 @@ def download_url(
             file=sys.stderr,
         )
 
+    # Any partial left now belongs to an abandoned attempt with different
+    # formats; yt-dlp cleans up its own once a format completes.
+    _discard_partials(out_dir)
+
     # Record the source so a later resume can confirm this out_dir holds *this*
     # URL (and auth mode) before reusing the download.
-    try:
-        (out_dir / ".source.json").write_text(
-            json.dumps({"url": url, "auth": requested_auth, "client": used_client})
-        )
-    except OSError:
-        pass
+    _write_source_marker(out_dir, url, requested_auth, used_client, complete=True)
 
     return _result_from_dir(out_dir, video, url)
 

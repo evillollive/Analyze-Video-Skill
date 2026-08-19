@@ -193,6 +193,8 @@ The download cache manages itself: at the end of each run it evicts entries olde
 python3 scripts/setup.py --clear-cache
 ```
 
+If a download is interrupted — a runner timeout, a dropped connection, or `Ctrl-C` — re-running the exact same command picks up where it stopped instead of re-fetching the whole video. Pass `--force` to discard the partial data and start the download over.
+
 Transcripts are cached too, because transcribing is the most expensive non-download step: it decodes the whole video's audio, uploads it, and pays for a Whisper API call. A repeat run on the same video and range reuses the stored result and skips all three. Entries are keyed by the source file's identity plus the requested range and backend/model, so a re-downloaded or edited video always re-transcribes. They are tiny, so they are kept for 90 days (`ANALYZE_VIDEO_TRANSCRIPT_CACHE_MAX_AGE_DAYS`, `0` to disable) and cleared by `--clear-cache` along with the downloads. Use `--force` to re-transcribe and overwrite the entry, or `--no-download-cache` to keep a run fully self-contained.
 
 **Sent to an API only when needed:**
