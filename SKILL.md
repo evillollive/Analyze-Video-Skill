@@ -31,10 +31,10 @@ For long videos, `process.py` auto-chunks unfocused videos over 12 minutes into 
 
 ## Step 0: Setup preflight
 
-First, resolve the skill directory. Most runners set `CLAUDE_SKILL_DIR`, but some sandboxes don't. If it's unset, fall back to the directory this `SKILL.md` lives in:
+First, resolve the skill directory. Most runners set a skill-dir env var such as `COPILOT_SKILL_DIR` (GitHub Copilot) or `CLAUDE_SKILL_DIR` (Claude), but some sandboxes don't. Resolve in priority order and, if none is set, fall back to the directory this `SKILL.md` lives in:
 
 ```bash
-SKILL_DIR="${CLAUDE_SKILL_DIR:-$(cd "$(dirname "$0")" 2>/dev/null && pwd)}"
+SKILL_DIR="${COPILOT_SKILL_DIR:-${CLAUDE_SKILL_DIR:-$(cd "$(dirname "$0")" 2>/dev/null && pwd)}}"
 # If you don't have $0 (e.g. pasting commands), locate it once:
 #   SKILL_DIR=$(dirname "$(find / -name SKILL.md -path '*analyze-video*' 2>/dev/null | head -1)")
 ```
@@ -367,6 +367,19 @@ Then build with only the appendices the user explicitly approved:
 Build the docx once, after the answers, so only the requested appendices are included.
 
 Run the builder and confirm the `.docx` exists. If path validation fails, rebuild the spec from the current `select_frames.py` output and re-run validation before build-docx. If a docx validator is available, run it; otherwise skip validation silently. Present the document with a `computer://` link.
+
+### Optional: review and revise in the Word canvas (Copilot)
+
+This step is **optional** and **additive**. It does not change how the `.docx` is built — the headless `build-docx.js` output above is always the source of truth. Only offer it after the final `.docx` already exists.
+
+If you are running under GitHub Copilot and a native **Word canvas** is available, you may offer to open the built document for live review:
+
+- Open the built file in the Word canvas with `open_canvas` using `canvasId: "word"` and an `input` pointing at the built `.docx` path (`"$OUT_DIR/<filename>.docx"`). Pick a stable `instanceId` (e.g. `analyze-video-doc`) so later edits address the same panel.
+- Let the user read the document in the panel and request changes in plain language.
+- Apply edits through the canvas actions rather than regenerating the file: `replace_text` for wording fixes, `set_paragraph_text` to rewrite a paragraph, `set_table_cell` for table content, `insert_paragraph` / `delete_paragraph` to add or remove content, and `batch` to group several edits into one atomic change. Prefer `batch` when applying more than one edit.
+- After applying edits, re-verify with `get_model` (and re-present the `computer://` link) so the user sees the final state.
+
+**Must degrade gracefully.** The Word canvas is Copilot-only. If it is not available — for example under Claude, Codex, a headless shell, or CI — skip this step silently and keep the existing `computer://` link plus the optional PDF delivery below. Never block or fail delivery on the canvas being present, and never change the default headless behavior.
 
 If PDF requested:
 

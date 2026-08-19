@@ -7,7 +7,7 @@ When a user-specified range is passed, focused-mode budgets denser (they are
 zooming in for detail).
 
 Contact sheet: a single tiled image of all extracted frames. One Read call
-gives Claude visual coverage of the entire video for ~5-10k tokens instead of
+gives the agent visual coverage of the entire video for ~5-10k tokens instead of
 the 50-80k it would cost to Read every frame individually.
 """
 from __future__ import annotations

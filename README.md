@@ -6,7 +6,7 @@
 
 **Paste a video link. Get a timestamped Word report with screenshots, captions, and concrete visual analysis.**
 
-`/analyze-video` is a Claude Code skill for turning YouTube, Vimeo, TikTok, X, Twitch, and local videos into polished `.docx` reports. It uses [yt-dlp](https://github.com/yt-dlp/yt-dlp), ffmpeg, contact sheets, optional Whisper transcription, and a guarded, token-efficient frame-selection workflow.
+`/analyze-video` is a cross-tool agent skill (Claude Code, GitHub Copilot, and Codex) for turning YouTube, Vimeo, TikTok, X, Twitch, and local videos into polished `.docx` reports. It uses [yt-dlp](https://github.com/yt-dlp/yt-dlp), ffmpeg, contact sheets, optional Whisper transcription, and a guarded, token-efficient frame-selection workflow.
 
 ![Preview of analyze-video contact sheet and generated report](docs/assets/demo-preview.svg)
 
@@ -132,15 +132,19 @@ For guarded end-to-end runs, see:
 python3 scripts/run_guarded_pipeline.py --help
 ```
 
-## Using it from GitHub Copilot App
+## Using it from GitHub Copilot CLI
 
-GitHub Copilot App does not automatically load `SKILL.md` as a Claude skill, but the runtime works from a Copilot project session:
+The skill is cross-tool: it loads and runs under GitHub Copilot as well as Claude Code and Codex. Copilot reads the `name` + `description` frontmatter and ignores tool-specific keys, and Step 0 resolves the skill directory from `COPILOT_SKILL_DIR` (falling back to `CLAUDE_SKILL_DIR`, then the folder `SKILL.md` lives in).
 
-1. Clone or open this repository in the app.
+To use it as a Copilot CLI skill, place the skill folder (containing `SKILL.md` and `scripts/`) under `~/.copilot/skills/analyze-video/`. You can also just clone or open this repository in a Copilot project session and drive the runtime directly:
+
+1. Clone or open this repository in the app (or copy the folder into `~/.copilot/skills/`).
 2. Run `python3 scripts/setup.py`.
 3. Ask Copilot to run the guarded pipeline or `scripts/process.py`, inspect manifests/contact sheets, select frames, write a JSON docx spec, validate it, and call `scripts/build-docx.js`.
 
-A future native wrapper could expose this as a command or canvas UI for source input, progress, frame selection, and document download.
+### Optional: review the report in the Word canvas
+
+After the `.docx` is built, Copilot can optionally open it in its native **Word canvas** for live review and edits — you read the document in a side panel, request changes in plain language, and Copilot applies them with the canvas actions (`replace_text`, `set_paragraph_text`, `set_table_cell`, `batch`) and re-verifies with `get_model`. This is entirely optional and degrades gracefully: under Claude, Codex, a headless shell, or CI the step is skipped and delivery falls back to the `computer://` link plus optional PDF. The headless `build-docx.js` output is unchanged in every case.
 
 ## What's in the box
 
