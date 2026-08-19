@@ -4,6 +4,11 @@ All notable changes to `/analyze-video` are documented here.
 
 ## [Unreleased]
 
+### Fixed
+- **Interrupted downloads restarted from zero.** Downloading is the single largest wall-clock step in a run, and the documented recovery path for a runner timeout or a dropped connection is "re-run the exact same command" — but that re-fetched the entire video. yt-dlp streams each format into a `.part` file and resumes it by default, so the bytes were already on disk; `download.py` deleted them at the top of every attempt while clearing stale artifacts, and it wrote its `.source.json` marker only *after* a successful download, so an interrupted run left no proof that the leftovers belonged to that URL. A re-run of an interrupted 1 GB download now continues from where it stopped instead of re-transferring hundreds of megabytes.
+
+  The marker is now written before each attempt (with `complete: false` until the download lands), and in-progress files are preserved when the recorded URL and auth mode match the current request. Everything else is still cleared, so a stale subtitle, `info.json`, or video from a different capture can never be paired with a resumed download. `--force` discards partial data and re-downloads, and an authenticated request still refuses to resume an anonymous capture. Partials are named per format, so yt-dlp only continues the ones matching the format it selects; any leftovers from an abandoned attempt are swept once a download succeeds, keeping them out of the cache size cap.
+
 ### Added
 - **Whisper transcript cache.** Transcribing is the most expensive non-download step in the pipeline — it decodes the whole video's audio, uploads it, and pays for a Whisper API call — and nothing reused the result. The documented recovery path for an interrupted run is "re-run the exact same command", and a focused re-run normally lands in a *different* out-dir, so neither the extracted audio nor the API response was reused and every repeat run paid full price again. Successful transcriptions are now cached at `~/.cache/analyze-video/transcripts/`, and a repeat run skips the audio extraction and the upload entirely.
 

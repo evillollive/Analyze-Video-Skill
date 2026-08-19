@@ -7,7 +7,7 @@ SCRIPTS_DIR = str(Path(__file__).resolve().parent.parent / "scripts")
 if SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, SCRIPTS_DIR)
 
-from download import classify_download_error, resolve_local, _clear_download_artifacts
+from download import classify_download_error, resolve_local, _clear_download_artifacts, _is_partial
 
 
 class TestClassifyDownloadError:
@@ -102,6 +102,36 @@ class TestClearDownloadArtifacts:
     def test_missing_dir_contents_is_noop(self, tmp_path):
         # No artifacts present: must not raise.
         _clear_download_artifacts(tmp_path)
+
+    def test_partials_removed_by_default(self, tmp_path):
+        (tmp_path / "video.f399.mp4.part").write_bytes(b"x")
+        (tmp_path / "video.f399.mp4.ytdl").write_text("{}", encoding="utf-8")
+
+        _clear_download_artifacts(tmp_path)
+
+        assert not (tmp_path / "video.f399.mp4.part").exists()
+        assert not (tmp_path / "video.f399.mp4.ytdl").exists()
+
+    def test_keep_partials_spares_in_progress_files(self, tmp_path):
+        (tmp_path / "video.f399.mp4.part").write_bytes(b"x")
+        (tmp_path / "video.f251.m4a.part").write_bytes(b"x")
+        (tmp_path / "video.f399.mp4.ytdl").write_text("{}", encoding="utf-8")
+        (tmp_path / "video.mp4.part-Frag12").write_bytes(b"x")
+        # Non-resumable leftovers must still go: a stale subtitle or info.json
+        # from an earlier capture cannot be paired with the resumed download.
+        (tmp_path / "video.en.vtt").write_text("WEBVTT\n", encoding="utf-8")
+        (tmp_path / "video.info.json").write_text("{}", encoding="utf-8")
+        (tmp_path / "video.mp4").write_bytes(b"x")
+
+        _clear_download_artifacts(tmp_path, keep_partials=True)
+
+        assert (tmp_path / "video.f399.mp4.part").exists()
+        assert (tmp_path / "video.f251.m4a.part").exists()
+        assert (tmp_path / "video.f399.mp4.ytdl").exists()
+        assert (tmp_path / "video.mp4.part-Frag12").exists()
+        assert not (tmp_path / "video.en.vtt").exists()
+        assert not (tmp_path / "video.info.json").exists()
+        assert not (tmp_path / "video.mp4").exists()
 
 
 from download import (  # noqa: E402
@@ -254,6 +284,152 @@ class TestDownloadUrlAttempts:
             assert False, "expected SystemExit"
         except SystemExit as exc:
             assert "forbidden" in str(exc)
+
+
+class TestDownloadResumesPartials:
+    """An interrupted download must be resumable instead of restarting at zero.
+
+    yt-dlp resumes `.part` files by default, so the only thing that matters is
+    whether they survive to the next run.
+    """
+
+    @staticmethod
+    def _observing_runner(out_dir, succeed_on="android"):
+        """Runner that records the directory state yt-dlp would have seen."""
+        seen = []
+
+        def run(cmd, capture_output=True, text=True):
+            client = "android" if "youtube:player-client=android" in cmd else "web"
+            seen.append({
+                "client": client,
+                "partials": sorted(p.name for p in out_dir.glob("*") if _is_partial(p)),
+                "marker": json.loads((out_dir / ".source.json").read_text()),
+            })
+            if client == succeed_on:
+                (out_dir / "video.mp4").write_bytes(b"data")
+                return _subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+            return _subprocess.CompletedProcess(cmd, 1, stdout="", stderr="HTTP Error 403")
+
+        run.seen = seen
+        return run
+
+    @staticmethod
+    def _interrupted(out_dir, url, client="android", auth="none"):
+        """Leave behind exactly what a run killed mid-download would."""
+        (out_dir / ".source.json").write_text(
+            json.dumps({"url": url, "auth": auth, "client": client, "complete": False})
+        )
+        (out_dir / "video.f399.mp4.part").write_bytes(b"partial-video")
+        (out_dir / "video.f399.mp4.ytdl").write_text("{}", encoding="utf-8")
+
+    def test_partials_survive_for_matching_request(self, tmp_path, monkeypatch):
+        url = "https://www.youtube.com/watch?v=x"
+        self._interrupted(tmp_path, url)
+        monkeypatch.setattr("download._resolve_tool", lambda name: "yt-dlp")
+        runner = self._observing_runner(tmp_path)
+        monkeypatch.setattr("download.subprocess.run", runner)
+
+        download_url(url, tmp_path)
+
+        assert runner.seen[0]["partials"] == [
+            "video.f399.mp4.part",
+            "video.f399.mp4.ytdl",
+        ]
+
+    def test_force_discards_partials(self, tmp_path, monkeypatch):
+        url = "https://www.youtube.com/watch?v=x"
+        self._interrupted(tmp_path, url)
+        monkeypatch.setattr("download._resolve_tool", lambda name: "yt-dlp")
+        runner = self._observing_runner(tmp_path)
+        monkeypatch.setattr("download.subprocess.run", runner)
+
+        download_url(url, tmp_path, force=True)
+
+        assert runner.seen[0]["partials"] == []
+
+    def test_different_url_discards_partials(self, tmp_path, monkeypatch):
+        self._interrupted(tmp_path, "https://www.youtube.com/watch?v=other")
+        monkeypatch.setattr("download._resolve_tool", lambda name: "yt-dlp")
+        runner = self._observing_runner(tmp_path)
+        monkeypatch.setattr("download.subprocess.run", runner)
+
+        download_url("https://www.youtube.com/watch?v=x", tmp_path)
+
+        assert runner.seen[0]["partials"] == []
+
+    def test_partials_survive_the_player_client_fallback(self, tmp_path, monkeypatch):
+        # The android attempt runs first and fails; it must not destroy the
+        # partials before the web attempt (which recorded them) gets to resume.
+        url = "https://www.youtube.com/watch?v=x"
+        self._interrupted(tmp_path, url, client="web")
+        monkeypatch.setattr("download._resolve_tool", lambda name: "yt-dlp")
+        runner = self._observing_runner(tmp_path, succeed_on="web")
+        monkeypatch.setattr("download.subprocess.run", runner)
+
+        download_url(url, tmp_path)
+
+        assert [s["client"] for s in runner.seen] == ["android", "web"]
+        assert runner.seen[1]["partials"] == [
+            "video.f399.mp4.part",
+            "video.f399.mp4.ytdl",
+        ]
+
+    def test_anon_partials_not_reused_for_authenticated_request(self, tmp_path, monkeypatch):
+        url = "https://www.youtube.com/watch?v=x"
+        self._interrupted(tmp_path, url, auth="none")
+        cookie = tmp_path / "c.txt"
+        cookie.write_text("# cookies")
+        monkeypatch.setattr("download._resolve_tool", lambda name: "yt-dlp")
+        runner = self._observing_runner(tmp_path, succeed_on="web")
+        monkeypatch.setattr("download.subprocess.run", runner)
+
+        download_url(url, tmp_path, cookies=str(cookie))
+
+        assert runner.seen[0]["partials"] == []
+
+    def test_marker_written_before_download_so_a_kill_is_recoverable(self, tmp_path, monkeypatch):
+        url = "https://www.youtube.com/watch?v=x"
+        monkeypatch.setattr("download._resolve_tool", lambda name: "yt-dlp")
+        runner = self._observing_runner(tmp_path)
+        monkeypatch.setattr("download.subprocess.run", runner)
+
+        download_url(url, tmp_path)
+
+        in_flight = runner.seen[0]["marker"]
+        assert in_flight == {
+            "url": url,
+            "auth": "none",
+            "client": "android",
+            "complete": False,
+        }
+        assert json.loads((tmp_path / ".source.json").read_text())["complete"] is True
+
+    def test_successful_download_sweeps_leftover_partials(self, tmp_path, monkeypatch):
+        url = "https://www.youtube.com/watch?v=x"
+        self._interrupted(tmp_path, url, client="web")
+        monkeypatch.setattr("download._resolve_tool", lambda name: "yt-dlp")
+        monkeypatch.setattr(
+            "download.subprocess.run", self._observing_runner(tmp_path, succeed_on="android")
+        )
+
+        download_url(url, tmp_path)
+
+        assert sorted(p.name for p in tmp_path.glob("*") if _is_partial(p)) == []
+
+    def test_completed_download_is_still_reused_without_redownloading(self, tmp_path, monkeypatch):
+        url = "https://www.youtube.com/watch?v=x"
+        (tmp_path / ".source.json").write_text(
+            json.dumps({"url": url, "auth": "none", "client": "android", "complete": True})
+        )
+        (tmp_path / "video.mp4").write_bytes(b"data")
+        monkeypatch.setattr("download._resolve_tool", lambda name: "yt-dlp")
+        runner = self._observing_runner(tmp_path)
+        monkeypatch.setattr("download.subprocess.run", runner)
+
+        res = download_url(url, tmp_path)
+
+        assert runner.seen == []
+        assert res["video_path"].endswith("video.mp4")
 
 
 class TestFetchCaptions:
