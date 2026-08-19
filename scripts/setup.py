@@ -3,7 +3,7 @@
 
 Modes:
   setup.py --check      Silent preflight. Exit 0 if ready, 2 on required deps failure.
-  setup.py --json       Machine-readable status for Claude to parse.
+  setup.py --json       Machine-readable status for the agent to parse.
   setup.py              Installer. Auto-installs deps, scaffolds .env, marks SETUP_COMPLETE.
 
 Design:
