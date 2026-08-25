@@ -338,12 +338,22 @@ def _build_ytdlp_cmd(
 
     When `player_client` is set we pass it via --extractor-args; this applies to
     the whole invocation, so the subtitle fetch uses the same client too.
+
+    `--ignore-no-formats-error` is deliberate: YouTube now gates most player
+    clients' media formats behind a PO token, and when the chosen client can only
+    offer gated formats yt-dlp raises a fatal "Requested format is not available"
+    *after* it has already located the subtitle tracks -- aborting before the
+    `.vtt` files are written. The flag downgrades that to a warning so the
+    subtitles still land. Whether a real video was produced is decided separately
+    by `_valid_video`, which drives the player-client fallback, so this never
+    masks a genuine download failure.
     """
     cmd = [
         ytdlp,
         "-N", "8",
         "-f", "bv*[height<=720]+ba/b[height<=720]/bv+ba/b",
         "--merge-output-format", "mp4",
+        "--ignore-no-formats-error",
         "--write-info-json",
         "--write-subs",
         "--write-auto-subs",
@@ -416,11 +426,13 @@ def download_url(
     # with the android player client: it bypasses YouTube's n-challenge without a
     # JavaScript runtime (which sandboxed/cloud yt-dlp installs lack) and avoids
     # the 403s the default web client hits from server IPs. If that attempt fails
-    # to produce a usable video, we retry once with the default web client. When
-    # cookies are supplied we honor the authenticated web session instead, since
-    # the android client ignores cookies.
+    # to produce a usable video, we retry with the ios client (a different
+    # extraction path that often works when android is bot-flagged/429), and
+    # finally the default web client. When cookies are supplied we honor the
+    # authenticated web session instead, since the android/ios clients ignore
+    # cookies.
     if is_youtube(url) and requested_auth == "none":
-        attempts: list[str | None] = ["android", None]
+        attempts: list[str | None] = ["android", "ios", None]
     else:
         attempts = [None]
 
@@ -441,7 +453,7 @@ def download_url(
     video: Path | None = None
     used_client = "web"
     for player_client in attempts:
-        client_label = "android" if player_client == "android" else "web"
+        client_label = player_client if player_client else "web"
         # Clear prior artifacts before each attempt so a stale subtitle/info.json
         # from a different capture can't get paired with the next download.
         # Best-effort: ignore failures (some sandboxes forbid deletes) since
@@ -475,7 +487,7 @@ def download_url(
         if player_client != attempts[-1]:
             print(
                 "[download] no usable video from this client, retrying with the "
-                "default web client...",
+                "next player client...",
                 file=sys.stderr,
             )
 
@@ -545,7 +557,7 @@ def fetch_captions(
     template = str(out_dir / f"{stem}.%(ext)s")
 
     no_auth = not (cookies or cookies_from_browser)
-    attempts: list[str | None] = ["android", None] if (is_youtube(url) and no_auth) else [None]
+    attempts: list[str | None] = ["android", "ios", None] if (is_youtube(url) and no_auth) else [None]
 
     result: subprocess.CompletedProcess | None = None
     for player_client in attempts:
@@ -560,6 +572,7 @@ def fetch_captions(
         cmd = [
             ytdlp,
             "--skip-download",
+            "--ignore-no-formats-error",
             "--write-subs",
             "--write-auto-subs",
             "--sub-langs", "en,en-US,en-GB,en-orig",
@@ -618,7 +631,7 @@ def fetch_title(
             raise SystemExit(f"Cookie file not found: {cookie_path}")
 
     no_auth = not (cookies or cookies_from_browser)
-    attempts: list[str | None] = ["android", None] if (is_youtube(url) and no_auth) else [None]
+    attempts: list[str | None] = ["android", "ios", None] if (is_youtube(url) and no_auth) else [None]
 
     for player_client in attempts:
         cmd = [ytdlp, "--no-playlist", "--get-title"]

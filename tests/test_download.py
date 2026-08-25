@@ -146,6 +146,19 @@ from download import (  # noqa: E402
 import subprocess as _subprocess  # noqa: E402
 
 
+def _client_of(cmd):
+    """Classify a yt-dlp argv by the pinned YouTube player client.
+
+    Returns "android", "ios", or "web" (the default, when no client is pinned).
+    """
+    for part in cmd:
+        if part == "youtube:player-client=android":
+            return "android"
+        if part == "youtube:player-client=ios":
+            return "ios"
+    return "web"
+
+
 class TestIsYoutube:
     def test_youtube_hosts(self):
         assert is_youtube("https://www.youtube.com/watch?v=abc")
@@ -167,6 +180,15 @@ class TestBuildYtdlpCmd:
         )
         assert "--extractor-args" in cmd
         assert "youtube:player-client=android" in cmd
+
+    def test_ignore_no_formats_error_present(self):
+        # Keeps yt-dlp from aborting subtitle writes when the chosen YouTube
+        # client only has PO-token-gated media formats.
+        cmd = _build_ytdlp_cmd(
+            "yt-dlp", "u", "/o/video.%(ext)s",
+            cookie_path=None, cookies_from_browser=None, player_client="ios",
+        )
+        assert "--ignore-no-formats-error" in cmd
 
     def test_no_extractor_arg_when_client_none(self):
         cmd = _build_ytdlp_cmd(
@@ -219,13 +241,12 @@ class TestSourceMarkerAuthGating:
 def _fake_runner(out_dir, succeed_on):
     """Return a subprocess.run stand-in that writes video.mp4 for chosen clients.
 
-    succeed_on: "android", "web", or "never".
+    succeed_on: "android", "ios", "web", or "never".
     """
     calls = []
 
     def run(cmd, capture_output=True, text=True):
-        is_android = "youtube:player-client=android" in cmd
-        client = "android" if is_android else "web"
+        client = _client_of(cmd)
         calls.append(client)
         produce = (succeed_on == client)
         if produce:
@@ -246,9 +267,17 @@ class TestDownloadUrlAttempts:
         monkeypatch.setattr("download.subprocess.run", runner)
         res = download_url("https://www.youtube.com/watch?v=x", tmp_path)
         assert res["downloaded"] is True
-        assert runner.calls == ["android", "web"]
+        assert runner.calls == ["android", "ios", "web"]
         marker = json.loads((tmp_path / ".source.json").read_text())
         assert marker["client"] == "web" and marker["auth"] == "none"
+
+    def test_youtube_ios_fallback_when_android_fails(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("download._resolve_tool", lambda name: "yt-dlp")
+        runner = _fake_runner(tmp_path, succeed_on="ios")
+        monkeypatch.setattr("download.subprocess.run", runner)
+        download_url("https://www.youtube.com/watch?v=x", tmp_path)
+        assert runner.calls == ["android", "ios"]
+        assert json.loads((tmp_path / ".source.json").read_text())["client"] == "ios"
 
     def test_youtube_android_succeeds_first(self, tmp_path, monkeypatch):
         monkeypatch.setattr("download._resolve_tool", lambda name: "yt-dlp")
@@ -299,7 +328,7 @@ class TestDownloadResumesPartials:
         seen = []
 
         def run(cmd, capture_output=True, text=True):
-            client = "android" if "youtube:player-client=android" in cmd else "web"
+            client = _client_of(cmd)
             seen.append({
                 "client": client,
                 "partials": sorted(p.name for p in out_dir.glob("*") if _is_partial(p)),
@@ -368,8 +397,8 @@ class TestDownloadResumesPartials:
 
         download_url(url, tmp_path)
 
-        assert [s["client"] for s in runner.seen] == ["android", "web"]
-        assert runner.seen[1]["partials"] == [
+        assert [s["client"] for s in runner.seen] == ["android", "ios", "web"]
+        assert runner.seen[-1]["partials"] == [
             "video.f399.mp4.part",
             "video.f399.mp4.ytdl",
         ]
@@ -438,6 +467,7 @@ class TestFetchCaptions:
 
         def run(cmd, capture_output=True, text=True):
             assert "--skip-download" in cmd
+            assert "--ignore-no-formats-error" in cmd
             assert "youtube:player-client=android" in cmd
             (tmp_path / "captions.en.vtt").write_text("WEBVTT\n")
             return _subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
@@ -445,6 +475,23 @@ class TestFetchCaptions:
         monkeypatch.setattr("download.subprocess.run", run)
         sub = fetch_captions("https://youtu.be/x", tmp_path)
         assert sub.name == "captions.en.vtt"
+
+    def test_falls_back_to_ios_when_android_yields_no_subs(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("download._resolve_tool", lambda name: "yt-dlp")
+        seen = []
+
+        def run(cmd, capture_output=True, text=True):
+            client = _client_of(cmd)
+            seen.append(client)
+            if client == "ios":
+                (tmp_path / "captions.en.vtt").write_text("WEBVTT\n")
+                return _subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+            return _subprocess.CompletedProcess(cmd, 1, stdout="", stderr="no subs")
+
+        monkeypatch.setattr("download.subprocess.run", run)
+        sub = fetch_captions("https://youtu.be/x", tmp_path)
+        assert sub.name == "captions.en.vtt"
+        assert seen == ["android", "ios"]
 
     def test_no_subs_raises(self, tmp_path, monkeypatch):
         monkeypatch.setattr("download._resolve_tool", lambda name: "yt-dlp")
