@@ -14,7 +14,12 @@ if SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, SCRIPTS_DIR)
 
 import frames as frames_mod
-from frames import extract, _extract_signature, _signature_key
+from frames import (
+    extract,
+    make_contact_sheet,
+    _extract_signature,
+    _signature_key,
+)
 
 
 class _FakeResult:
@@ -160,3 +165,88 @@ class TestExtractResume:
         finally:
             monkeypatch.setattr(Path, "unlink", real_unlink)
         assert len(result) == 2
+
+
+class TestContactSheetReuse:
+    """A finished contact sheet is reused when nothing that shapes it changed.
+
+    `extract` already resumes completed frame directories for free, so without
+    this the documented recovery path ("re-run the exact same command") re-tiled
+    every already-finished chunk.
+    """
+
+    def _prepare(self, tmp_path, monkeypatch):
+        frames_dir = tmp_path / "frames" / "fr_abc123"
+        _seed_frames(frames_dir, 4)
+        (frames_dir / ".extract.json").write_text(
+            json.dumps({"video": "v.mp4", "fps": 1.0})
+        )
+        monkeypatch.setattr(frames_mod.shutil, "which", lambda name: "/usr/bin/ffmpeg")
+        runs = {"count": 0}
+
+        def fake_run(cmd, **kwargs):
+            runs["count"] += 1
+            Path(cmd[-1]).write_bytes(b"sheet-bytes")
+            return _FakeResult()
+
+        monkeypatch.setattr(frames_mod.subprocess, "run", fake_run)
+        return frames_dir, tmp_path / "contact_sheet.jpg", runs
+
+    def test_second_call_reuses_existing_sheet(self, tmp_path, monkeypatch):
+        frames_dir, out, runs = self._prepare(tmp_path, monkeypatch)
+
+        make_contact_sheet(frames_dir, out, cols=8, tile_width=200, frame_count=4)
+        assert runs["count"] == 1
+        assert out.with_name(out.name + ".sheet.json").exists()
+
+        make_contact_sheet(frames_dir, out, cols=8, tile_width=200, frame_count=4)
+        assert runs["count"] == 1, "matching signature must not re-tile"
+
+    def test_force_retiles(self, tmp_path, monkeypatch):
+        frames_dir, out, runs = self._prepare(tmp_path, monkeypatch)
+        make_contact_sheet(frames_dir, out, cols=8, tile_width=200, frame_count=4)
+        make_contact_sheet(
+            frames_dir, out, cols=8, tile_width=200, frame_count=4, force=True
+        )
+        assert runs["count"] == 2
+
+    def test_changed_tiling_options_retile(self, tmp_path, monkeypatch):
+        frames_dir, out, runs = self._prepare(tmp_path, monkeypatch)
+        make_contact_sheet(frames_dir, out, cols=8, tile_width=200, frame_count=4)
+        make_contact_sheet(frames_dir, out, cols=6, tile_width=200, frame_count=4)
+        assert runs["count"] == 2
+        make_contact_sheet(frames_dir, out, cols=6, tile_width=160, frame_count=4)
+        assert runs["count"] == 3
+
+    def test_new_frames_retile(self, tmp_path, monkeypatch):
+        frames_dir, out, runs = self._prepare(tmp_path, monkeypatch)
+        make_contact_sheet(frames_dir, out, cols=8, tile_width=200, frame_count=4)
+
+        # A re-extraction with different inputs rewrites .extract.json; the sheet
+        # must not be served from the previous run's frames.
+        (frames_dir / ".extract.json").write_text(
+            json.dumps({"video": "v.mp4", "fps": 2.0})
+        )
+        make_contact_sheet(frames_dir, out, cols=8, tile_width=200, frame_count=4)
+        assert runs["count"] == 2
+
+    def test_empty_sheet_file_is_rebuilt(self, tmp_path, monkeypatch):
+        frames_dir, out, runs = self._prepare(tmp_path, monkeypatch)
+        make_contact_sheet(frames_dir, out, cols=8, tile_width=200, frame_count=4)
+        out.write_bytes(b"")  # truncated by an interrupted write
+        make_contact_sheet(frames_dir, out, cols=8, tile_width=200, frame_count=4)
+        assert runs["count"] == 2
+
+    def test_sidecar_unlink_failure_does_not_crash(self, tmp_path, monkeypatch):
+        frames_dir, out, runs = self._prepare(tmp_path, monkeypatch)
+        real_unlink = Path.unlink
+
+        def deny_unlink(self, *a, **k):
+            raise PermissionError("Operation not permitted")
+
+        monkeypatch.setattr(Path, "unlink", deny_unlink)
+        try:
+            make_contact_sheet(frames_dir, out, cols=8, tile_width=200, frame_count=4)
+        finally:
+            monkeypatch.setattr(Path, "unlink", real_unlink)
+        assert runs["count"] == 1
