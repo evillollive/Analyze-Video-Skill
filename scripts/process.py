@@ -370,6 +370,7 @@ def _process_chunk(
             cols=args.contact_sheet_cols,
             tile_width=tile_width,
             frame_count=len(chunk_frames),
+            force=getattr(args, "force", False),
         )
 
     # Per-chunk transcript = indices into the top-level segments array (no
