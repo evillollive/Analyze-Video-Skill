@@ -193,6 +193,8 @@ When a video is auto-chunked, `process.py` extracts several chunks at once (fram
 
 Downloaded URLs are cached once per URL under `~/.cache/analyze-video/downloads/<url-hash>/` and reused across runs, so a focused `--start`/`--end` rerun (even in a different `--out-dir`) does not re-download the whole video. The full video is always fetched, so timestamps stay correct. Pass `--force` to refresh a cached download, or `--no-download-cache` to keep the source under the out-dir instead.
 
+Downloads are capped to the source width the pipeline can actually use: `max(854, --resolution)` pixels, so a 16:9 video fetches a 480p stream rather than 720p and transfers roughly half to a third of the bytes without changing the extracted frames (which render at `--resolution`, 512 by default) or the document images. The cap is on width rather than height so portrait video still gets a stream wide enough for the frames. Pass `--download-max-width 0` for the best available stream, or a pixel width to set the budget yourself. A cached download recorded under a narrower budget is not reused for a wider request.
+
 The download cache is self-managing: at the end of each run, `process.py` evicts entries older than 14 days and trims the cache back under a 5 GB total (least-recently-used first), never touching the file the current (or a concurrent) run is using. Tune the limits with `ANALYZE_VIDEO_CACHE_MAX_AGE_DAYS` and `ANALYZE_VIDEO_CACHE_MAX_GB` (set either to `0` to disable that limit). To wipe every cached download by hand, run `python3 "${SKILL_DIR}/scripts/setup.py" --clear-cache` (this leaves the `docx` module cache intact). `setup.py --json` reports the current cache size as `download_cache_bytes`.
 
 ### Trimming a trailing promo/outro

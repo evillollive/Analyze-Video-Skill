@@ -37,7 +37,13 @@ from pathlib import Path
 SCRIPT_DIR = Path(__file__).parent.resolve()
 sys.path.insert(0, str(SCRIPT_DIR))
 
-from download import download, fetch_captions, fetch_title, is_url  # noqa: E402
+from download import (  # noqa: E402
+    DEFAULT_DOWNLOAD_MAX_WIDTH,
+    download,
+    fetch_captions,
+    fetch_title,
+    is_url,
+)
 import cache_utils  # noqa: E402
 from frames import (  # noqa: E402
     HARD_MAX_FRAMES,
@@ -71,6 +77,20 @@ PREVIEW_COST_WARNING_CHUNKS = 5
 # multi-threaded, so we deliberately stay well below the core count to avoid
 # oversubscribing the CPU (which slows every worker down).
 DEFAULT_MAX_PARALLEL_CHUNKS = 4
+
+
+def _resolve_download_max_width(requested: int | None, frame_resolution: int) -> int:
+    """Source-width budget for the download, in pixels (0 disables the cap).
+
+    Downloading a stream wider than the frames we render from it is wasted
+    bandwidth and wasted cache: every extra pixel is discarded by ffmpeg's
+    scaler. The default budget is the 16:9 480p width, raised to the requested
+    frame resolution whenever that is larger so a high --resolution run never
+    upscales. An explicit request always wins; 0 or a negative value opts out.
+    """
+    if requested is not None:
+        return max(0, requested)
+    return max(DEFAULT_DOWNLOAD_MAX_WIDTH, max(0, frame_resolution))
 
 
 def _resolve_jobs(requested: int | None, chunk_count: int) -> int:
@@ -622,6 +642,19 @@ def main() -> int:
     )
     ap.add_argument("--resolution", type=int, default=512, help="Frame width in pixels (default 512)")
     ap.add_argument(
+        "--download-max-width",
+        type=int,
+        default=None,
+        metavar="PX",
+        help=(
+            "Cap the source width yt-dlp downloads, in pixels. Default: auto "
+            f"(max of {DEFAULT_DOWNLOAD_MAX_WIDTH} and --resolution), which is "
+            "already wider than the extracted frames, so it saves bandwidth "
+            "without changing output quality. Pass 0 to download the best "
+            "available stream instead."
+        ),
+    )
+    ap.add_argument(
         "--jobs",
         type=int,
         default=None,
@@ -769,12 +802,24 @@ def main() -> int:
     )
 
     # 1. Download
+    download_max_width = _resolve_download_max_width(args.download_max_width, args.resolution)
     print(
         "[analyze-video] downloading via yt-dlp..."
         if is_url(args.source)
         else "[analyze-video] using local file...",
         file=sys.stderr,
     )
+    if is_url(args.source):
+        print(
+            (
+                f"[analyze-video] source width budget: {download_max_width}px "
+                f"(frames render at {args.resolution}px; --download-max-width 0 "
+                "downloads the best available stream)"
+            )
+            if download_max_width
+            else "[analyze-video] source width budget: uncapped",
+            file=sys.stderr,
+        )
     _write_status(work, "downloading")
     download_dir = _download_dir(args.source, work, no_cache=args.no_download_cache)
     cache_entry = download_dir if (is_url(args.source) and not args.no_download_cache) else None
@@ -794,6 +839,7 @@ def main() -> int:
             cookies=args.cookies,
             cookies_from_browser=args.cookies_from_browser,
             force=args.force,
+            max_width=download_max_width,
         )
         video_path = dl["video_path"]
         _write_status(work, "downloaded")

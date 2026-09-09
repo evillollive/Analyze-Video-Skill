@@ -333,7 +333,26 @@ class TestResolveJobs:
 
 
 from process import _segment_index, _shift_segments, _slice_indices  # noqa: E402
+from process import (  # noqa: E402
+    DEFAULT_DOWNLOAD_MAX_WIDTH,
+    _resolve_download_max_width,
+)
 
+
+class TestResolveDownloadMaxWidth:
+    def test_default_is_the_480p_width(self):
+        assert _resolve_download_max_width(None, 512) == DEFAULT_DOWNLOAD_MAX_WIDTH
+
+    def test_never_narrower_than_the_frame_resolution(self):
+        assert _resolve_download_max_width(None, 1280) == 1280
+
+    def test_explicit_request_wins(self):
+        assert _resolve_download_max_width(640, 512) == 640
+        assert _resolve_download_max_width(1920, 512) == 1920
+
+    def test_zero_disables_the_cap(self):
+        assert _resolve_download_max_width(0, 512) == 0
+        assert _resolve_download_max_width(-5, 512) == 0
 
 class TestShiftSegments:
     def test_zero_offset_returns_same_object(self):
