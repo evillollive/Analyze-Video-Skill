@@ -22,6 +22,14 @@ except ImportError:  # pragma: no cover
 
 
 VIDEO_EXTS = {".mp4", ".mkv", ".webm", ".mov", ".m4v", ".avi", ".flv", ".wmv"}
+
+# Frames are rendered at --resolution pixels wide (512 by default) and embedded
+# in the docx at roughly 640 px, so every pixel of source width beyond ~854 is
+# downloaded and then thrown away by the scaler. Capping the format selection by
+# *width* rather than height is what keeps this safe for portrait video: a 9:16
+# clip needs a much taller stream to reach the same frame width, and a width cap
+# lets yt-dlp pick it.
+DEFAULT_DOWNLOAD_MAX_WIDTH = 854
 BLOCKED_PATTERNS: tuple[tuple[str, str], ...] = (
     ("sign in to confirm", "login_required"),
     ("not a bot", "bot_check"),
@@ -217,7 +225,12 @@ def _result_from_dir(out_dir: Path, video: Path, url: str) -> dict:
     }
 
 
-def _source_marker_matches(out_dir: Path, url: str, requested_auth: str = "none") -> bool:
+def _source_marker_matches(
+    out_dir: Path,
+    url: str,
+    requested_auth: str = "none",
+    requested_max_width: int | None = None,
+) -> bool:
     """True if this out_dir's recorded download source matches `url`.
 
     Prevents reusing a previously downloaded video when the user points the same
@@ -229,6 +242,11 @@ def _source_marker_matches(out_dir: Path, url: str, requested_auth: str = "none"
     authenticated request: if cookies are now supplied but the cached download
     was unauthenticated, we re-download so the authenticated session (which may
     expose higher quality or members-only content) is honored.
+
+    `requested_max_width` guards the same way for quality: a capture made under
+    a narrower width budget is not good enough for a run that asked for a wider
+    one. Markers written before width budgets existed carry no `max_width` and
+    are accepted as-is, so upgrading the skill never forces a re-download.
     """
     marker = out_dir / ".source.json"
     if marker.exists():
@@ -240,7 +258,7 @@ def _source_marker_matches(out_dir: Path, url: str, requested_auth: str = "none"
                 recorded_auth = data.get("auth", "none")
                 if requested_auth != "none" and recorded_auth == "none":
                     return False
-                return True
+                return _width_budget_satisfied(data, requested_max_width)
         except (OSError, json.JSONDecodeError):
             pass
     # info.json alone proves the URL but not the auth mode it was fetched under.
@@ -256,6 +274,28 @@ def _source_marker_matches(out_dir: Path, url: str, requested_auth: str = "none"
         except (OSError, json.JSONDecodeError):
             pass
     return False
+
+
+def _width_budget_satisfied(marker: dict, requested_max_width: int | None) -> bool:
+    """True when a cached capture is at least as wide as the current request.
+
+    An uncapped capture (recorded ``max_width`` of 0/None) satisfies anything.
+    A marker with no ``max_width`` key predates width budgets; it is accepted so
+    an existing cache stays usable after an upgrade.
+    """
+    if requested_max_width is None or requested_max_width <= 0:
+        # The caller wants the best available; only an uncapped capture is
+        # guaranteed to be that, but a legacy marker gets the benefit of doubt.
+        if "max_width" not in marker:
+            return True
+        recorded = marker.get("max_width")
+        return not recorded or recorded <= 0
+    if "max_width" not in marker:
+        return True
+    recorded = marker.get("max_width")
+    if not recorded or recorded <= 0:
+        return True  # uncapped capture is at least as good
+    return recorded >= requested_max_width
 
 
 def _is_partial(path: Path) -> bool:
@@ -310,19 +350,54 @@ def _discard_partials(out_dir: Path) -> None:
             pass
 
 
-def _write_source_marker(out_dir: Path, url: str, auth: str, client: str, complete: bool) -> None:
+def _write_source_marker(
+    out_dir: Path,
+    url: str,
+    auth: str,
+    client: str,
+    complete: bool,
+    max_width: int | None = None,
+) -> None:
     """Record what this directory holds (or is in the middle of fetching).
 
     Written *before* each attempt as well as after success: a run killed
     mid-download otherwise leaves `.part` files that the next run cannot prove
-    belong to this URL, forcing a full re-download.
+    belong to this URL, forcing a full re-download. `max_width` records the
+    quality budget the capture was made under.
     """
     try:
         (out_dir / ".source.json").write_text(
-            json.dumps({"url": url, "auth": auth, "client": client, "complete": complete})
+            json.dumps(
+                {
+                    "url": url,
+                    "auth": auth,
+                    "client": client,
+                    "complete": complete,
+                    "max_width": max_width or 0,
+                }
+            )
         )
     except OSError:
         pass
+
+
+def format_selector(max_width: int | None) -> str:
+    """Build the yt-dlp ``-f`` expression for a source-width budget.
+
+    Preference order: a stream no wider than ``max_width``, then the old
+    720p-height cap, then whatever exists. The ``?`` in ``width<=?N`` makes the
+    filter non-fatal for extractors that don't report width, so a site with
+    incomplete format metadata still downloads instead of failing outright.
+
+    ``max_width`` of ``None`` or ``0`` disables the cap entirely.
+    """
+    if not max_width or max_width <= 0:
+        return "bv*[height<=720]+ba/b[height<=720]/bv+ba/b"
+    return (
+        f"bv*[width<=?{max_width}]+ba/b[width<=?{max_width}]"
+        "/bv*[height<=720]+ba/b[height<=720]"
+        "/bv+ba/b"
+    )
 
 
 def _build_ytdlp_cmd(
@@ -333,6 +408,7 @@ def _build_ytdlp_cmd(
     cookie_path: Path | None,
     cookies_from_browser: str | None,
     player_client: str | None,
+    max_width: int | None = DEFAULT_DOWNLOAD_MAX_WIDTH,
 ) -> list[str]:
     """Assemble the yt-dlp command, optionally pinning a YouTube player client.
 
@@ -351,7 +427,7 @@ def _build_ytdlp_cmd(
     cmd = [
         ytdlp,
         "-N", "8",
-        "-f", "bv*[height<=720]+ba/b[height<=720]/bv+ba/b",
+        "-f", format_selector(max_width),
         "--merge-output-format", "mp4",
         "--ignore-no-formats-error",
         "--write-info-json",
@@ -380,6 +456,7 @@ def download_url(
     cookies: str | None = None,
     cookies_from_browser: str | None = None,
     force: bool = False,
+    max_width: int | None = DEFAULT_DOWNLOAD_MAX_WIDTH,
 ) -> dict:
     ytdlp = _resolve_tool("yt-dlp")
     if ytdlp is None:
@@ -412,7 +489,7 @@ def download_url(
         if (
             existing is not None
             and existing.stat().st_size > 0
-            and _source_marker_matches(out_dir, url, requested_auth)
+            and _source_marker_matches(out_dir, url, requested_auth, max_width)
         ):
             print(
                 f"[download] reusing existing video {existing.name} (pass --force to re-download)",
@@ -441,7 +518,9 @@ def download_url(
     # default, but only if they survive: check the marker it left behind *before*
     # the loop rewrites it, so partials from a matching URL and auth mode can be
     # handed back to yt-dlp instead of re-fetched.
-    resume_partials = not force and _source_marker_matches(out_dir, url, requested_auth)
+    resume_partials = not force and _source_marker_matches(
+        out_dir, url, requested_auth, max_width
+    )
     if resume_partials and any(_is_partial(p) for p in out_dir.glob("video.*")):
         print(
             f"[download] found an interrupted download in {out_dir}; "
@@ -464,7 +543,9 @@ def download_url(
         _clear_download_artifacts(out_dir, keep_partials=resume_partials)
         # Record the in-flight request so a run killed mid-download leaves proof
         # of which URL and auth mode its `.part` files belong to.
-        _write_source_marker(out_dir, url, requested_auth, client_label, complete=False)
+        _write_source_marker(
+            out_dir, url, requested_auth, client_label, complete=False, max_width=max_width
+        )
         cmd = _build_ytdlp_cmd(
             ytdlp,
             url,
@@ -472,6 +553,7 @@ def download_url(
             cookie_path=cookie_path,
             cookies_from_browser=cookies_from_browser,
             player_client=player_client,
+            max_width=max_width,
         )
         if player_client:
             print(f"[download] trying yt-dlp player-client={player_client}", file=sys.stderr)
@@ -512,7 +594,9 @@ def download_url(
 
     # Record the source so a later resume can confirm this out_dir holds *this*
     # URL (and auth mode) before reusing the download.
-    _write_source_marker(out_dir, url, requested_auth, used_client, complete=True)
+    _write_source_marker(
+        out_dir, url, requested_auth, used_client, complete=True, max_width=max_width
+    )
 
     return _result_from_dir(out_dir, video, url)
 
@@ -661,6 +745,7 @@ def download(
     cookies: str | None = None,
     cookies_from_browser: str | None = None,
     force: bool = False,
+    max_width: int | None = DEFAULT_DOWNLOAD_MAX_WIDTH,
 ) -> dict:
     if is_url(source):
         return download_url(
@@ -669,6 +754,7 @@ def download(
             cookies=cookies,
             cookies_from_browser=cookies_from_browser,
             force=force,
+            max_width=max_width,
         )
     return resolve_local(source)
 
