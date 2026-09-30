@@ -135,7 +135,9 @@ class TestClearDownloadArtifacts:
 
 
 from download import (  # noqa: E402
+    YOUTUBE_PLAYER_CLIENTS,
     is_youtube,
+    player_client_attempts,
     _build_ytdlp_cmd,
     _valid_video,
     _source_marker_matches,
@@ -147,15 +149,15 @@ import subprocess as _subprocess  # noqa: E402
 
 
 def _client_of(cmd):
-    """Classify a yt-dlp argv by the pinned YouTube player client.
+    """Classify a yt-dlp argv by its pinned YouTube player-client argument.
 
-    Returns "android", "ios", or "web" (the default, when no client is pinned).
+    Returns "merged" for the multi-client list, the raw value for any other
+    pinned client, or "web" when nothing is pinned (yt-dlp's own defaults).
     """
     for part in cmd:
-        if part == "youtube:player-client=android":
-            return "android"
-        if part == "youtube:player-client=ios":
-            return "ios"
+        if isinstance(part, str) and part.startswith("youtube:player-client="):
+            value = part.split("=", 1)[1]
+            return "merged" if value == YOUTUBE_PLAYER_CLIENTS else value
     return "web"
 
 
@@ -241,7 +243,7 @@ class TestSourceMarkerAuthGating:
 def _fake_runner(out_dir, succeed_on):
     """Return a subprocess.run stand-in that writes video.mp4 for chosen clients.
 
-    succeed_on: "android", "ios", "web", or "never".
+    succeed_on: "merged", "web", or "never".
     """
     calls = []
 
@@ -260,32 +262,69 @@ def _fake_runner(out_dir, succeed_on):
     return run
 
 
+class TestPlayerClientAttempts:
+    """Public YouTube must resolve in one merged invocation, not a client chain.
+
+    Each extra attempt is a full yt-dlp extraction round trip that also
+    re-downloads the subtitles and info.json the next attempt deletes, so the
+    attempt count is the thing worth pinning down.
+    """
+
+    def test_public_youtube_is_one_merged_attempt_plus_default_fallback(self):
+        attempts = player_client_attempts(
+            "https://www.youtube.com/watch?v=x", authenticated=False
+        )
+        assert attempts == [YOUTUBE_PLAYER_CLIENTS, None]
+
+    def test_merged_list_covers_android_ios_and_web(self):
+        assert YOUTUBE_PLAYER_CLIENTS.split(",") == ["android", "ios", "web"]
+
+    def test_authenticated_youtube_uses_default_client_only(self):
+        # android/ios ignore cookies, so pinning them would discard the session.
+        attempts = player_client_attempts(
+            "https://www.youtube.com/watch?v=x", authenticated=True
+        )
+        assert attempts == [None]
+
+    def test_non_youtube_uses_default_client_only(self):
+        assert player_client_attempts("https://vimeo.com/1", authenticated=False) == [None]
+
+
 class TestDownloadUrlAttempts:
-    def test_youtube_android_first_then_web_fallback(self, tmp_path, monkeypatch):
+    def test_youtube_merged_client_succeeds_in_one_invocation(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("download._resolve_tool", lambda name: "yt-dlp")
+        runner = _fake_runner(tmp_path, succeed_on="merged")
+        monkeypatch.setattr("download.subprocess.run", runner)
+        res = download_url("https://youtu.be/x", tmp_path)
+        assert res["downloaded"] is True
+        assert runner.calls == ["merged"]
+        marker = json.loads((tmp_path / ".source.json").read_text())
+        assert marker["client"] == YOUTUBE_PLAYER_CLIENTS
+
+    def test_merged_attempt_pins_every_client_in_one_command(self, tmp_path, monkeypatch):
+        """The three clients must be merged into a single --extractor-args value."""
+        monkeypatch.setattr("download._resolve_tool", lambda name: "yt-dlp")
+        seen = []
+
+        def run(cmd, capture_output=True, text=True):
+            seen.append(cmd)
+            (tmp_path / "video.mp4").write_bytes(b"data")
+            return _subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        monkeypatch.setattr("download.subprocess.run", run)
+        download_url("https://www.youtube.com/watch?v=x", tmp_path)
+        assert len(seen) == 1
+        assert "youtube:player-client=android,ios,web" in seen[0]
+
+    def test_youtube_falls_back_to_default_clients(self, tmp_path, monkeypatch):
         monkeypatch.setattr("download._resolve_tool", lambda name: "yt-dlp")
         runner = _fake_runner(tmp_path, succeed_on="web")
         monkeypatch.setattr("download.subprocess.run", runner)
         res = download_url("https://www.youtube.com/watch?v=x", tmp_path)
         assert res["downloaded"] is True
-        assert runner.calls == ["android", "ios", "web"]
+        assert runner.calls == ["merged", "web"]
         marker = json.loads((tmp_path / ".source.json").read_text())
         assert marker["client"] == "web" and marker["auth"] == "none"
-
-    def test_youtube_ios_fallback_when_android_fails(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("download._resolve_tool", lambda name: "yt-dlp")
-        runner = _fake_runner(tmp_path, succeed_on="ios")
-        monkeypatch.setattr("download.subprocess.run", runner)
-        download_url("https://www.youtube.com/watch?v=x", tmp_path)
-        assert runner.calls == ["android", "ios"]
-        assert json.loads((tmp_path / ".source.json").read_text())["client"] == "ios"
-
-    def test_youtube_android_succeeds_first(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("download._resolve_tool", lambda name: "yt-dlp")
-        runner = _fake_runner(tmp_path, succeed_on="android")
-        monkeypatch.setattr("download.subprocess.run", runner)
-        download_url("https://youtu.be/x", tmp_path)
-        assert runner.calls == ["android"]
-        assert json.loads((tmp_path / ".source.json").read_text())["client"] == "android"
 
     def test_non_youtube_uses_web_only(self, tmp_path, monkeypatch):
         monkeypatch.setattr("download._resolve_tool", lambda name: "yt-dlp")
@@ -323,7 +362,7 @@ class TestDownloadResumesPartials:
     """
 
     @staticmethod
-    def _observing_runner(out_dir, succeed_on="android"):
+    def _observing_runner(out_dir, succeed_on="merged"):
         """Runner that records the directory state yt-dlp would have seen."""
         seen = []
 
@@ -343,7 +382,7 @@ class TestDownloadResumesPartials:
         return run
 
     @staticmethod
-    def _interrupted(out_dir, url, client="android", auth="none"):
+    def _interrupted(out_dir, url, client=YOUTUBE_PLAYER_CLIENTS, auth="none"):
         """Leave behind exactly what a run killed mid-download would."""
         (out_dir / ".source.json").write_text(
             json.dumps({"url": url, "auth": auth, "client": client, "complete": False})
@@ -387,8 +426,8 @@ class TestDownloadResumesPartials:
         assert runner.seen[0]["partials"] == []
 
     def test_partials_survive_the_player_client_fallback(self, tmp_path, monkeypatch):
-        # The android attempt runs first and fails; it must not destroy the
-        # partials before the web attempt (which recorded them) gets to resume.
+        # The merged attempt runs first and fails; it must not destroy the
+        # partials before the default-client attempt gets to resume them.
         url = "https://www.youtube.com/watch?v=x"
         self._interrupted(tmp_path, url, client="web")
         monkeypatch.setattr("download._resolve_tool", lambda name: "yt-dlp")
@@ -397,7 +436,7 @@ class TestDownloadResumesPartials:
 
         download_url(url, tmp_path)
 
-        assert [s["client"] for s in runner.seen] == ["android", "ios", "web"]
+        assert [s["client"] for s in runner.seen] == ["merged", "web"]
         assert runner.seen[-1]["partials"] == [
             "video.f399.mp4.part",
             "video.f399.mp4.ytdl",
@@ -428,7 +467,7 @@ class TestDownloadResumesPartials:
         assert in_flight == {
             "url": url,
             "auth": "none",
-            "client": "android",
+            "client": YOUTUBE_PLAYER_CLIENTS,
             "complete": False,
         }
         assert json.loads((tmp_path / ".source.json").read_text())["complete"] is True
@@ -438,7 +477,7 @@ class TestDownloadResumesPartials:
         self._interrupted(tmp_path, url, client="web")
         monkeypatch.setattr("download._resolve_tool", lambda name: "yt-dlp")
         monkeypatch.setattr(
-            "download.subprocess.run", self._observing_runner(tmp_path, succeed_on="android")
+            "download.subprocess.run", self._observing_runner(tmp_path, succeed_on="merged")
         )
 
         download_url(url, tmp_path)
@@ -462,13 +501,13 @@ class TestDownloadResumesPartials:
 
 
 class TestFetchCaptions:
-    def test_writes_vtt_via_android_for_youtube(self, tmp_path, monkeypatch):
+    def test_writes_vtt_via_merged_client_for_youtube(self, tmp_path, monkeypatch):
         monkeypatch.setattr("download._resolve_tool", lambda name: "yt-dlp")
 
         def run(cmd, capture_output=True, text=True):
             assert "--skip-download" in cmd
             assert "--ignore-no-formats-error" in cmd
-            assert "youtube:player-client=android" in cmd
+            assert f"youtube:player-client={YOUTUBE_PLAYER_CLIENTS}" in cmd
             (tmp_path / "captions.en.vtt").write_text("WEBVTT\n")
             return _subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
@@ -476,14 +515,14 @@ class TestFetchCaptions:
         sub = fetch_captions("https://youtu.be/x", tmp_path)
         assert sub.name == "captions.en.vtt"
 
-    def test_falls_back_to_ios_when_android_yields_no_subs(self, tmp_path, monkeypatch):
+    def test_falls_back_to_default_client_when_merged_yields_no_subs(self, tmp_path, monkeypatch):
         monkeypatch.setattr("download._resolve_tool", lambda name: "yt-dlp")
         seen = []
 
         def run(cmd, capture_output=True, text=True):
             client = _client_of(cmd)
             seen.append(client)
-            if client == "ios":
+            if client == "web":
                 (tmp_path / "captions.en.vtt").write_text("WEBVTT\n")
                 return _subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
             return _subprocess.CompletedProcess(cmd, 1, stdout="", stderr="no subs")
@@ -491,7 +530,7 @@ class TestFetchCaptions:
         monkeypatch.setattr("download.subprocess.run", run)
         sub = fetch_captions("https://youtu.be/x", tmp_path)
         assert sub.name == "captions.en.vtt"
-        assert seen == ["android", "ios"]
+        assert seen == ["merged", "web"]
 
     def test_no_subs_raises(self, tmp_path, monkeypatch):
         monkeypatch.setattr("download._resolve_tool", lambda name: "yt-dlp")
@@ -507,7 +546,7 @@ class TestFetchCaptions:
 
 
 class TestFetchTitle:
-    def test_youtube_uses_android_first(self, monkeypatch):
+    def test_youtube_uses_merged_client(self, monkeypatch):
         monkeypatch.setattr("download._resolve_tool", lambda name: "yt-dlp")
 
         calls = []
@@ -519,16 +558,16 @@ class TestFetchTitle:
         monkeypatch.setattr("download.subprocess.run", run)
         title = fetch_title("https://youtu.be/x")
         assert title == "Real Title"
-        assert any("youtube:player-client=android" in str(part) for part in calls[0])
+        assert len(calls) == 1
+        assert f"youtube:player-client={YOUTUBE_PLAYER_CLIENTS}" in calls[0]
 
-    def test_falls_back_to_web_when_android_fails(self, monkeypatch):
+    def test_falls_back_to_default_client_when_merged_fails(self, monkeypatch):
         monkeypatch.setattr("download._resolve_tool", lambda name: "yt-dlp")
         calls = []
 
         def run(cmd, capture_output=True, text=True):
             calls.append(cmd)
-            is_android = any("youtube:player-client=android" == part for part in cmd)
-            if is_android:
+            if _client_of(cmd) == "merged":
                 return _subprocess.CompletedProcess(cmd, 1, stdout="", stderr="403")
             return _subprocess.CompletedProcess(cmd, 0, stdout="Recovered Title\n", stderr="")
 

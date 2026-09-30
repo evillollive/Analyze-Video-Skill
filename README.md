@@ -214,7 +214,7 @@ Transcripts are cached too, because transcribing is the most expensive non-downl
 
 ### When a site blocks the download
 
-Some sites block unauthenticated download tools with login prompts, bot checks, age gates, members-only access, rate limits, or regional restrictions. The skill classifies those failures and gives a specific next step instead of repeatedly retrying. For public YouTube links it also tries the android player client first before falling back to the default client.
+Some sites block unauthenticated download tools with login prompts, bot checks, age gates, members-only access, rate limits, or regional restrictions. The skill classifies those failures and gives a specific next step instead of repeatedly retrying. For public YouTube links it pins a merged `android,ios,web` player-client list so one yt-dlp call covers all three, falling back to yt-dlp's own default clients only if that produces nothing.
 
 If you can already watch the video in your own browser and want the skill to use that authorized session, retry with one of yt-dlp's cookie options:
 
