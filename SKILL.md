@@ -1,6 +1,6 @@
 ---
 name: analyze-video
-description: Use when the user wants to analyze one or more videos (URLs or local files) and produce a Word document with embedded frames and a written timestamp-based analysis. Triggers on "analyze this video", "make a report from this video", "write up this YouTube link", "document what's in these videos", "analyze these clips", "video analysis", or any request that includes video URLs or local video paths and asks for a written deliverable.
+description: Use when the user wants to analyze one or more videos (URLs or local files) and produce a Word document with embedded frames and a written timestamp-based analysis. Triggers on "analyze this video", "make a report from this video", "write up this YouTube link", "document what's in these videos", "analyze these clips", "video analysis", or any request that includes video URLs or local video paths and asks for a written deliverable. Also use when the user only wants caption/subtitle files (SRT, VTT, or plain-text transcript) downloaded from a video URL: "download the captions", "get the subtitles", "grab the SRT", "what subtitle languages does this have".
 allowed-tools: Bash, Read, Write, AskUserQuestion
 homepage: https://github.com/evillollive/Analyze-Video-Skill
 repository: https://github.com/evillollive/Analyze-Video-Skill
@@ -28,6 +28,27 @@ Do not read every frame. The pipeline emits per-chunk contact sheets and a light
 4. Read the full `manifest.json` only when transcript text is needed for direct quotes, section-writing, or transcript-boundary refinement.
 
 For long videos, `process.py` auto-chunks unfocused videos over 12 minutes into about 10-minute chunks with overlap. If `manifest_lite.preview_cost_warning` is true and the user asked about a narrow moment, prefer re-running with `--start` and `--end` instead of reading every contact sheet.
+
+## Captions-only mode
+
+If the user only wants caption or subtitle files (not an analysis), skip the whole report pipeline: no setup preflight, frame questions, `process.py`, or `.docx`. Only `yt-dlp` is needed; if it is missing, `captions.py` prints install guidance (or run `setup.py`).
+
+```bash
+python3 "${SKILL_DIR}/scripts/captions.py" \
+  --source "<url>" [--source "<url2>" ...] \
+  --out-dir "<absolute output dir>" \
+  [--langs en] [--format srt] [--no-auto] [--list]
+```
+
+- `--format`: `srt` (default), `vtt` (raw track as served), `txt` (deduped `[mm:ss] text` transcript), a comma list like `srt,txt`, or `all`.
+- `--langs`: `en` (default, covers en/en-US/en-GB/en-orig), comma-separated codes or yt-dlp regexes (`es,fr`, `pt.*`), or `all`. `all` can be large on YouTube when auto-translations are included; combine with `--no-auto` for uploader tracks only.
+- `--no-auto`: manual (uploader) captions only. Without it, auto-generated captions fill in languages with no manual track.
+- `--list`: print available manual and auto languages without downloading. Use it when the user asks what languages exist or when the requested language fails.
+- Files are named `<title> [<id>].<lang>.<ext>`; existing files are never overwritten (a ` (2)` suffix is added).
+
+Stdout is a JSON array with one entry per source: `files` (`lang`, `format`, `path`) on success or `error` on failure. Exit code is non-zero if any source failed; report successful files and explain each error. Access failures follow the same rules as the main pipeline (see Failure modes): offer user-authorized `--cookies-from-browser`/`--cookies` only after a failure. Local video files are not supported in this mode; point the user to any sidecar `.srt`/`.vtt` next to the file instead.
+
+Do not offer cleanup or PDF steps in this mode. Report the file paths and stop.
 
 ## Step 0: Setup preflight
 
@@ -418,4 +439,4 @@ If cleanup requested, remove per-video working directories and any spec/build sc
 
 The skill does not upload source video, persist cookies, post to platform accounts, or access platform accounts by default. Cookie-based retries must be initiated only after user consent and should use the user's own authorized browser/session.
 
-Bundled runtime: `scripts/process.py`, `download.py`, `frames.py`, `transcribe.py`, `whisper.py`, `setup.py`, `select_frames.py`, `validate_spec_paths.py`, `lint_spec_quality.py`, `run_guarded_pipeline.py`, and `build-docx.js`.
+Bundled runtime: `scripts/process.py`, `captions.py`, `download.py`, `frames.py`, `transcribe.py`, `whisper.py`, `setup.py`, `select_frames.py`, `validate_spec_paths.py`, `lint_spec_quality.py`, `run_guarded_pipeline.py`, and `build-docx.js`.
