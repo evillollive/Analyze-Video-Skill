@@ -6,7 +6,7 @@
 
 **Paste a video link. Get a timestamped Word report with screenshots, captions, and concrete visual analysis.**
 
-`/analyze-video` is a cross-tool agent skill (Claude Code, GitHub Copilot, and Codex) for turning YouTube, Vimeo, TikTok, X, Twitch, and local videos into polished `.docx` reports. It uses [yt-dlp](https://github.com/yt-dlp/yt-dlp), ffmpeg, contact sheets, optional Whisper transcription, and a guarded, token-efficient frame-selection workflow.
+`/analyze-video` is a cross-tool agent skill (Claude Code, GitHub Copilot, and Codex) for turning YouTube, Vimeo, TikTok, X, Twitch, and local videos into polished `.docx` reports. It uses [yt-dlp](https://github.com/yt-dlp/yt-dlp), ffmpeg, contact sheets, optional Whisper transcription, and a guarded, token-efficient frame-selection workflow. Need only the subtitles? It can also download SRT, VTT, or plain-text captions without the report.
 
 ![Preview of analyze-video contact sheet and generated report](docs/assets/demo-preview.svg)
 
