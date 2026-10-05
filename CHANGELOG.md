@@ -4,6 +4,8 @@ All notable changes to `/analyze-video` are documented here.
 
 ## [Unreleased]
 
+## [1.8.0] - 2026-10-05
+
 ### Fixed
 - **YouTube subtitles silently dropped when a player client's formats were PO-token-gated.** Fetching auto-captions runs yt-dlp under `--skip-download`, but yt-dlp still evaluates media formats first — and when the pinned YouTube player client can only offer formats gated behind a GVS PO token (increasingly the norm for anonymous requests from datacenter IPs), it aborts with a fatal `Requested format is not available` *after* it has already located the subtitle tracks but *before* writing the `.vtt` files. The caption pass then reported "no subtitles" even though captions existed. Every yt-dlp invocation now passes `--ignore-no-formats-error`, which downgrades that abort to a warning so the located subtitles are still written; whether a real video was produced is still decided independently by `_valid_video`, so this never masks a genuine download failure.
 - **Single-client fragility on bot-flagged / rate-limited YouTube.** The player-client fallback was android → web, but the default web client needs a PO token for subtitles and android is itself frequently bot-flagged or 429-rate-limited from cloud/datacenter IPs. The chain is now android → **ios** → web across downloads, caption-only fetches, and title lookups: the ios client is a distinct extraction path that commonly succeeds when android is blocked, and it needs no cookies or JavaScript runtime. The `.source.json` marker now records the actual client used (including `ios`) rather than collapsing everything non-android to `web`.
