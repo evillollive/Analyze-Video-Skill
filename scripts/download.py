@@ -525,18 +525,27 @@ def _pick_caption(out_dir: Path, stem: str) -> Path | None:
     return english[0] if english else candidates[0]
 
 
-def fetch_captions(
+DEFAULT_SUB_LANGS = "en,en-US,en-GB,en-orig"
+
+
+def fetch_caption_tracks(
     url: str,
     out_dir: Path,
     *,
+    stem: str = "captions",
+    langs: str = DEFAULT_SUB_LANGS,
+    include_auto: bool = True,
+    write_info_json: bool = False,
     cookies: str | None = None,
     cookies_from_browser: str | None = None,
-) -> Path | None:
-    """Fetch subtitles only (no video download) and return the VTT path.
+) -> list[Path]:
+    """Fetch subtitle tracks only (no video download) as VTT files.
 
-    Retrofits a transcript for an output directory whose video was processed from
-    a local file (so the caption pass never ran). Uses the same android-first
-    strategy as download_url for public YouTube URLs.
+    Returns every ``<stem>.<lang>.vtt`` written, sorted. ``langs`` is passed to
+    yt-dlp's ``--sub-langs`` (comma-separated codes or regexes, or ``all``).
+    Manual tracks win over auto-generated ones for the same language; set
+    ``include_auto=False`` for manual tracks only. Uses the same
+    android -> ios -> web client fallback as download_url for public YouTube.
     """
     ytdlp = _resolve_tool("yt-dlp")
     if ytdlp is None:
@@ -553,7 +562,6 @@ def fetch_captions(
             raise SystemExit(f"Cookie file not found: {cookie_path}")
 
     out_dir.mkdir(parents=True, exist_ok=True)
-    stem = "captions"
     template = str(out_dir / f"{stem}.%(ext)s")
 
     no_auth = not (cookies or cookies_from_browser)
@@ -561,10 +569,10 @@ def fetch_captions(
 
     result: subprocess.CompletedProcess | None = None
     for player_client in attempts:
-        # Clear any prior captions so _pick_caption only ever matches a file the
-        # current attempt produced; otherwise a stale VTT from an earlier run
-        # would short-circuit the web-client fallback and the failure path.
-        for stale in out_dir.glob(f"{stem}*.vtt"):
+        # Clear any prior captions so only files the current attempt produced
+        # are picked; otherwise a stale VTT from an earlier run would
+        # short-circuit the web-client fallback and the failure path.
+        for stale in [*out_dir.glob(f"{stem}*.vtt"), out_dir / f"{stem}.info.json"]:
             try:
                 stale.unlink()
             except OSError:
@@ -574,13 +582,18 @@ def fetch_captions(
             "--skip-download",
             "--ignore-no-formats-error",
             "--write-subs",
-            "--write-auto-subs",
-            "--sub-langs", "en,en-US,en-GB,en-orig",
+        ]
+        if include_auto:
+            cmd.append("--write-auto-subs")
+        cmd += [
+            "--sub-langs", langs,
             "--sub-format", "vtt",
             "--convert-subs", "vtt",
             "--no-playlist",
             "-o", template,
         ]
+        if write_info_json:
+            cmd.append("--write-info-json")
         if player_client:
             cmd += ["--extractor-args", f"youtube:player-client={player_client}"]
         if cookie_path is not None:
@@ -593,15 +606,89 @@ def fetch_captions(
             print(result.stdout, file=sys.stderr, end="" if result.stdout.endswith("\n") else "\n")
         if result.stderr:
             print(result.stderr, file=sys.stderr, end="" if result.stderr.endswith("\n") else "\n")
-        sub = _pick_caption(out_dir, stem)
-        if sub is not None:
-            return sub
+        tracks = sorted(out_dir.glob(f"{stem}*.vtt"))
+        if tracks:
+            return tracks
 
     out = (result.stdout or "") + "\n" + (result.stderr or "") if result else ""
     classified = classify_download_error(out)
     raise SystemExit(
         f"yt-dlp did not produce subtitles for {url} ({classified['kind']}). "
         f"{classified['guidance']}"
+    )
+
+
+def fetch_captions(
+    url: str,
+    out_dir: Path,
+    *,
+    cookies: str | None = None,
+    cookies_from_browser: str | None = None,
+) -> Path | None:
+    """Fetch English subtitles only (no video download) and return one VTT path.
+
+    Retrofits a transcript for an output directory whose video was processed from
+    a local file (so the caption pass never ran).
+    """
+    stem = "captions"
+    fetch_caption_tracks(
+        url,
+        out_dir,
+        stem=stem,
+        cookies=cookies,
+        cookies_from_browser=cookies_from_browser,
+    )
+    return _pick_caption(out_dir, stem)
+
+
+def list_caption_tracks(
+    url: str,
+    *,
+    cookies: str | None = None,
+    cookies_from_browser: str | None = None,
+) -> dict:
+    """Return available subtitle languages without downloading anything.
+
+    Result: ``{"title", "id", "manual": [langs], "auto": [langs]}``.
+    """
+    ytdlp = _resolve_tool("yt-dlp")
+    if ytdlp is None:
+        raise SystemExit(
+            "yt-dlp is not installed. Install with: brew install yt-dlp (macOS), "
+            "pipx install yt-dlp, or pip install --user yt-dlp"
+        )
+    if cookies and cookies_from_browser:
+        raise SystemExit("Use only one of --cookies or --cookies-from-browser")
+    no_auth = not (cookies or cookies_from_browser)
+    attempts: list[str | None] = ["android", "ios", None] if (is_youtube(url) and no_auth) else [None]
+    result: subprocess.CompletedProcess | None = None
+    for player_client in attempts:
+        cmd = [ytdlp, "-J", "--skip-download", "--ignore-no-formats-error", "--no-playlist"]
+        if player_client:
+            cmd += ["--extractor-args", f"youtube:player-client={player_client}"]
+        if cookies:
+            cmd += ["--cookies", str(Path(cookies).expanduser().resolve())]
+        if cookies_from_browser:
+            cmd += ["--cookies-from-browser", cookies_from_browser]
+        cmd.append(url)
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0 or not result.stdout.strip():
+            continue
+        try:
+            info = json.loads(result.stdout)
+        except json.JSONDecodeError:
+            continue
+        manual = sorted(k for k in (info.get("subtitles") or {}) if k != "live_chat")
+        auto = sorted((info.get("automatic_captions") or {}).keys())
+        if not manual and not auto and player_client is not None:
+            # Some clients omit caption metadata; try the next one.
+            continue
+        return {"title": info.get("title"), "id": info.get("id"), "manual": manual, "auto": auto}
+
+    out = (result.stdout or "") + "\n" + (result.stderr or "") if result else ""
+    classified = classify_download_error(out)
+    raise SystemExit(
+        f"Could not list subtitles for {url} ({classified['kind']}). {classified['guidance']}"
     )
 
 

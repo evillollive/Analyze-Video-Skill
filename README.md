@@ -35,6 +35,18 @@ Each document is named after the video plus the word `analysis` (for example `ho
 
 One video or a whole batch works. Long videos are automatically chunked so the workflow stays manageable.
 
+## Just want the captions?
+
+Ask "download the captions for <url>" and the skill skips the report entirely. Or run it directly (only `yt-dlp` is required):
+
+```bash
+python3 scripts/captions.py --source "<url>" --out-dir ~/Downloads             # English SRT
+python3 scripts/captions.py --source "<url>" --langs es,fr --format srt,txt    # pick languages and formats
+python3 scripts/captions.py --source "<url>" --list                            # see available languages
+```
+
+Formats: `srt` (default), `vtt`, `txt` (clean timestamped transcript), or `all`. Add `--no-auto` for uploader captions only. Files are named `<title> [<id>].<lang>.<ext>`.
+
 ## The clever bits
 
 ### Contact sheets save tokens
@@ -158,6 +170,7 @@ Analyze-Video-Skill/
 ├── hooks/                       # Silent plugin hooks
 ├── scripts/
 │   ├── process.py               # Main pipeline entry point
+│   ├── captions.py              # Standalone caption/subtitle downloader (SRT/VTT/TXT)
 │   ├── download.py              # yt-dlp wrapper and failure classification
 │   ├── cache_utils.py           # Self-pruning download + transcript caches
 │   ├── frames.py                # Frame extraction and contact sheets
