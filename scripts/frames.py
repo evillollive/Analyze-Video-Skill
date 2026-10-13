@@ -382,6 +382,33 @@ def extract(
     return _frames_from_dir(frames_dir, fps, start_seconds), frames_dir
 
 
+def _sheet_signature(
+    frames_dir: Path,
+    cols: int,
+    tile_width: int,
+    quality: int,
+    frame_count: int,
+) -> dict:
+    """Fingerprint the inputs that determine a contact sheet's pixels.
+
+    The frames' own identity comes from the extraction signature ``extract``
+    already wrote into the directory, so a sheet is only reused when it was
+    tiled from exactly these frames with exactly these tiling options.
+    """
+    try:
+        extract_sig = json.loads((frames_dir / ".extract.json").read_text())
+    except (OSError, json.JSONDecodeError):
+        extract_sig = None
+    return {
+        "frames_dir": str(frames_dir),
+        "extract": extract_sig,
+        "frame_count": frame_count,
+        "cols": cols,
+        "tile_width": tile_width,
+        "quality": quality,
+    }
+
+
 def make_contact_sheet(
     frames_dir: Path,
     out_path: Path,
@@ -389,6 +416,7 @@ def make_contact_sheet(
     tile_width: int = 200,
     quality: int = 5,
     frame_count: int | None = None,
+    force: bool = False,
 ) -> Path:
     """Tile every frame_*.jpg in frames_dir into a single contact sheet.
 
@@ -399,6 +427,12 @@ def make_contact_sheet(
 
     Pass ``frame_count`` when the caller already knows it (it comes back from
     ``extract``) to skip re-listing the directory.
+
+    An existing sheet is reused when its recorded signature matches (same
+    frames, same tiling options). ``extract`` resumes completed frame
+    directories for free, so without this a re-run after a timeout - the
+    documented recovery path - still re-tiled every already-finished chunk.
+    Pass ``force=True`` to always re-tile.
 
     Returns the contact sheet path. Raises SystemExit on failure or if no
     frames are present.
@@ -412,6 +446,26 @@ def make_contact_sheet(
 
     rows = (frame_count + cols - 1) // cols
     out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    signature = _sheet_signature(frames_dir, cols, tile_width, quality, frame_count)
+    sig_path = out_path.with_name(out_path.name + ".sheet.json")
+
+    if not force:
+        try:
+            if (
+                out_path.stat().st_size > 0
+                and json.loads(sig_path.read_text()) == signature
+            ):
+                return out_path
+        except (OSError, json.JSONDecodeError):
+            pass
+
+    # Drop a stale sidecar first: if ffmpeg is interrupted mid-write, the sheet
+    # on disk must never look like it matches this signature.
+    try:
+        sig_path.unlink()
+    except OSError:
+        pass
 
     cmd = [
         ffmpeg,
@@ -431,6 +485,11 @@ def make_contact_sheet(
         raise SystemExit(f"contact sheet tile failed: {result.stderr.strip()}")
     if not out_path.exists() or out_path.stat().st_size == 0:
         raise SystemExit("contact sheet produced no output")
+    # Record the signature so a later run can reuse this sheet.
+    try:
+        sig_path.write_text(json.dumps(signature))
+    except OSError:
+        pass
     return out_path
 
 
