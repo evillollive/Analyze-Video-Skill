@@ -4,6 +4,13 @@ All notable changes to `/analyze-video` are documented here.
 
 ## [Unreleased]
 
+### Added
+- **Keyframe-only frame sampling (large CPU reduction on long videos).** Frame extraction was the pipeline's dominant CPU cost: ffmpeg decoded every frame of a chunk just so the `fps` filter could keep roughly 100 of them, which for a 600s chunk meant decoding about 15,000 frames to produce 100. `process.py` now measures the source's keyframe interval once per video and, when sampling is sparse enough, extracts with ffmpeg's `-skip_frame nokey` so only keyframes are decoded. On a 300s 720p clip this cut frame-extraction CPU from 8.3s to 0.2s while producing the same 20 frames, all visually distinct. Because chunks are extracted in parallel, freeing that CPU also removes contention between workers.
+
+  The optimization is gated, not unconditional: it only engages when the gap between sampled frames covers at least two keyframes, which guarantees each output frame lands on a distinct keyframe instead of the `fps` filter repeating one, and bounds frame drift at half the sampling interval. Long overview runs sample sparsely and get the speedup; focused `--start`/`--end` runs sample densely and keep a full decode automatically. The interval is measured with an `ffprobe` packet-header read over the first 120s (no decoding, well under a second), using the median inter-keyframe gap so a single scene-cut keyframe cannot skew it; when it cannot be established the full decode is used.
+
+  New `--keyframe-sampling {auto,never,always}` (default `auto`) controls it; `never` reproduces the previous behavior exactly. If keyframe-only extraction yields no frames (a codec or container that exposes no keyframe flags), the chunk is transparently re-extracted with a full decode. Extraction signatures are unchanged for full-decode runs, so existing cached frame directories stay valid. The manifest gains `keyframe_interval_seconds` and a per-chunk `keyframe_sampled`.
+
 ## [1.8.0] - 2026-10-05
 
 ### Fixed
