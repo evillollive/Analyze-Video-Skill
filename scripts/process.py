@@ -73,14 +73,35 @@ PREVIEW_COST_WARNING_CHUNKS = 5
 DEFAULT_MAX_PARALLEL_CHUNKS = 4
 
 
+def _parallel_budget(requested: int | None) -> int:
+    """Total concurrent ffmpeg workers this run may use.
+
+    ffmpeg is already internally multi-threaded, so we deliberately stay well
+    below the core count to avoid oversubscribing the CPU. An explicit --jobs is
+    honored as the whole budget, so `--jobs 1` really means "one ffmpeg at a time".
+    """
+    if requested is not None and requested > 0:
+        return requested
+    cpus = os.cpu_count() or 1
+    return max(1, min(DEFAULT_MAX_PARALLEL_CHUNKS, cpus // 2 or 1))
+
+
 def _resolve_jobs(requested: int | None, chunk_count: int) -> int:
     """Number of chunks to extract concurrently (never more than there are chunks)."""
     if chunk_count <= 1:
         return 1
-    if requested is not None and requested > 0:
-        return min(requested, chunk_count)
-    cpus = os.cpu_count() or 1
-    return max(1, min(DEFAULT_MAX_PARALLEL_CHUNKS, cpus // 2 or 1, chunk_count))
+    return max(1, min(_parallel_budget(requested), chunk_count))
+
+
+def _resolve_frame_jobs(requested: int | None, chunk_jobs: int) -> int:
+    """Workers each chunk may use to extract its own frames.
+
+    Whatever the chunk-level fan-out leaves unused goes here, so the total number
+    of concurrent ffmpeg processes stays within the budget either way. A short,
+    unchunked video (chunk_jobs == 1) is the case this exists for: it used to run
+    a single ffmpeg decode while the rest of the machine sat idle.
+    """
+    return max(1, _parallel_budget(requested) // max(1, chunk_jobs))
 
 
 # Shared, per-user cache for downloaded source videos. Keying by URL means the
@@ -322,6 +343,7 @@ def _process_chunk(
     max_frames: int,
     full_transcript_segments: list[dict],
     transcript_index: SegmentIndex | None = None,
+    frame_jobs: int = 1,
 ) -> dict:
     """Extract frames + contact sheet + transcript slice indices for one chunk."""
     chunk_dir = work / "chunks" / f"chunk_{chunk_index}"
@@ -354,6 +376,8 @@ def _process_chunk(
         start_seconds=chunk_start,
         end_seconds=chunk_end,
         force=getattr(args, "force", False),
+        jobs=frame_jobs,
+        target_frames=chunk_target,
     )
 
     chunk_sheet: Path | None = None
@@ -626,8 +650,10 @@ def main() -> int:
         type=int,
         default=None,
         help=(
-            "Number of chunks to extract in parallel (default: auto, up to "
-            f"{DEFAULT_MAX_PARALLEL_CHUNKS}). Use 1 to force sequential extraction."
+            "Total ffmpeg workers used for frame extraction (default: auto, up to "
+            f"{DEFAULT_MAX_PARALLEL_CHUNKS}). The budget is split between chunks "
+            "and, when a chunk has spare capacity, parallel sub-ranges within that "
+            "chunk. Use 1 to force fully sequential extraction."
         ),
     )
     ap.add_argument("--fps", type=float, default=None, help="Override auto-fps (clamped to 2 fps)")
@@ -1024,6 +1050,7 @@ def main() -> int:
         # Built once and shared by every chunk (read-only, so safe across threads).
         transcript_index = _segment_index(full_transcript_segments)
         jobs = _resolve_jobs(getattr(args, "jobs", None), len(chunk_ranges))
+        frame_jobs = _resolve_frame_jobs(getattr(args, "jobs", None), jobs)
         _write_status(
             work,
             "extracting",
@@ -1046,6 +1073,7 @@ def main() -> int:
                 max_frames=max_frames,
                 full_transcript_segments=full_transcript_segments,
                 transcript_index=transcript_index,
+                frame_jobs=frame_jobs,
             )
 
         if jobs > 1:

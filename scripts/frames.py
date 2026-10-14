@@ -14,10 +14,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import shutil
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -48,6 +50,13 @@ HARD_MAX_FRAMES = 120  # was 100, bumped for the auto-chunking redesign
 CHUNK_THRESHOLD_SECONDS = 12 * 60   # 720s, kicks in just above one chunk size
 CHUNK_DURATION_SECONDS = 10 * 60    # 600s per chunk
 CHUNK_OVERLAP_SECONDS = 5            # so transitions on chunk boundaries aren't lost
+
+# Intra-chunk parallel extraction. A single ffmpeg decode does not scale across
+# all cores, so one long range is split into contiguous sub-ranges that are
+# decoded concurrently. Splitting only pays off when each worker still has real
+# work to do, hence the floors below.
+MIN_FRAMES_PER_SPLIT_JOB = 8
+MIN_SPLIT_DURATION_SECONDS = 60.0
 
 
 def should_chunk(duration_seconds: float, focused: bool) -> bool:
@@ -291,6 +300,136 @@ def _frames_from_dir(
     ]
 
 
+def plan_split(
+    fps: float,
+    target_frames: int | None,
+    start_seconds: float | None,
+    end_seconds: float | None,
+    jobs: int,
+) -> list[tuple[float, float, int, int]] | None:
+    """Partition one extraction into fps-grid-aligned, contiguous sub-ranges.
+
+    Returns ``[(start, end, start_number, frame_count), ...]`` or ``None`` when
+    splitting is not worth it (or not provably safe).
+
+    The frame at global index ``i`` always sits at ``start + i / fps``, which is
+    exactly the timestamp the manifest records. Each sub-range therefore begins
+    on that same grid and is capped at its own frame count, so running the
+    sub-ranges concurrently reproduces the single-pass frame set exactly.
+    """
+    if jobs < 2 or fps <= 0 or not target_frames or target_frames < 2 * MIN_FRAMES_PER_SPLIT_JOB:
+        return None
+    if end_seconds is None:
+        return None  # an open-ended range has no frame count to partition
+    base = start_seconds or 0.0
+    if end_seconds - base < MIN_SPLIT_DURATION_SECONDS:
+        return None
+
+    per_job = max(MIN_FRAMES_PER_SPLIT_JOB, math.ceil(target_frames / jobs))
+    if per_job >= target_frames:
+        return None  # one worker would do all the work
+
+    plan: list[tuple[float, float, int, int]] = []
+    first = 0
+    while first < target_frames:
+        count = min(per_job, target_frames - first)
+        job_start = base + first / fps
+        job_end = min(end_seconds, base + (first + count) / fps)
+        if job_end <= job_start:
+            break
+        plan.append((job_start, job_end, first + 1, count))
+        first += count
+    return plan if len(plan) > 1 else None
+
+
+def _ffmpeg_extract_cmd(
+    ffmpeg: str,
+    video_path: str,
+    output_pattern: str,
+    *,
+    fps: float,
+    resolution: int,
+    frames: int,
+    start_seconds: float | None,
+    end_seconds: float | None,
+    start_number: int | None = None,
+) -> list[str]:
+    cmd: list[str] = [ffmpeg, "-hide_banner", "-loglevel", "error", "-y"]
+    # -ss before -i = fast seek (keyframe-snap, good enough for preview frames).
+    if start_seconds is not None:
+        cmd += ["-ss", f"{start_seconds:.3f}"]
+    if end_seconds is not None:
+        cmd += ["-to", f"{end_seconds:.3f}"]
+    cmd += [
+        "-i", video_path,
+        "-vf", f"fps={fps},scale={resolution}:-2",
+        "-frames:v", str(frames),
+    ]
+    if start_number is not None:
+        cmd += ["-start_number", str(start_number)]
+    cmd += ["-q:v", "4", output_pattern]
+    return cmd
+
+
+def _frames_are_contiguous(frame_files: list[Path]) -> bool:
+    """True when the files are exactly frame_0001..frame_000N with no gaps.
+
+    Frame timestamps are derived from each file's position in this sorted list,
+    so a hole (a sub-range that produced fewer frames than its slot) would shift
+    every later timestamp. Callers treat a gap as a failed split and redo the
+    range in one pass.
+    """
+    return all(
+        path.name == f"frame_{i:04d}.jpg" for i, path in enumerate(frame_files, start=1)
+    )
+
+
+def _run_split_extraction(
+    ffmpeg: str,
+    video_path: str,
+    frames_dir: Path,
+    plan: list[tuple[float, float, int, int]],
+    *,
+    fps: float,
+    resolution: int,
+) -> list[Path] | None:
+    """Run a split plan concurrently. Returns the frame files, or None on failure.
+
+    ``None`` means "fall back to a single pass": either ffmpeg failed in one of
+    the workers or the combined output had a gap. The caller then re-runs the
+    whole range serially, so a failed split costs time but never correctness.
+    """
+    output_pattern = str(frames_dir / "frame_%04d.jpg")
+
+    def _run(slot: tuple[float, float, int, int]) -> bool:
+        job_start, job_end, start_number, count = slot
+        cmd = _ffmpeg_extract_cmd(
+            ffmpeg,
+            video_path,
+            output_pattern,
+            fps=fps,
+            resolution=resolution,
+            frames=count,
+            start_seconds=job_start,
+            end_seconds=job_end,
+            start_number=start_number,
+        )
+        return subprocess.run(cmd, capture_output=True, text=True).returncode == 0
+
+    with ThreadPoolExecutor(max_workers=len(plan)) as pool:
+        ok = all(list(pool.map(_run, plan)))
+
+    produced = _list_frames(frames_dir)
+    if not ok or not produced or not _frames_are_contiguous(produced):
+        for stale in produced:
+            try:
+                stale.unlink()
+            except OSError:
+                pass
+        return None
+    return produced
+
+
 def extract(
     video_path: str,
     out_dir: Path,
@@ -300,6 +439,8 @@ def extract(
     start_seconds: float | None = None,
     end_seconds: float | None = None,
     force: bool = False,
+    jobs: int = 1,
+    target_frames: int | None = None,
 ) -> tuple[list[dict], Path]:
     """Extract frames into a signature-keyed subdirectory of out_dir.
 
@@ -307,6 +448,13 @@ def extract(
     frames live in (a fresh subdir per distinct extraction signature), which the
     caller should use when building the contact sheet so stale frames from a
     different run can't leak in.
+
+    With ``jobs`` > 1 and a known ``target_frames``, the range is split into
+    contiguous sub-ranges decoded concurrently. A single ffmpeg decode does not
+    saturate a multi-core machine, so this roughly halves wall-clock extraction
+    on the common unchunked path while producing the identical frame set.
+    ``jobs`` is not part of the extraction signature: it changes how the frames
+    are produced, never which frames are produced.
     """
     ffmpeg = _require_tool("ffmpeg")
 
@@ -352,34 +500,46 @@ def extract(
         pass
 
     output_pattern = str(frames_dir / "frame_%04d.jpg")
-    cmd: list[str] = [
-        ffmpeg,
-        "-hide_banner",
-        "-loglevel", "error",
-        "-y",
-    ]
+    frame_files: list[Path] | None = None
+    plan = plan_split(fps, target_frames, start_seconds, end_seconds, jobs)
+    if plan:
+        print(
+            f"[analyze-video] extracting {target_frames} frames in {len(plan)} "
+            f"parallel sub-ranges",
+            file=sys.stderr,
+        )
+        frame_files = _run_split_extraction(
+            ffmpeg, video_path, frames_dir, plan, fps=fps, resolution=resolution
+        )
+        if frame_files is None:
+            print(
+                "[analyze-video] parallel extraction did not produce a complete "
+                "frame set; redoing this range in a single pass",
+                file=sys.stderr,
+            )
 
-    # -ss before -i = fast seek (keyframe-snap, good enough for preview frames).
-    if start_seconds is not None:
-        cmd += ["-ss", f"{start_seconds:.3f}"]
-    if end_seconds is not None:
-        cmd += ["-to", f"{end_seconds:.3f}"]
-
-    cmd += [
-        "-i", video_path,
-        "-vf", f"fps={fps},scale={resolution}:-2",
-        "-frames:v", str(max_frames),
-        "-q:v", "4",
-        output_pattern,
-    ]
-
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.returncode != 0:
-        raise SystemExit(f"ffmpeg frame extraction failed: {result.stderr.strip()}")
+    if frame_files is None:
+        cmd = _ffmpeg_extract_cmd(
+            ffmpeg,
+            video_path,
+            output_pattern,
+            fps=fps,
+            resolution=resolution,
+            frames=max_frames,
+            start_seconds=start_seconds,
+            end_seconds=end_seconds,
+        )
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            raise SystemExit(f"ffmpeg frame extraction failed: {result.stderr.strip()}")
+        frame_files = _list_frames(frames_dir)
 
     # Record the signature so a later run can reuse these frames (resume).
     sig_path.write_text(json.dumps(signature))
-    return _frames_from_dir(frames_dir, fps, start_seconds), frames_dir
+    return (
+        _frames_from_dir(frames_dir, fps, start_seconds, frame_files=frame_files),
+        frames_dir,
+    )
 
 
 def make_contact_sheet(
@@ -438,7 +598,7 @@ if __name__ == "__main__":
     if len(sys.argv) < 3:
         print(
             "usage: frames.py <video-path> <out-dir> [--fps F] [--resolution W] "
-            "[--max-frames N] [--start T] [--end T] [--contact-sheet]",
+            "[--max-frames N] [--jobs N] [--start T] [--end T] [--contact-sheet]",
             file=sys.stderr,
         )
         raise SystemExit(2)
@@ -453,6 +613,7 @@ if __name__ == "__main__":
     start_arg = None
     end_arg = None
     contact_sheet = False
+    jobs = 1
     i = 0
     while i < len(args):
         if args[i] == "--fps":
@@ -461,6 +622,8 @@ if __name__ == "__main__":
             resolution = int(args[i + 1]); i += 2
         elif args[i] == "--max-frames":
             max_frames = int(args[i + 1]); i += 2
+        elif args[i] == "--jobs":
+            jobs = max(1, int(args[i + 1])); i += 2
         elif args[i] == "--start":
             start_arg = args[i + 1]; i += 2
         elif args[i] == "--end":
@@ -495,6 +658,8 @@ if __name__ == "__main__":
         max_frames=max_frames,
         start_seconds=start_sec,
         end_seconds=end_sec,
+        jobs=jobs,
+        target_frames=target,
     )
 
     sheet_path: str | None = None

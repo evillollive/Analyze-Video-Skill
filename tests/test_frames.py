@@ -6,6 +6,7 @@ fresh subdir, so a prior run's frames can never pollute the current one and no
 cross-session deletion is ever required.
 """
 import json
+import pytest
 import sys
 from pathlib import Path
 
@@ -160,3 +161,152 @@ class TestExtractResume:
         finally:
             monkeypatch.setattr(Path, "unlink", real_unlink)
         assert len(result) == 2
+
+
+class TestPlanSplit:
+    """Sub-range planning for parallel extraction."""
+
+    def test_no_split_for_single_job(self):
+        assert frames_mod.plan_split(0.5, 100, 0.0, 600.0, 1) is None
+
+    def test_no_split_without_target_frames(self):
+        assert frames_mod.plan_split(0.5, None, 0.0, 600.0, 4) is None
+
+    def test_no_split_for_open_ended_range(self):
+        assert frames_mod.plan_split(0.5, 100, 0.0, None, 4) is None
+
+    def test_no_split_for_short_range(self):
+        assert frames_mod.plan_split(2.0, 60, 0.0, 30.0, 4) is None
+
+    def test_no_split_when_frames_per_job_too_small(self):
+        assert frames_mod.plan_split(0.1, 10, 0.0, 100.0, 4) is None
+
+    def test_slots_tile_the_fps_grid_without_gaps(self):
+        fps = 100 / 600
+        plan = frames_mod.plan_split(fps, 100, 0.0, 600.0, 4)
+        assert [(slot[2], slot[3]) for slot in plan] == [
+            (1, 25), (26, 25), (51, 25), (76, 25)
+        ]
+        # Every slot starts exactly on the global grid the manifest records.
+        for start, _end, start_number, _count in plan:
+            assert start == pytest.approx((start_number - 1) / fps)
+        # Slots are contiguous: each ends where the next begins.
+        for earlier, later in zip(plan, plan[1:]):
+            assert earlier[1] == pytest.approx(later[0])
+        assert plan[-1][1] == pytest.approx(600.0)
+
+    def test_respects_start_offset_and_end_clamp(self):
+        fps = 0.5
+        plan = frames_mod.plan_split(fps, 50, 300.0, 400.0, 2)
+        assert plan[0][0] == pytest.approx(300.0)
+        assert plan[-1][1] <= 400.0
+
+    def test_uneven_split_keeps_total_frame_count(self):
+        plan = frames_mod.plan_split(0.5, 101, 0.0, 300.0, 4)
+        assert sum(slot[3] for slot in plan) == 101
+
+
+class TestFramesAreContiguous:
+    def test_contiguous(self, tmp_path):
+        files = [tmp_path / f"frame_{i:04d}.jpg" for i in range(1, 4)]
+        assert frames_mod._frames_are_contiguous(files)
+
+    def test_gap_is_rejected(self, tmp_path):
+        files = [tmp_path / "frame_0001.jpg", tmp_path / "frame_0003.jpg"]
+        assert not frames_mod._frames_are_contiguous(files)
+
+    def test_not_starting_at_one_is_rejected(self, tmp_path):
+        assert not frames_mod._frames_are_contiguous([tmp_path / "frame_0002.jpg"])
+
+
+class TestParallelExtract:
+    """extract() with jobs > 1 fans out and still returns one ordered frame set."""
+
+    def _patch_ffmpeg(self, monkeypatch, *, drop_slot=None):
+        monkeypatch.setattr(frames_mod.shutil, "which", lambda name: "/usr/bin/ffmpeg")
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            pattern = Path(cmd[-1])
+            target_dir = pattern.parent
+            target_dir.mkdir(parents=True, exist_ok=True)
+            count = int(cmd[cmd.index("-frames:v") + 1])
+            first = int(cmd[cmd.index("-start_number") + 1]) if "-start_number" in cmd else 1
+            if drop_slot is not None and first == drop_slot:
+                count -= 1
+            for offset in range(count):
+                (target_dir / f"frame_{first + offset:04d}.jpg").write_bytes(b"jpeg")
+            return _FakeResult()
+
+        monkeypatch.setattr(frames_mod.subprocess, "run", fake_run)
+        return calls
+
+    def test_fans_out_and_returns_ordered_frames(self, tmp_path, monkeypatch):
+        video = tmp_path / "video.mp4"
+        video.write_bytes(b"x" * 1000)
+        calls = self._patch_ffmpeg(monkeypatch)
+
+        result, _frames_dir = extract(
+            str(video), tmp_path / "frames", fps=100 / 600, resolution=512,
+            max_frames=100, start_seconds=0.0, end_seconds=600.0,
+            jobs=4, target_frames=100,
+        )
+
+        assert len(calls) == 4
+        assert len(result) == 100
+        assert [f["index"] for f in result] == list(range(1, 101))
+        # Timestamps stay on the single-pass grid.
+        assert result[25]["timestamp_seconds"] == 150.0
+
+    def test_falls_back_to_single_pass_on_gap(self, tmp_path, monkeypatch):
+        video = tmp_path / "video.mp4"
+        video.write_bytes(b"x" * 1000)
+        # Slot 2 under-produces, which would silently shift every later timestamp.
+        calls = self._patch_ffmpeg(monkeypatch, drop_slot=26)
+
+        result, _frames_dir = extract(
+            str(video), tmp_path / "frames", fps=100 / 600, resolution=512,
+            max_frames=100, start_seconds=0.0, end_seconds=600.0,
+            jobs=4, target_frames=100,
+        )
+
+        # 4 split attempts, then one serial retry over the whole range.
+        assert len(calls) == 5
+        assert "-start_number" not in calls[-1]
+        assert [f["index"] for f in result] == list(range(1, 101))
+
+    def test_single_job_runs_one_ffmpeg(self, tmp_path, monkeypatch):
+        video = tmp_path / "video.mp4"
+        video.write_bytes(b"x" * 1000)
+        calls = self._patch_ffmpeg(monkeypatch)
+
+        extract(
+            str(video), tmp_path / "frames", fps=100 / 600, resolution=512,
+            max_frames=100, start_seconds=0.0, end_seconds=600.0,
+            jobs=1, target_frames=100,
+        )
+        assert len(calls) == 1
+
+    def test_jobs_do_not_change_the_signature(self, tmp_path, monkeypatch):
+        """A rerun with a different worker count must still resume, not re-extract."""
+        video = tmp_path / "video.mp4"
+        video.write_bytes(b"x" * 1000)
+        base = tmp_path / "frames"
+        self._patch_ffmpeg(monkeypatch)
+
+        _first, dir_a = extract(
+            str(video), base, fps=100 / 600, resolution=512, max_frames=100,
+            start_seconds=0.0, end_seconds=600.0, jobs=4, target_frames=100,
+        )
+
+        def boom(*args, **kwargs):
+            raise AssertionError("ffmpeg must not run when resuming")
+
+        monkeypatch.setattr(frames_mod.subprocess, "run", boom)
+        second, dir_b = extract(
+            str(video), base, fps=100 / 600, resolution=512, max_frames=100,
+            start_seconds=0.0, end_seconds=600.0, jobs=1, target_frames=100,
+        )
+        assert dir_a == dir_b
+        assert len(second) == 100
