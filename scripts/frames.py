@@ -42,6 +42,25 @@ def _require_tool(name: str) -> str:
 MAX_FPS = 2.0
 HARD_MAX_FRAMES = 120  # was 100, bumped for the auto-chunking redesign
 
+# Keyframe-only sampling. Decoding a chunk is the most expensive step in the
+# pipeline: ffmpeg decodes every frame of the range just to keep the handful the
+# fps filter lets through. Telling the decoder to skip non-keyframes removes
+# nearly all of that work.
+#
+# The catch is that each sampled frame then snaps back to the nearest preceding
+# keyframe, so this is only safe when keyframes are denser than the sampling
+# interval. If they are not, the fps filter duplicates a single keyframe across
+# many outputs and the contact sheet collapses to a handful of distinct images.
+# KEYFRAME_SAMPLING_SAFETY is the required margin: take at most one frame per
+# this many keyframes, which also bounds how stale a frame can be at half the
+# sampling interval.
+KEYFRAME_SAMPLING_SAFETY = 2.0
+
+# Only this much of the video is inspected to measure the keyframe interval.
+# Web video uses a fixed GOP, so a bounded sample is representative, and reading
+# packet headers for the whole file would give back the time this is saving.
+KEYFRAME_PROBE_SECONDS = 120.0
+
 # Auto-chunking thresholds. Videos longer than CHUNK_THRESHOLD_SECONDS get split
 # into CHUNK_DURATION_SECONDS-long chunks with CHUNK_OVERLAP_SECONDS overlap.
 # Each chunk gets its own frame extraction, contact sheet, and transcript slice.
@@ -166,6 +185,78 @@ def get_metadata(video_path: str) -> dict:
     }
 
 
+def probe_keyframe_interval(
+    video_path: str,
+    *,
+    sample_seconds: float = KEYFRAME_PROBE_SECONDS,
+) -> float | None:
+    """Median seconds between keyframes, measured over a bounded packet sample.
+
+    Reads packet headers only (no decoding) for the first ``sample_seconds`` of
+    video, so this costs a fraction of a second even on long files.
+
+    Returns ``None`` when the interval cannot be established (ffprobe missing or
+    failing, or fewer than two keyframes in the sample). Callers treat ``None``
+    as "do not risk keyframe-only sampling" and fall back to a full decode.
+    """
+    ffprobe = _resolve_tool("ffprobe")
+    if ffprobe is None:
+        return None
+    try:
+        result = subprocess.run(
+            [
+                ffprobe,
+                "-v", "quiet",
+                "-select_streams", "v:0",
+                "-show_entries", "packet=pts_time,flags",
+                "-of", "csv=p=0",
+                "-read_intervals", f"%+{sample_seconds:.3f}",
+                video_path,
+            ],
+            capture_output=True,
+            text=True,
+        )
+    except OSError:
+        return None
+    if result.returncode != 0:
+        return None
+
+    times: list[float] = []
+    for line in result.stdout.splitlines():
+        pts, _, flags = line.partition(",")
+        if "K" not in flags:  # ffprobe marks keyframe packets with a K flag
+            continue
+        try:
+            times.append(float(pts))
+        except ValueError:
+            continue  # pts_time can be N/A
+    if len(times) < 2:
+        return None
+
+    times.sort()
+    deltas = sorted(b - a for a, b in zip(times, times[1:]) if b > a)
+    if not deltas:
+        return None
+    # Median, so one irregular gap (a scene-cut keyframe, or the tail of the
+    # sampled window) cannot skew the estimate.
+    mid = len(deltas) // 2
+    if len(deltas) % 2:
+        return deltas[mid]
+    return (deltas[mid - 1] + deltas[mid]) / 2.0
+
+
+def can_sample_keyframes_only(fps: float, keyframe_interval: float | None) -> bool:
+    """True when sampling at ``fps`` is sparse enough for keyframe-only decoding.
+
+    Requires the gap between sampled frames to cover at least
+    ``KEYFRAME_SAMPLING_SAFETY`` keyframes, which guarantees every output frame
+    lands on a distinct keyframe instead of the fps filter repeating one.
+    """
+    if not keyframe_interval or keyframe_interval <= 0 or fps <= 0:
+        return False
+    return (1.0 / fps) >= KEYFRAME_SAMPLING_SAFETY * keyframe_interval
+
+
 def auto_tile_width(frame_count: int) -> int:
     """Pick a contact-sheet tile width that keeps the sheet ~5-7k image tokens.
 
@@ -229,6 +320,7 @@ def _extract_signature(
     max_frames: int,
     start_seconds: float | None,
     end_seconds: float | None,
+    keyframes_only: bool = False,
 ) -> dict:
     """Fingerprint the inputs that determine a chunk's extracted frames.
 
@@ -241,7 +333,7 @@ def _extract_signature(
         video_sig = f"{st.st_size}:{st.st_mtime_ns}"
     except OSError:
         video_sig = "missing"
-    return {
+    signature = {
         "video": str(video_path),
         "video_sig": video_sig,
         "fps": round(fps, 6),
@@ -250,6 +342,12 @@ def _extract_signature(
         "start_seconds": None if start_seconds is None else round(start_seconds, 3),
         "end_seconds": None if end_seconds is None else round(end_seconds, 3),
     }
+    # Only recorded when enabled, so a full-decode extraction keeps the exact
+    # signature (and cache directory) it had before keyframe sampling existed.
+    # The two modes still differ, so their frames can never be mixed up.
+    if keyframes_only:
+        signature["keyframes_only"] = True
+    return signature
 
 
 def _signature_key(signature: dict) -> str:
@@ -300,6 +398,7 @@ def extract(
     start_seconds: float | None = None,
     end_seconds: float | None = None,
     force: bool = False,
+    keyframes_only: bool = False,
 ) -> tuple[list[dict], Path]:
     """Extract frames into a signature-keyed subdirectory of out_dir.
 
@@ -307,12 +406,19 @@ def extract(
     frames live in (a fresh subdir per distinct extraction signature), which the
     caller should use when building the contact sheet so stale frames from a
     different run can't leak in.
+
+    ``keyframes_only`` decodes keyframes only, which is far cheaper but snaps
+    each frame to the nearest preceding keyframe. Callers should gate it with
+    :func:`can_sample_keyframes_only`. If it yields nothing (a codec or container
+    that exposes no keyframe flags), this transparently redoes the extraction
+    with a full decode.
     """
     ffmpeg = _require_tool("ffmpeg")
 
     out_dir.mkdir(parents=True, exist_ok=True)
     signature = _extract_signature(
-        video_path, fps, resolution, max_frames, start_seconds, end_seconds
+        video_path, fps, resolution, max_frames, start_seconds, end_seconds,
+        keyframes_only,
     )
     # Frames for this exact signature get their own directory. A run with any
     # different input lands elsewhere, so we never delete another run's files.
@@ -359,6 +465,10 @@ def extract(
         "-y",
     ]
 
+    # Decoder-level option: it has to precede -i to apply to the input stream.
+    if keyframes_only:
+        cmd += ["-skip_frame", "nokey"]
+
     # -ss before -i = fast seek (keyframe-snap, good enough for preview frames).
     if start_seconds is not None:
         cmd += ["-ss", f"{start_seconds:.3f}"]
@@ -374,6 +484,28 @@ def extract(
     ]
 
     result = subprocess.run(cmd, capture_output=True, text=True)
+
+    # Not every codec/container exposes keyframe flags the decoder can skip on.
+    # Rather than fail or hand back an empty chunk, redo the work with a full
+    # decode; force=True because the retry's signature is a different directory.
+    if keyframes_only and (result.returncode != 0 or not _list_frames(frames_dir)):
+        print(
+            "[frames] keyframe-only sampling produced no frames; "
+            "retrying with a full decode",
+            file=sys.stderr,
+        )
+        return extract(
+            video_path,
+            out_dir,
+            fps=fps,
+            resolution=resolution,
+            max_frames=max_frames,
+            start_seconds=start_seconds,
+            end_seconds=end_seconds,
+            force=True,
+            keyframes_only=False,
+        )
+
     if result.returncode != 0:
         raise SystemExit(f"ffmpeg frame extraction failed: {result.stderr.strip()}")
 
@@ -438,7 +570,8 @@ if __name__ == "__main__":
     if len(sys.argv) < 3:
         print(
             "usage: frames.py <video-path> <out-dir> [--fps F] [--resolution W] "
-            "[--max-frames N] [--start T] [--end T] [--contact-sheet]",
+            "[--max-frames N] [--start T] [--end T] [--contact-sheet] "
+            "[--keyframe-sampling auto|never|always]",
             file=sys.stderr,
         )
         raise SystemExit(2)
@@ -453,6 +586,7 @@ if __name__ == "__main__":
     start_arg = None
     end_arg = None
     contact_sheet = False
+    keyframe_sampling = "auto"
     i = 0
     while i < len(args):
         if args[i] == "--fps":
@@ -467,8 +601,13 @@ if __name__ == "__main__":
             end_arg = args[i + 1]; i += 2
         elif args[i] == "--contact-sheet":
             contact_sheet = True; i += 1
+        elif args[i] == "--keyframe-sampling":
+            keyframe_sampling = args[i + 1]; i += 2
         else:
             i += 1
+
+    if keyframe_sampling not in {"auto", "never", "always"}:
+        raise SystemExit("--keyframe-sampling must be one of: auto, never, always")
 
     meta = get_metadata(video)
     start_sec = parse_time(start_arg)
@@ -488,6 +627,16 @@ if __name__ == "__main__":
         fps = fps_override
         target = max(1, int(round(fps * effective_duration)))
 
+    keyframe_interval = (
+        probe_keyframe_interval(video) if keyframe_sampling != "never" else None
+    )
+    if keyframe_sampling == "always":
+        keyframes_only = True
+    else:
+        keyframes_only = keyframe_sampling == "auto" and can_sample_keyframes_only(
+            fps, keyframe_interval
+        )
+
     frames, frames_dir = extract(
         video, out,
         fps=fps,
@@ -495,6 +644,7 @@ if __name__ == "__main__":
         max_frames=max_frames,
         start_seconds=start_sec,
         end_seconds=end_sec,
+        keyframes_only=keyframes_only,
     )
 
     sheet_path: str | None = None
@@ -513,6 +663,10 @@ if __name__ == "__main__":
             "fps": fps,
             "target": target,
             "focused": focused,
+            "keyframe_interval_seconds": (
+                None if keyframe_interval is None else round(keyframe_interval, 3)
+            ),
+            "keyframe_sampled": keyframes_only,
             "frames": frames,
             "contact_sheet": sheet_path,
         },

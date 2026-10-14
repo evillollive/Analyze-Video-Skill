@@ -9,6 +9,7 @@ if SCRIPTS_DIR not in sys.path:
 
 from process import (
     _aspect_ratio_label,
+    _use_keyframe_sampling,
     _check_runner_timeout,
     _docx_image_dimensions,
     _download_dir,
@@ -391,3 +392,25 @@ class TestSliceIndices:
         ]
         got = _slice_indices(segs, _segment_index(segs), 300.0, 360.0)
         assert got == {"segment_count": 2, "start_index": 0, "end_index": 1}
+
+
+class TestUseKeyframeSampling:
+    """Mode resolution for --keyframe-sampling, per chunk."""
+
+    def test_never_disables_even_when_safe(self):
+        assert _use_keyframe_sampling("never", 1 / 15, 4.0) is False
+
+    def test_always_enables_even_when_dense(self):
+        assert _use_keyframe_sampling("always", 1.0, 10.0) is True
+
+    def test_always_enables_without_a_measured_interval(self):
+        assert _use_keyframe_sampling("always", 1.0, None) is True
+
+    def test_auto_enables_for_sparse_sampling(self):
+        assert _use_keyframe_sampling("auto", 1 / 15, 4.0) is True
+
+    def test_auto_disables_for_dense_focused_sampling(self):
+        assert _use_keyframe_sampling("auto", 1.0, 4.0) is False
+
+    def test_auto_disables_without_a_measured_interval(self):
+        assert _use_keyframe_sampling("auto", 1 / 60, None) is False

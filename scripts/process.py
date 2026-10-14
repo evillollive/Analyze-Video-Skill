@@ -45,12 +45,14 @@ from frames import (  # noqa: E402
     auto_fps,
     auto_fps_focus,
     auto_tile_width,
+    can_sample_keyframes_only,
     compute_chunks,
     extract,
     format_time,
     get_metadata,
     make_contact_sheet,
     parse_time,
+    probe_keyframe_interval,
     should_chunk,
 )
 from transcribe import (  # noqa: E402
@@ -309,6 +311,19 @@ def _focused_audio_path(work: Path, start_seconds: float, end_seconds: float) ->
     return work / f"audio_{start}_{end}.mp3"
 
 
+def _use_keyframe_sampling(mode: str, fps: float, keyframe_interval: float | None) -> bool:
+    """Whether a chunk at ``fps`` should be extracted with keyframe-only decoding.
+
+    ``auto`` defers to the measured keyframe interval, so dense focused runs keep
+    a full decode while sparse overview runs get the cheap path.
+    """
+    if mode == "never":
+        return False
+    if mode == "always":
+        return True
+    return can_sample_keyframes_only(fps, keyframe_interval)
+
+
 def _process_chunk(
     *,
     chunk_index: int,
@@ -322,6 +337,7 @@ def _process_chunk(
     max_frames: int,
     full_transcript_segments: list[dict],
     transcript_index: SegmentIndex | None = None,
+    keyframe_interval: float | None = None,
 ) -> dict:
     """Extract frames + contact sheet + transcript slice indices for one chunk."""
     chunk_dir = work / "chunks" / f"chunk_{chunk_index}"
@@ -337,11 +353,16 @@ def _process_chunk(
         chunk_fps = min(args.fps, MAX_FPS)
         chunk_target = max(1, int(round(chunk_fps * chunk_duration)))
 
+    keyframes_only = _use_keyframe_sampling(
+        getattr(args, "keyframe_sampling", "auto"), chunk_fps, keyframe_interval
+    )
+
     print(
         f"[analyze-video] chunk {chunk_index}/{chunk_count}: "
         f"~{chunk_target} frames at {chunk_fps:.3f} fps over "
         f"{format_time(chunk_start)} to {format_time(chunk_end)} "
-        f"({chunk_duration:.1f}s)...",
+        f"({chunk_duration:.1f}s)"
+        f"{' [keyframe sampling]' if keyframes_only else ''}...",
         file=sys.stderr,
     )
 
@@ -354,6 +375,7 @@ def _process_chunk(
         start_seconds=chunk_start,
         end_seconds=chunk_end,
         force=getattr(args, "force", False),
+        keyframes_only=keyframes_only,
     )
 
     chunk_sheet: Path | None = None
@@ -392,6 +414,7 @@ def _process_chunk(
         "start_formatted": format_time(chunk_start),
         "end_formatted": format_time(chunk_end),
         "frame_count": len(chunk_frames),
+        "keyframe_sampled": keyframes_only,
         "frames": [
             {
                 "index": f["index"],
@@ -677,6 +700,19 @@ def main() -> int:
         type=int,
         default=None,
         help="Width in px for each tile in the contact sheet (default: auto-pick by frame count)",
+    )
+    ap.add_argument(
+        "--keyframe-sampling",
+        choices=["auto", "never", "always"],
+        default="auto",
+        help=(
+            "Decode only keyframes when extracting frames, which is dramatically "
+            "cheaper. 'auto' (default) measures the video's keyframe interval and "
+            "enables it only when frames are sampled far enough apart that each one "
+            "still lands on its own keyframe, so dense focused runs keep a full "
+            "decode. 'never' always decodes every frame; 'always' forces keyframe "
+            "sampling even when frames may repeat."
+        ),
     )
     ap.add_argument(
         "--no-chunking",
@@ -1023,6 +1059,18 @@ def main() -> int:
         processed_chunks: list[dict] = []
         # Built once and shared by every chunk (read-only, so safe across threads).
         transcript_index = _segment_index(full_transcript_segments)
+        # Measured once per video, not per chunk: the keyframe cadence is a
+        # property of the encode, and the probe reads packet headers only.
+        keyframe_interval = (
+            probe_keyframe_interval(video_path)
+            if args.keyframe_sampling != "never"
+            else None
+        )
+        if keyframe_interval:
+            print(
+                f"[analyze-video] keyframe interval ~{keyframe_interval:.2f}s",
+                file=sys.stderr,
+            )
         jobs = _resolve_jobs(getattr(args, "jobs", None), len(chunk_ranges))
         _write_status(
             work,
@@ -1046,6 +1094,7 @@ def main() -> int:
                 max_frames=max_frames,
                 full_transcript_segments=full_transcript_segments,
                 transcript_index=transcript_index,
+                keyframe_interval=keyframe_interval,
             )
 
         if jobs > 1:
@@ -1145,6 +1194,9 @@ def main() -> int:
             "docx_image_dimensions": docx_dim,
             "codec": meta.get("codec"),
             "has_audio": meta.get("has_audio"),
+            "keyframe_interval_seconds": (
+                None if keyframe_interval is None else round(keyframe_interval, 3)
+            ),
             "focus_range": (
                 {
                     "start_seconds": round(effective_start, 2),
