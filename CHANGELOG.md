@@ -4,6 +4,13 @@ All notable changes to `/analyze-video` are documented here.
 
 ## [Unreleased]
 
+### Changed
+- **Parallel frame extraction within a single chunk.** Parallel chunk extraction (1.7.0) only helped videos long enough to be auto-chunked. A video under the 12-minute chunking threshold ran one ffmpeg decode with the rest of the machine idle, and frame extraction is the largest local CPU cost in a run. Each chunk now splits its own extraction into contiguous, fps-grid-aligned sub-ranges that run concurrently, so the common single-chunk case finally uses the whole budget. Measured 2.55x faster on a 10-minute 450 MB 720p source (2.33s to 0.91s wall clock), with a byte-identical frame set.
+
+  Chunk-level and frame-level parallelism share one budget rather than multiplying, so the number of concurrent ffmpeg processes is unchanged and the CPU is never oversubscribed: a fully chunked video still fans out across chunks and does not split further, while a single chunk gets the whole budget. `--jobs N` now sets that shared budget, and `--jobs 1` still forces one ffmpeg at a time.
+
+  Correctness rests on the fact that frame `i` is always at `start + i / fps`, which is exactly what the manifest records, so each sub-range starts on the same global grid and writes directly into the shared frames directory with the right numbering. Splitting is skipped for ranges under 60 seconds, for small frame counts, and whenever the range has no known end, so short videos and the CI integration run take the single-pass path unchanged. If a sub-range fails or under-produces, the resulting gap is detected, the partial frames are discarded, and the whole range is redone in a single pass. The job count is deliberately excluded from the extraction signature, so an interrupted run resumes from cached frames even if it is restarted with a different `--jobs`.
+
 ## [1.8.0] - 2026-10-05
 
 ### Fixed
