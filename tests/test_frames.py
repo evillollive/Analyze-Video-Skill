@@ -7,6 +7,8 @@ cross-session deletion is ever required.
 """
 import json
 import sys
+
+import pytest
 from pathlib import Path
 
 SCRIPTS_DIR = str(Path(__file__).resolve().parent.parent / "scripts")
@@ -14,7 +16,7 @@ if SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, SCRIPTS_DIR)
 
 import frames as frames_mod
-from frames import extract, _extract_signature, _signature_key
+from frames import extract, make_contact_sheet, _extract_signature, _signature_key
 
 
 class _FakeResult:
@@ -160,3 +162,103 @@ class TestExtractResume:
         finally:
             monkeypatch.setattr(Path, "unlink", real_unlink)
         assert len(result) == 2
+
+
+class TestContactSheetReuse:
+    """A sheet whose inputs are unchanged is reused instead of re-tiled.
+
+    ``extract`` already resumes by reusing cached frames; without this the run
+    still paid a full ffmpeg decode-and-tile per chunk to rebuild sheets that
+    were already on disk.
+    """
+
+    def _build(self, tmp_path, monkeypatch, *, frame_count=4, **kwargs):
+        frames_dir = tmp_path / "frames" / "fr_abc123"
+        _seed_frames(frames_dir, frame_count)
+        out_path = tmp_path / "contact_sheet.jpg"
+        monkeypatch.setattr(frames_mod.shutil, "which", lambda name: "/usr/bin/ffmpeg")
+        ran = {"count": 0}
+
+        def fake_run(cmd, **kw):
+            ran["count"] += 1
+            Path(cmd[-1]).write_bytes(b"sheet")
+            return _FakeResult()
+
+        monkeypatch.setattr(frames_mod.subprocess, "run", fake_run)
+        return frames_dir, out_path, ran
+
+    def test_reuses_sheet_when_inputs_unchanged(self, tmp_path, monkeypatch):
+        frames_dir, out_path, ran = self._build(tmp_path, monkeypatch)
+        make_contact_sheet(frames_dir, out_path, frame_count=4)
+        assert ran["count"] == 1
+        make_contact_sheet(frames_dir, out_path, frame_count=4)
+        assert ran["count"] == 1  # second call served from the marker
+
+    def test_retiles_when_tiling_params_change(self, tmp_path, monkeypatch):
+        frames_dir, out_path, ran = self._build(tmp_path, monkeypatch)
+        make_contact_sheet(frames_dir, out_path, frame_count=4, tile_width=200)
+        make_contact_sheet(frames_dir, out_path, frame_count=4, tile_width=160)
+        assert ran["count"] == 2
+
+    def test_retiles_when_frame_count_changes(self, tmp_path, monkeypatch):
+        frames_dir, out_path, ran = self._build(tmp_path, monkeypatch)
+        make_contact_sheet(frames_dir, out_path, frame_count=4)
+        _seed_frames(frames_dir, 6)
+        make_contact_sheet(frames_dir, out_path, frame_count=6)
+        assert ran["count"] == 2
+
+    def test_force_retiles(self, tmp_path, monkeypatch):
+        frames_dir, out_path, ran = self._build(tmp_path, monkeypatch)
+        make_contact_sheet(frames_dir, out_path, frame_count=4)
+        make_contact_sheet(frames_dir, out_path, frame_count=4, force=True)
+        assert ran["count"] == 2
+
+    def test_retiles_when_sheet_is_missing(self, tmp_path, monkeypatch):
+        """The marker alone never vouches for a sheet: the file must exist."""
+        frames_dir, out_path, ran = self._build(tmp_path, monkeypatch)
+        make_contact_sheet(frames_dir, out_path, frame_count=4)
+        out_path.unlink()
+        make_contact_sheet(frames_dir, out_path, frame_count=4)
+        assert ran["count"] == 2
+
+    def test_retiles_when_sheet_is_truncated(self, tmp_path, monkeypatch):
+        frames_dir, out_path, ran = self._build(tmp_path, monkeypatch)
+        make_contact_sheet(frames_dir, out_path, frame_count=4)
+        out_path.write_bytes(b"")  # zero-byte sheet from a killed run
+        make_contact_sheet(frames_dir, out_path, frame_count=4)
+        assert ran["count"] == 2
+
+    def test_interrupted_tile_leaves_no_vouching_marker(self, tmp_path, monkeypatch):
+        """A run killed mid-tile must not leave a marker for a partial sheet."""
+        frames_dir, out_path, ran = self._build(tmp_path, monkeypatch)
+        make_contact_sheet(frames_dir, out_path, frame_count=4)
+
+        def die(cmd, **kw):
+            Path(cmd[-1]).write_bytes(b"partial")
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr(frames_mod.subprocess, "run", die)
+        try:
+            make_contact_sheet(frames_dir, out_path, frame_count=4, tile_width=160)
+        except KeyboardInterrupt:
+            pass
+        assert not frames_mod._sheet_sig_path(out_path).exists()
+
+    def test_marker_write_failure_does_not_crash(self, tmp_path, monkeypatch):
+        """Read-only sandboxes just lose the reuse benefit, they don't fail."""
+        frames_dir, out_path, ran = self._build(tmp_path, monkeypatch)
+        real_write = Path.write_text
+
+        def deny_write(self, *a, **k):
+            if self.name.endswith(".sheet.json"):
+                raise PermissionError("Operation not permitted")
+            return real_write(self, *a, **k)
+
+        monkeypatch.setattr(Path, "write_text", deny_write)
+        assert make_contact_sheet(frames_dir, out_path, frame_count=4) == out_path
+
+    def test_no_frames_still_raises(self, tmp_path, monkeypatch):
+        frames_dir, out_path, ran = self._build(tmp_path, monkeypatch, frame_count=0)
+        with pytest.raises(SystemExit):
+            make_contact_sheet(frames_dir, out_path)
+        assert ran["count"] == 0
