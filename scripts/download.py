@@ -48,6 +48,20 @@ BLOCKED_PATTERNS: tuple[tuple[str, str], ...] = (
 )
 
 
+# YouTube gates most player clients' media formats behind a PO token, so no
+# single client is reliably usable and we used to try android, then ios, then
+# the default web client as three separate yt-dlp invocations. yt-dlp accepts a
+# comma-separated client list and merges the formats every listed client can see
+# into a single selection pass, so one invocation now covers all three.
+#
+# That removes up to two full extraction round trips per video (each one a fresh
+# negotiation with YouTube that also re-downloaded the subtitles and info.json
+# the next attempt promptly deleted), and it lets the format selector pick the
+# best format across all clients instead of the best one the first responding
+# client happened to offer.
+YOUTUBE_PLAYER_CLIENTS = "android,ios,web"
+
+
 def is_url(source: str) -> bool:
     parsed = urlparse(source)
     return parsed.scheme in ("http", "https")
@@ -60,6 +74,21 @@ def is_youtube(url: str) -> bool:
     """
     host = (urlparse(url).hostname or "").lower().rstrip(".")
     return host == "youtu.be" or host == "youtube.com" or host.endswith(".youtube.com")
+
+
+def player_client_attempts(url: str, *, authenticated: bool) -> list[str | None]:
+    """Player-client values to try, in order, for `url`.
+
+    Public YouTube gets one merged multi-client attempt followed by a bare
+    fallback that lets yt-dlp apply its own current default client set (which
+    tracks upstream's best-known-good choice and may differ from our pinned
+    list). Everything else uses the default client only: non-YouTube sites
+    ignore the argument, and on authenticated YouTube the android/ios clients
+    ignore cookies, so pinning them would discard the session.
+    """
+    if is_youtube(url) and not authenticated:
+        return [YOUTUBE_PLAYER_CLIENTS, None]
+    return [None]
 
 
 def resolve_local(path: str) -> dict:
@@ -499,19 +528,17 @@ def download_url(
 
     output_template = str(out_dir / "video.%(ext)s")
 
-    # Choose the client strategy. For public YouTube URLs with no cookies we lead
-    # with the android player client: it bypasses YouTube's n-challenge without a
-    # JavaScript runtime (which sandboxed/cloud yt-dlp installs lack) and avoids
-    # the 403s the default web client hits from server IPs. If that attempt fails
-    # to produce a usable video, we retry with the ios client (a different
-    # extraction path that often works when android is bot-flagged/429), and
-    # finally the default web client. When cookies are supplied we honor the
-    # authenticated web session instead, since the android/ios clients ignore
-    # cookies.
-    if is_youtube(url) and requested_auth == "none":
-        attempts: list[str | None] = ["android", "ios", None]
-    else:
-        attempts = [None]
+    # Choose the client strategy. For public YouTube URLs with no cookies we pin
+    # a merged android,ios,web client list: android bypasses YouTube's
+    # n-challenge without a JavaScript runtime (which sandboxed/cloud yt-dlp
+    # installs lack), ios is a distinct extraction path that works when android
+    # is bot-flagged/429, and web covers what neither can see. yt-dlp merges
+    # their format lists in one pass, so this is a single invocation rather than
+    # three sequential ones. A bare fallback attempt (yt-dlp's own default
+    # clients) follows only if that produces no usable video. When cookies are
+    # supplied we honor the authenticated web session instead, since the
+    # android/ios clients ignore cookies.
+    attempts = player_client_attempts(url, authenticated=requested_auth != "none")
 
     # A prior run may have been killed mid-download (the documented recovery path
     # is "re-run the exact same command"). yt-dlp resumes `.part` files by
@@ -628,8 +655,8 @@ def fetch_caption_tracks(
     Returns every ``<stem>.<lang>.vtt`` written, sorted. ``langs`` is passed to
     yt-dlp's ``--sub-langs`` (comma-separated codes or regexes, or ``all``).
     Manual tracks win over auto-generated ones for the same language; set
-    ``include_auto=False`` for manual tracks only. Uses the same
-    android -> ios -> web client fallback as download_url for public YouTube.
+    ``include_auto=False`` for manual tracks only. Uses the same merged
+    multi-client strategy as download_url for public YouTube URLs.
     """
     ytdlp = _resolve_tool("yt-dlp")
     if ytdlp is None:
@@ -649,7 +676,7 @@ def fetch_caption_tracks(
     template = str(out_dir / f"{stem}.%(ext)s")
 
     no_auth = not (cookies or cookies_from_browser)
-    attempts: list[str | None] = ["android", "ios", None] if (is_youtube(url) and no_auth) else [None]
+    attempts = player_client_attempts(url, authenticated=not no_auth)
 
     result: subprocess.CompletedProcess | None = None
     for player_client in attempts:
@@ -784,8 +811,8 @@ def fetch_title(
 ) -> str | None:
     """Fetch a video's remote title without downloading media.
 
-    Uses the same client strategy as download/captions: android-first for public
-    YouTube URLs, otherwise default web client.
+    Uses the same client strategy as download/captions: one merged
+    multi-client attempt for public YouTube URLs, otherwise the default client.
     """
     ytdlp = _resolve_tool("yt-dlp")
     if ytdlp is None:
@@ -802,7 +829,7 @@ def fetch_title(
             raise SystemExit(f"Cookie file not found: {cookie_path}")
 
     no_auth = not (cookies or cookies_from_browser)
-    attempts: list[str | None] = ["android", "ios", None] if (is_youtube(url) and no_auth) else [None]
+    attempts = player_client_attempts(url, authenticated=not no_auth)
 
     for player_client in attempts:
         cmd = [ytdlp, "--no-playlist", "--get-title"]
