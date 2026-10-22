@@ -9,6 +9,7 @@ if SCRIPTS_DIR not in sys.path:
 
 from process import (
     _aspect_ratio_label,
+    _use_keyframe_sampling,
     _check_runner_timeout,
     _docx_image_dimensions,
     _download_dir,
@@ -307,7 +308,12 @@ class TestPatchManifestTranscript:
         _patch_manifest_transcript(tmp_path, _segs(), tmp_path / "t.txt")  # must not raise
 
 
-from process import DEFAULT_MAX_PARALLEL_CHUNKS, _resolve_jobs  # noqa: E402
+from process import (  # noqa: E402
+    DEFAULT_MAX_PARALLEL_CHUNKS,
+    _parallel_budget,
+    _resolve_frame_jobs,
+    _resolve_jobs,
+)
 
 
 class TestResolveJobs:
@@ -332,8 +338,47 @@ class TestResolveJobs:
         assert _resolve_jobs(-3, 6) == _resolve_jobs(None, 6)
 
 
-from process import _segment_index, _shift_segments, _slice_indices  # noqa: E402
+class TestResolveFrameJobs:
+    def test_unchunked_video_gets_the_whole_budget(self):
+        """The common case: one chunk used to leave every spare core idle."""
+        assert _resolve_frame_jobs(None, 1) == _parallel_budget(None)
+        assert _resolve_frame_jobs(4, 1) == 4
 
+    def test_fully_fanned_out_chunks_leave_nothing_spare(self):
+        budget = _parallel_budget(None)
+        assert _resolve_frame_jobs(None, budget) == 1
+
+    def test_explicit_one_forces_sequential(self):
+        assert _resolve_frame_jobs(1, 1) == 1
+
+    def test_budget_is_shared_not_multiplied(self):
+        assert _resolve_frame_jobs(4, 2) * 2 == 4
+
+    def test_never_returns_zero(self):
+        assert _resolve_frame_jobs(2, 8) == 1
+
+
+from process import _segment_index, _shift_segments, _slice_indices  # noqa: E402
+from process import (  # noqa: E402
+    DEFAULT_DOWNLOAD_MAX_WIDTH,
+    _resolve_download_max_width,
+)
+
+
+class TestResolveDownloadMaxWidth:
+    def test_default_is_the_480p_width(self):
+        assert _resolve_download_max_width(None, 512) == DEFAULT_DOWNLOAD_MAX_WIDTH
+
+    def test_never_narrower_than_the_frame_resolution(self):
+        assert _resolve_download_max_width(None, 1280) == 1280
+
+    def test_explicit_request_wins(self):
+        assert _resolve_download_max_width(640, 512) == 640
+        assert _resolve_download_max_width(1920, 512) == 1920
+
+    def test_zero_disables_the_cap(self):
+        assert _resolve_download_max_width(0, 512) == 0
+        assert _resolve_download_max_width(-5, 512) == 0
 
 class TestShiftSegments:
     def test_zero_offset_returns_same_object(self):
@@ -391,3 +436,25 @@ class TestSliceIndices:
         ]
         got = _slice_indices(segs, _segment_index(segs), 300.0, 360.0)
         assert got == {"segment_count": 2, "start_index": 0, "end_index": 1}
+
+
+class TestUseKeyframeSampling:
+    """Mode resolution for --keyframe-sampling, per chunk."""
+
+    def test_never_disables_even_when_safe(self):
+        assert _use_keyframe_sampling("never", 1 / 15, 4.0) is False
+
+    def test_always_enables_even_when_dense(self):
+        assert _use_keyframe_sampling("always", 1.0, 10.0) is True
+
+    def test_always_enables_without_a_measured_interval(self):
+        assert _use_keyframe_sampling("always", 1.0, None) is True
+
+    def test_auto_enables_for_sparse_sampling(self):
+        assert _use_keyframe_sampling("auto", 1 / 15, 4.0) is True
+
+    def test_auto_disables_for_dense_focused_sampling(self):
+        assert _use_keyframe_sampling("auto", 1.0, 4.0) is False
+
+    def test_auto_disables_without_a_measured_interval(self):
+        assert _use_keyframe_sampling("auto", 1 / 60, None) is False

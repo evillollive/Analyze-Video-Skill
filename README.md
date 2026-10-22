@@ -63,7 +63,7 @@ Word documents are not accessible unless someone makes them so. This skill bakes
 
 ### Built for long videos
 
-Big videos used to time out and restart from zero. Now the skill picks up where it left off: extracted frames are reused when the source and settings have not changed (pass `--force` to redo them), each extraction config gets its own directory, and `status.json` plus `manifest_partial.json` record progress. Downloaded videos are cached once per URL and reused across runs; the cache prunes itself by age and size. Repeated end-card promos or static outros can be detected and trimmed with `--trim-static-outro`. Want a faster, cheaper pass? `--quick` trims the frame budget and skips contact-sheet preview.
+Big videos used to time out and restart from zero. Now the skill picks up where it left off: extracted frames are reused when the source and settings have not changed (pass `--force` to redo them), each extraction config gets its own directory, and `status.json` plus `manifest_partial.json` record progress. Downloaded videos are cached once per URL and reused across runs; the cache prunes itself by age and size. Repeated end-card promos or static outros can be detected and trimmed with `--trim-static-outro`. Long videos also sample frames straight from the source's keyframes when they are spaced far enough apart to stay visually distinct, which removes most of the decoding work without changing the frames you get; `--keyframe-sampling never` turns it off. Want a faster, cheaper pass? `--quick` trims the frame budget and skips contact-sheet preview.
 
 ## Install in 60 seconds
 
@@ -212,6 +212,8 @@ python3 scripts/setup.py --clear-cache
 
 If a download is interrupted — a runner timeout, a dropped connection, or `Ctrl-C` — re-running the exact same command picks up where it stopped instead of re-fetching the whole video. Pass `--force` to discard the partial data and start the download over.
 
+Downloads are also sized to what the pipeline actually uses. Frames are rendered at `--resolution` pixels wide (512 by default) and embedded in the document at roughly 640 pixels, so any source pixels beyond that are downloaded and then thrown away by the scaler. `process.py` caps the source **width** yt-dlp selects at `max(854, --resolution)`, which on a 16:9 video means a 480p stream instead of 720p: roughly half to a third of the bytes, with no visible change to the frames or the document. Capping on width rather than height is what keeps portrait video honest, since a 9:16 clip needs a taller stream to reach the same frame width. Sites that do not report format widths are unaffected. Pass `--download-max-width 0` to fetch the best available stream, or a specific pixel width to set your own budget; a cached download made under a narrower budget is never reused for a wider request.
+
 Transcripts are cached too, because transcribing is the most expensive non-download step: it decodes the whole video's audio, uploads it, and pays for a Whisper API call. A repeat run on the same video and range reuses the stored result and skips all three. Entries are keyed by the source file's identity plus the requested range and backend/model, so a re-downloaded or edited video always re-transcribes. They are tiny, so they are kept for 90 days (`ANALYZE_VIDEO_TRANSCRIPT_CACHE_MAX_AGE_DAYS`, `0` to disable) and cleared by `--clear-cache` along with the downloads. Use `--force` to re-transcribe and overwrite the entry, or `--no-download-cache` to keep a run fully self-contained.
 
 **Sent to an API only when needed:**
@@ -227,7 +229,7 @@ Transcripts are cached too, because transcribing is the most expensive non-downl
 
 ### When a site blocks the download
 
-Some sites block unauthenticated download tools with login prompts, bot checks, age gates, members-only access, rate limits, or regional restrictions. The skill classifies those failures and gives a specific next step instead of repeatedly retrying. For public YouTube links it also tries the android player client first before falling back to the default client.
+Some sites block unauthenticated download tools with login prompts, bot checks, age gates, members-only access, rate limits, or regional restrictions. The skill classifies those failures and gives a specific next step instead of repeatedly retrying. For public YouTube links it pins a merged `android,ios,web` player-client list so one yt-dlp call covers all three, falling back to yt-dlp's own default clients only if that produces nothing.
 
 If you can already watch the video in your own browser and want the skill to use that authorized session, retry with one of yt-dlp's cookie options:
 

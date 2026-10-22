@@ -37,7 +37,13 @@ from pathlib import Path
 SCRIPT_DIR = Path(__file__).parent.resolve()
 sys.path.insert(0, str(SCRIPT_DIR))
 
-from download import download, fetch_captions, fetch_title, is_url  # noqa: E402
+from download import (  # noqa: E402
+    DEFAULT_DOWNLOAD_MAX_WIDTH,
+    download,
+    fetch_captions,
+    fetch_title,
+    is_url,
+)
 import cache_utils  # noqa: E402
 from frames import (  # noqa: E402
     HARD_MAX_FRAMES,
@@ -45,12 +51,14 @@ from frames import (  # noqa: E402
     auto_fps,
     auto_fps_focus,
     auto_tile_width,
+    can_sample_keyframes_only,
     compute_chunks,
     extract,
     format_time,
     get_metadata,
     make_contact_sheet,
     parse_time,
+    probe_keyframe_interval,
     should_chunk,
 )
 from transcribe import (  # noqa: E402
@@ -73,14 +81,49 @@ PREVIEW_COST_WARNING_CHUNKS = 5
 DEFAULT_MAX_PARALLEL_CHUNKS = 4
 
 
+def _resolve_download_max_width(requested: int | None, frame_resolution: int) -> int:
+    """Source-width budget for the download, in pixels (0 disables the cap).
+
+    Downloading a stream wider than the frames we render from it is wasted
+    bandwidth and wasted cache: every extra pixel is discarded by ffmpeg's
+    scaler. The default budget is the 16:9 480p width, raised to the requested
+    frame resolution whenever that is larger so a high --resolution run never
+    upscales. An explicit request always wins; 0 or a negative value opts out.
+    """
+    if requested is not None:
+        return max(0, requested)
+    return max(DEFAULT_DOWNLOAD_MAX_WIDTH, max(0, frame_resolution))
+
+
+def _parallel_budget(requested: int | None) -> int:
+    """Total concurrent ffmpeg workers this run may use.
+
+    ffmpeg is already internally multi-threaded, so we deliberately stay well
+    below the core count to avoid oversubscribing the CPU. An explicit --jobs is
+    honored as the whole budget, so `--jobs 1` really means "one ffmpeg at a time".
+    """
+    if requested is not None and requested > 0:
+        return requested
+    cpus = os.cpu_count() or 1
+    return max(1, min(DEFAULT_MAX_PARALLEL_CHUNKS, cpus // 2 or 1))
+
+
 def _resolve_jobs(requested: int | None, chunk_count: int) -> int:
     """Number of chunks to extract concurrently (never more than there are chunks)."""
     if chunk_count <= 1:
         return 1
-    if requested is not None and requested > 0:
-        return min(requested, chunk_count)
-    cpus = os.cpu_count() or 1
-    return max(1, min(DEFAULT_MAX_PARALLEL_CHUNKS, cpus // 2 or 1, chunk_count))
+    return max(1, min(_parallel_budget(requested), chunk_count))
+
+
+def _resolve_frame_jobs(requested: int | None, chunk_jobs: int) -> int:
+    """Workers each chunk may use to extract its own frames.
+
+    Whatever the chunk-level fan-out leaves unused goes here, so the total number
+    of concurrent ffmpeg processes stays within the budget either way. A short,
+    unchunked video (chunk_jobs == 1) is the case this exists for: it used to run
+    a single ffmpeg decode while the rest of the machine sat idle.
+    """
+    return max(1, _parallel_budget(requested) // max(1, chunk_jobs))
 
 
 # Shared, per-user cache for downloaded source videos. Keying by URL means the
@@ -309,6 +352,19 @@ def _focused_audio_path(work: Path, start_seconds: float, end_seconds: float) ->
     return work / f"audio_{start}_{end}.mp3"
 
 
+def _use_keyframe_sampling(mode: str, fps: float, keyframe_interval: float | None) -> bool:
+    """Whether a chunk at ``fps`` should be extracted with keyframe-only decoding.
+
+    ``auto`` defers to the measured keyframe interval, so dense focused runs keep
+    a full decode while sparse overview runs get the cheap path.
+    """
+    if mode == "never":
+        return False
+    if mode == "always":
+        return True
+    return can_sample_keyframes_only(fps, keyframe_interval)
+
+
 def _process_chunk(
     *,
     chunk_index: int,
@@ -322,6 +378,8 @@ def _process_chunk(
     max_frames: int,
     full_transcript_segments: list[dict],
     transcript_index: SegmentIndex | None = None,
+    frame_jobs: int = 1,
+    keyframe_interval: float | None = None,
 ) -> dict:
     """Extract frames + contact sheet + transcript slice indices for one chunk."""
     chunk_dir = work / "chunks" / f"chunk_{chunk_index}"
@@ -337,11 +395,16 @@ def _process_chunk(
         chunk_fps = min(args.fps, MAX_FPS)
         chunk_target = max(1, int(round(chunk_fps * chunk_duration)))
 
+    keyframes_only = _use_keyframe_sampling(
+        getattr(args, "keyframe_sampling", "auto"), chunk_fps, keyframe_interval
+    )
+
     print(
         f"[analyze-video] chunk {chunk_index}/{chunk_count}: "
         f"~{chunk_target} frames at {chunk_fps:.3f} fps over "
         f"{format_time(chunk_start)} to {format_time(chunk_end)} "
-        f"({chunk_duration:.1f}s)...",
+        f"({chunk_duration:.1f}s)"
+        f"{' [keyframe sampling]' if keyframes_only else ''}...",
         file=sys.stderr,
     )
 
@@ -354,6 +417,9 @@ def _process_chunk(
         start_seconds=chunk_start,
         end_seconds=chunk_end,
         force=getattr(args, "force", False),
+        jobs=frame_jobs,
+        target_frames=chunk_target,
+        keyframes_only=keyframes_only,
     )
 
     chunk_sheet: Path | None = None
@@ -370,6 +436,7 @@ def _process_chunk(
             cols=args.contact_sheet_cols,
             tile_width=tile_width,
             frame_count=len(chunk_frames),
+            force=getattr(args, "force", False),
         )
 
     # Per-chunk transcript = indices into the top-level segments array (no
@@ -392,6 +459,7 @@ def _process_chunk(
         "start_formatted": format_time(chunk_start),
         "end_formatted": format_time(chunk_end),
         "frame_count": len(chunk_frames),
+        "keyframe_sampled": keyframes_only,
         "frames": [
             {
                 "index": f["index"],
@@ -622,12 +690,27 @@ def main() -> int:
     )
     ap.add_argument("--resolution", type=int, default=512, help="Frame width in pixels (default 512)")
     ap.add_argument(
+        "--download-max-width",
+        type=int,
+        default=None,
+        metavar="PX",
+        help=(
+            "Cap the source width yt-dlp downloads, in pixels. Default: auto "
+            f"(max of {DEFAULT_DOWNLOAD_MAX_WIDTH} and --resolution), which is "
+            "already wider than the extracted frames, so it saves bandwidth "
+            "without changing output quality. Pass 0 to download the best "
+            "available stream instead."
+        ),
+    )
+    ap.add_argument(
         "--jobs",
         type=int,
         default=None,
         help=(
-            "Number of chunks to extract in parallel (default: auto, up to "
-            f"{DEFAULT_MAX_PARALLEL_CHUNKS}). Use 1 to force sequential extraction."
+            "Total ffmpeg workers used for frame extraction (default: auto, up to "
+            f"{DEFAULT_MAX_PARALLEL_CHUNKS}). The budget is split between chunks "
+            "and, when a chunk has spare capacity, parallel sub-ranges within that "
+            "chunk. Use 1 to force fully sequential extraction."
         ),
     )
     ap.add_argument("--fps", type=float, default=None, help="Override auto-fps (clamped to 2 fps)")
@@ -677,6 +760,19 @@ def main() -> int:
         type=int,
         default=None,
         help="Width in px for each tile in the contact sheet (default: auto-pick by frame count)",
+    )
+    ap.add_argument(
+        "--keyframe-sampling",
+        choices=["auto", "never", "always"],
+        default="auto",
+        help=(
+            "Decode only keyframes when extracting frames, which is dramatically "
+            "cheaper. 'auto' (default) measures the video's keyframe interval and "
+            "enables it only when frames are sampled far enough apart that each one "
+            "still lands on its own keyframe, so dense focused runs keep a full "
+            "decode. 'never' always decodes every frame; 'always' forces keyframe "
+            "sampling even when frames may repeat."
+        ),
     )
     ap.add_argument(
         "--no-chunking",
@@ -769,12 +865,24 @@ def main() -> int:
     )
 
     # 1. Download
+    download_max_width = _resolve_download_max_width(args.download_max_width, args.resolution)
     print(
         "[analyze-video] downloading via yt-dlp..."
         if is_url(args.source)
         else "[analyze-video] using local file...",
         file=sys.stderr,
     )
+    if is_url(args.source):
+        print(
+            (
+                f"[analyze-video] source width budget: {download_max_width}px "
+                f"(frames render at {args.resolution}px; --download-max-width 0 "
+                "downloads the best available stream)"
+            )
+            if download_max_width
+            else "[analyze-video] source width budget: uncapped",
+            file=sys.stderr,
+        )
     _write_status(work, "downloading")
     download_dir = _download_dir(args.source, work, no_cache=args.no_download_cache)
     cache_entry = download_dir if (is_url(args.source) and not args.no_download_cache) else None
@@ -794,6 +902,7 @@ def main() -> int:
             cookies=args.cookies,
             cookies_from_browser=args.cookies_from_browser,
             force=args.force,
+            max_width=download_max_width,
         )
         video_path = dl["video_path"]
         _write_status(work, "downloaded")
@@ -1023,7 +1132,20 @@ def main() -> int:
         processed_chunks: list[dict] = []
         # Built once and shared by every chunk (read-only, so safe across threads).
         transcript_index = _segment_index(full_transcript_segments)
+        # Measured once per video, not per chunk: the keyframe cadence is a
+        # property of the encode, and the probe reads packet headers only.
+        keyframe_interval = (
+            probe_keyframe_interval(video_path)
+            if args.keyframe_sampling != "never"
+            else None
+        )
+        if keyframe_interval:
+            print(
+                f"[analyze-video] keyframe interval ~{keyframe_interval:.2f}s",
+                file=sys.stderr,
+            )
         jobs = _resolve_jobs(getattr(args, "jobs", None), len(chunk_ranges))
+        frame_jobs = _resolve_frame_jobs(getattr(args, "jobs", None), jobs)
         _write_status(
             work,
             "extracting",
@@ -1046,6 +1168,8 @@ def main() -> int:
                 max_frames=max_frames,
                 full_transcript_segments=full_transcript_segments,
                 transcript_index=transcript_index,
+                frame_jobs=frame_jobs,
+                keyframe_interval=keyframe_interval,
             )
 
         if jobs > 1:
@@ -1145,6 +1269,9 @@ def main() -> int:
             "docx_image_dimensions": docx_dim,
             "codec": meta.get("codec"),
             "has_audio": meta.get("has_audio"),
+            "keyframe_interval_seconds": (
+                None if keyframe_interval is None else round(keyframe_interval, 3)
+            ),
             "focus_range": (
                 {
                     "start_seconds": round(effective_start, 2),
