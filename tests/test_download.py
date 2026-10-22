@@ -135,6 +135,8 @@ class TestClearDownloadArtifacts:
 
 
 from download import (  # noqa: E402
+    DEFAULT_DOWNLOAD_MAX_WIDTH,
+    format_selector,
     is_youtube,
     _build_ytdlp_cmd,
     _valid_video,
@@ -203,6 +205,93 @@ class TestBuildYtdlpCmd:
             cookie_path=Path("/tmp/c.txt"), cookies_from_browser=None, player_client=None,
         )
         assert "--cookies" in cmd and "/tmp/c.txt" in cmd
+
+
+class TestFormatSelector:
+    def test_default_caps_source_width(self):
+        selector = format_selector(DEFAULT_DOWNLOAD_MAX_WIDTH)
+        assert selector.startswith(f"bv*[width<=?{DEFAULT_DOWNLOAD_MAX_WIDTH}]")
+        # Non-fatal filter, so extractors without width metadata still resolve.
+        assert "width<=?" in selector
+
+    def test_falls_back_to_720p_then_anything(self):
+        selector = format_selector(854)
+        assert "/bv*[height<=720]+ba/b[height<=720]" in selector
+        assert selector.endswith("/bv+ba/b")
+
+    def test_zero_and_none_disable_the_cap(self):
+        uncapped = "bv*[height<=720]+ba/b[height<=720]/bv+ba/b"
+        assert format_selector(0) == uncapped
+        assert format_selector(None) == uncapped
+
+    def test_command_uses_the_requested_width(self):
+        cmd = _build_ytdlp_cmd(
+            "yt-dlp", "u", "/o/video.%(ext)s",
+            cookie_path=None, cookies_from_browser=None, player_client=None,
+            max_width=640,
+        )
+        assert cmd[cmd.index("-f") + 1] == format_selector(640)
+
+
+class TestSourceMarkerWidthGating:
+    def test_equal_budget_is_reused(self, tmp_path):
+        (tmp_path / ".source.json").write_text(
+            json.dumps({"url": "u", "auth": "none", "max_width": 854})
+        )
+        assert _source_marker_matches(tmp_path, "u", "none", 854) is True
+
+    def test_wider_request_rejects_narrower_capture(self, tmp_path):
+        (tmp_path / ".source.json").write_text(
+            json.dumps({"url": "u", "auth": "none", "max_width": 640})
+        )
+        assert _source_marker_matches(tmp_path, "u", "none", 854) is False
+
+    def test_narrower_request_reuses_wider_capture(self, tmp_path):
+        (tmp_path / ".source.json").write_text(
+            json.dumps({"url": "u", "auth": "none", "max_width": 1280})
+        )
+        assert _source_marker_matches(tmp_path, "u", "none", 854) is True
+
+    def test_uncapped_capture_satisfies_everything(self, tmp_path):
+        (tmp_path / ".source.json").write_text(
+            json.dumps({"url": "u", "auth": "none", "max_width": 0})
+        )
+        assert _source_marker_matches(tmp_path, "u", "none", 854) is True
+        assert _source_marker_matches(tmp_path, "u", "none", 0) is True
+
+    def test_uncapped_request_rejects_capped_capture(self, tmp_path):
+        (tmp_path / ".source.json").write_text(
+            json.dumps({"url": "u", "auth": "none", "max_width": 854})
+        )
+        assert _source_marker_matches(tmp_path, "u", "none", 0) is False
+
+    def test_legacy_marker_without_width_is_still_reused(self, tmp_path):
+        # Markers written before width budgets existed must not force a
+        # re-download when the skill is upgraded.
+        (tmp_path / ".source.json").write_text(json.dumps({"url": "u", "auth": "none"}))
+        assert _source_marker_matches(tmp_path, "u", "none", 854) is True
+        assert _source_marker_matches(tmp_path, "u", "none", 0) is True
+
+
+class TestDownloadUrlWidthBudget:
+    def test_marker_records_the_budget(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("download._resolve_tool", lambda name: "yt-dlp")
+        runner = _fake_runner(tmp_path, succeed_on="web")
+        monkeypatch.setattr("download.subprocess.run", runner)
+        download_url("https://vimeo.com/123", tmp_path, max_width=640)
+        assert json.loads((tmp_path / ".source.json").read_text())["max_width"] == 640
+
+    def test_wider_rerun_redownloads_instead_of_reusing(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("download._resolve_tool", lambda name: "yt-dlp")
+        runner = _fake_runner(tmp_path, succeed_on="web")
+        monkeypatch.setattr("download.subprocess.run", runner)
+        download_url("https://vimeo.com/123", tmp_path, max_width=640)
+        assert len(runner.calls) == 1
+        download_url("https://vimeo.com/123", tmp_path, max_width=1280)
+        assert len(runner.calls) == 2
+        # A narrower follow-up is served from the wider capture.
+        download_url("https://vimeo.com/123", tmp_path, max_width=854)
+        assert len(runner.calls) == 2
 
 
 class TestValidVideo:
@@ -430,6 +519,7 @@ class TestDownloadResumesPartials:
             "auth": "none",
             "client": "android",
             "complete": False,
+            "max_width": DEFAULT_DOWNLOAD_MAX_WIDTH,
         }
         assert json.loads((tmp_path / ".source.json").read_text())["complete"] is True
 
