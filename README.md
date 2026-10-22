@@ -63,7 +63,7 @@ Word documents are not accessible unless someone makes them so. This skill bakes
 
 ### Built for long videos
 
-Big videos used to time out and restart from zero. Now the skill picks up where it left off: extracted frames are reused when the source and settings have not changed (pass `--force` to redo them), each extraction config gets its own directory, and `status.json` plus `manifest_partial.json` record progress. Downloaded videos are cached once per URL and reused across runs; the cache prunes itself by age and size. Repeated end-card promos or static outros can be detected and trimmed with `--trim-static-outro`. Want a faster, cheaper pass? `--quick` trims the frame budget and skips contact-sheet preview.
+Big videos used to time out and restart from zero. Now the skill picks up where it left off: extracted frames are reused when the source and settings have not changed (pass `--force` to redo them), each extraction config gets its own directory, and `status.json` plus `manifest_partial.json` record progress. Downloaded videos are cached once per URL and reused across runs; the cache prunes itself by age and size. Repeated end-card promos or static outros can be detected and trimmed with `--trim-static-outro`. Long videos also sample frames straight from the source's keyframes when they are spaced far enough apart to stay visually distinct, which removes most of the decoding work without changing the frames you get; `--keyframe-sampling never` turns it off. Want a faster, cheaper pass? `--quick` trims the frame budget and skips contact-sheet preview.
 
 ## Install in 60 seconds
 

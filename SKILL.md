@@ -213,6 +213,21 @@ When a video is auto-chunked, the budget is spent running several chunks at once
 
 Output is identical either way. Chunks are always written to the manifest in chronological order, and a split extraction reproduces the single-pass frame set byte for byte: frame `i` sits at `start + i / fps` whether one worker or four produced it. If any sub-range fails or comes up short, the whole range is silently redone in a single pass, so a split can cost time but never correctness.
 
+### Keyframe-only frame sampling
+
+Frame extraction is the pipeline's dominant CPU cost: by default ffmpeg decodes *every* frame of a chunk just so the `fps` filter can keep ~100 of them. For a 600s chunk that is roughly 15,000 decoded frames to produce 100.
+
+`process.py` now measures the source's keyframe interval once per video (an `ffprobe` packet-header read, no decoding, well under a second) and, when it is safe, extracts with `-skip_frame nokey` so only keyframes are decoded. On a 300s 720p test clip this cut frame-extraction CPU from 8.3s to 0.2s while producing the same 20 frames, all visually distinct.
+
+It is only enabled when the gap between sampled frames covers at least two keyframes. That guarantees every output frame lands on its own keyframe rather than the `fps` filter repeating one, and bounds how far a frame can drift from its nominal timestamp at half the sampling interval. The practical effect is that long overview runs (sparse sampling) get the speedup and focused `--start`/`--end` runs (dense sampling) keep a full decode automatically.
+
+Control it with `--keyframe-sampling`:
+- `auto` (default): measure and decide per chunk, as described above.
+- `never`: always decode every frame, matching the previous behavior exactly.
+- `always`: force keyframe-only decoding even where frames may repeat.
+
+If keyframe-only extraction yields nothing (a codec or container that exposes no keyframe flags), the chunk is silently re-extracted with a full decode. The manifest records `keyframe_interval_seconds` for the video and `keyframe_sampled` per chunk.
+
 ### Resuming after a timeout
 `process.py` is resumable. Re-running with the same `--source` and `--out-dir` reuses any chunk whose frames are still valid (matched by an extraction signature), so an interrupted long video continues instead of restarting from zero. Each distinct set of extraction settings writes into its own `frames/<sig>/` subfolder, so a re-run never has to delete a previous run's files (which some sandboxes forbid) and stale frames can't pollute the result. Contact sheets are reused on the same terms: a sheet whose frames and tiling settings are unchanged is not re-tiled, so a resumed run skips a full ffmpeg pass per chunk. If a run is killed, check `status.json` to see where it stopped, then just re-run the same command. Pass `--force` to ignore cached output and re-download + re-extract everything.
 

@@ -320,94 +320,197 @@ class TestFramesAreContiguous:
         assert not frames_mod._frames_are_contiguous([tmp_path / "frame_0002.jpg"])
 
 
-class TestParallelExtract:
-    """extract() with jobs > 1 fans out and still returns one ordered frame set."""
+class TestKeyframeIntervalProbe:
+    """probe_keyframe_interval reads packet headers; it never decodes."""
 
-    def _patch_ffmpeg(self, monkeypatch, *, drop_slot=None):
+    def _probe(self, monkeypatch, stdout, returncode=0):
+        monkeypatch.setattr(frames_mod, "_resolve_tool", lambda name: "/usr/bin/ffprobe")
+
+        class _R:
+            pass
+
+        r = _R()
+        r.returncode = returncode
+        r.stdout = stdout
+        r.stderr = ""
+        monkeypatch.setattr(frames_mod.subprocess, "run", lambda *a, **k: r)
+        return frames_mod.probe_keyframe_interval("video.mp4")
+
+    def test_median_of_keyframe_gaps(self, monkeypatch):
+        stdout = "\n".join([
+            "0.000000,K__",
+            "0.040000,___",
+            "4.000000,K__",
+            "8.000000,K__",
+            "12.000000,K__",
+        ])
+        assert self._probe(monkeypatch, stdout) == 4.0
+
+    def test_ignores_na_timestamps(self, monkeypatch):
+        stdout = "\n".join(["N/A,K__", "0.000000,K__", "2.000000,K__"])
+        assert self._probe(monkeypatch, stdout) == 2.0
+
+    def test_one_irregular_gap_does_not_skew_median(self, monkeypatch):
+        stdout = "\n".join([
+            "0.000000,K__",
+            "2.000000,K__",
+            "4.000000,K__",
+            "4.100000,K__",  # scene-cut keyframe
+            "6.000000,K__",
+            "8.000000,K__",
+        ])
+        assert self._probe(monkeypatch, stdout) == 2.0
+
+    def test_none_when_too_few_keyframes(self, monkeypatch):
+        assert self._probe(monkeypatch, "0.000000,K__") is None
+
+    def test_none_when_ffprobe_fails(self, monkeypatch):
+        assert self._probe(monkeypatch, "", returncode=1) is None
+
+    def test_none_when_ffprobe_missing(self, monkeypatch):
+        monkeypatch.setattr(frames_mod, "_resolve_tool", lambda name: None)
+        assert frames_mod.probe_keyframe_interval("video.mp4") is None
+
+
+class TestCanSampleKeyframesOnly:
+    def test_sparse_sampling_allowed(self):
+        # 15s between frames against a 4s keyframe interval: 15 >= 2 * 4.
+        assert frames_mod.can_sample_keyframes_only(1 / 15, 4.0) is True
+
+    def test_dense_sampling_rejected(self):
+        # 1s between frames against a 10s keyframe interval would repeat frames.
+        assert frames_mod.can_sample_keyframes_only(1.0, 10.0) is False
+
+    def test_exact_safety_boundary_allowed(self):
+        assert frames_mod.can_sample_keyframes_only(1 / 8, 4.0) is True
+
+    def test_just_under_boundary_rejected(self):
+        assert frames_mod.can_sample_keyframes_only(1 / 7.9, 4.0) is False
+
+    def test_unknown_interval_rejected(self):
+        assert frames_mod.can_sample_keyframes_only(0.1, None) is False
+
+    def test_nonsense_inputs_rejected(self):
+        assert frames_mod.can_sample_keyframes_only(0.0, 4.0) is False
+        assert frames_mod.can_sample_keyframes_only(0.1, 0.0) is False
+
+
+class TestKeyframeOnlyExtraction:
+    def _run(self, tmp_path, monkeypatch, *, keyframes_only, frames_written=2):
+        video = tmp_path / "video.mp4"
+        video.write_bytes(b"x" * 1000)
+        base = tmp_path / "frames"
         monkeypatch.setattr(frames_mod.shutil, "which", lambda name: "/usr/bin/ffmpeg")
+        monkeypatch.setattr(frames_mod, "_resolve_tool", lambda name: "/usr/bin/ffmpeg")
         calls = []
 
         def fake_run(cmd, **kwargs):
             calls.append(cmd)
-            pattern = Path(cmd[-1])
-            target_dir = pattern.parent
+            target_dir = Path(cmd[-1]).parent
+            target_dir.mkdir(parents=True, exist_ok=True)
+            count = frames_written if len(calls) == 1 else 2
+            for i in range(1, count + 1):
+                (target_dir / f"frame_{i:04d}.jpg").write_bytes(b"jpeg")
+            return _FakeResult()
+
+        monkeypatch.setattr(frames_mod.subprocess, "run", fake_run)
+        result, frames_dir = extract(
+            str(video), base, fps=0.1, resolution=512, max_frames=120,
+            start_seconds=0.0, end_seconds=10.0, keyframes_only=keyframes_only,
+        )
+        return calls, result, frames_dir
+
+    def test_skip_frame_precedes_input(self, tmp_path, monkeypatch):
+        calls, _, _ = self._run(tmp_path, monkeypatch, keyframes_only=True)
+        cmd = calls[0]
+        assert "-skip_frame" in cmd
+        assert cmd[cmd.index("-skip_frame") + 1] == "nokey"
+        # Decoder options only apply when they come before -i.
+        assert cmd.index("-skip_frame") < cmd.index("-i")
+
+    def test_absent_by_default(self, tmp_path, monkeypatch):
+        calls, _, _ = self._run(tmp_path, monkeypatch, keyframes_only=False)
+        assert "-skip_frame" not in calls[0]
+
+    def test_signature_unchanged_for_full_decode(self, tmp_path):
+        video = tmp_path / "video.mp4"
+        video.write_bytes(b"x" * 10)
+        baseline = _extract_signature(str(video), 1.0, 512, 120, 0.0, 10.0)
+        explicit = _extract_signature(str(video), 1.0, 512, 120, 0.0, 10.0, False)
+        # Pre-existing cache dirs must stay valid.
+        assert baseline == explicit
+        assert "keyframes_only" not in baseline
+
+    def test_signature_diverges_for_keyframe_mode(self, tmp_path):
+        video = tmp_path / "video.mp4"
+        video.write_bytes(b"x" * 10)
+        full = _extract_signature(str(video), 1.0, 512, 120, 0.0, 10.0, False)
+        keyed = _extract_signature(str(video), 1.0, 512, 120, 0.0, 10.0, True)
+        assert _signature_key(full) != _signature_key(keyed)
+
+    def test_falls_back_to_full_decode_when_no_frames(self, tmp_path, monkeypatch):
+        calls, result, _ = self._run(
+            tmp_path, monkeypatch, keyframes_only=True, frames_written=0
+        )
+        assert len(calls) == 2
+        assert "-skip_frame" in calls[0]
+        assert "-skip_frame" not in calls[1]
+        assert len(result) == 2
+
+
+class TestParallelExtract:
+    def _run(self, tmp_path, monkeypatch, *, drop_slot=None):
+        video = tmp_path / "video.mp4"
+        video.write_bytes(b"x" * 1000)
+        calls = []
+        monkeypatch.setattr(frames_mod.shutil, "which", lambda name: "/usr/bin/ffmpeg")
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            target_dir = Path(cmd[-1]).parent
             target_dir.mkdir(parents=True, exist_ok=True)
             count = int(cmd[cmd.index("-frames:v") + 1])
             first = int(cmd[cmd.index("-start_number") + 1]) if "-start_number" in cmd else 1
-            if drop_slot is not None and first == drop_slot:
+            if first == drop_slot:
                 count -= 1
             for offset in range(count):
                 (target_dir / f"frame_{first + offset:04d}.jpg").write_bytes(b"jpeg")
             return _FakeResult()
 
         monkeypatch.setattr(frames_mod.subprocess, "run", fake_run)
-        return calls
+        frames, frame_dir = extract(
+            str(video), tmp_path / "frames", fps=100 / 600, resolution=512,
+            max_frames=100, start_seconds=0.0, end_seconds=600.0,
+            jobs=4, target_frames=100,
+        )
+        return calls, frames, frame_dir
 
     def test_fans_out_and_returns_ordered_frames(self, tmp_path, monkeypatch):
-        video = tmp_path / "video.mp4"
-        video.write_bytes(b"x" * 1000)
-        calls = self._patch_ffmpeg(monkeypatch)
-
-        result, _frames_dir = extract(
-            str(video), tmp_path / "frames", fps=100 / 600, resolution=512,
-            max_frames=100, start_seconds=0.0, end_seconds=600.0,
-            jobs=4, target_frames=100,
-        )
-
+        calls, frames, _ = self._run(tmp_path, monkeypatch)
         assert len(calls) == 4
-        assert len(result) == 100
-        assert [f["index"] for f in result] == list(range(1, 101))
-        # Timestamps stay on the single-pass grid.
-        assert result[25]["timestamp_seconds"] == 150.0
+        assert len(frames) == 100
+        assert [frame["index"] for frame in frames] == list(range(1, 101))
+        assert frames[25]["timestamp_seconds"] == 150.0
 
-    def test_falls_back_to_single_pass_on_gap(self, tmp_path, monkeypatch):
-        video = tmp_path / "video.mp4"
-        video.write_bytes(b"x" * 1000)
-        # Slot 2 under-produces, which would silently shift every later timestamp.
-        calls = self._patch_ffmpeg(monkeypatch, drop_slot=26)
-
-        result, _frames_dir = extract(
-            str(video), tmp_path / "frames", fps=100 / 600, resolution=512,
-            max_frames=100, start_seconds=0.0, end_seconds=600.0,
-            jobs=4, target_frames=100,
-        )
-
-        # 4 split attempts, then one serial retry over the whole range.
+    def test_gap_falls_back_to_single_pass(self, tmp_path, monkeypatch):
+        calls, frames, _ = self._run(tmp_path, monkeypatch, drop_slot=26)
         assert len(calls) == 5
         assert "-start_number" not in calls[-1]
-        assert [f["index"] for f in result] == list(range(1, 101))
+        assert [frame["index"] for frame in frames] == list(range(1, 101))
 
-    def test_single_job_runs_one_ffmpeg(self, tmp_path, monkeypatch):
+    def test_job_count_does_not_change_resume_signature(self, tmp_path, monkeypatch):
+        calls, _, frame_dir = self._run(tmp_path, monkeypatch)
+
+        def fail_if_rerun(*args, **kwargs):
+            raise AssertionError("unchanged inputs should resume without ffmpeg")
+
+        monkeypatch.setattr(frames_mod.subprocess, "run", fail_if_rerun)
         video = tmp_path / "video.mp4"
-        video.write_bytes(b"x" * 1000)
-        calls = self._patch_ffmpeg(monkeypatch)
-
-        extract(
+        frames, resumed_dir = extract(
             str(video), tmp_path / "frames", fps=100 / 600, resolution=512,
             max_frames=100, start_seconds=0.0, end_seconds=600.0,
             jobs=1, target_frames=100,
         )
-        assert len(calls) == 1
-
-    def test_jobs_do_not_change_the_signature(self, tmp_path, monkeypatch):
-        """A rerun with a different worker count must still resume, not re-extract."""
-        video = tmp_path / "video.mp4"
-        video.write_bytes(b"x" * 1000)
-        base = tmp_path / "frames"
-        self._patch_ffmpeg(monkeypatch)
-
-        _first, dir_a = extract(
-            str(video), base, fps=100 / 600, resolution=512, max_frames=100,
-            start_seconds=0.0, end_seconds=600.0, jobs=4, target_frames=100,
-        )
-
-        def boom(*args, **kwargs):
-            raise AssertionError("ffmpeg must not run when resuming")
-
-        monkeypatch.setattr(frames_mod.subprocess, "run", boom)
-        second, dir_b = extract(
-            str(video), base, fps=100 / 600, resolution=512, max_frames=100,
-            start_seconds=0.0, end_seconds=600.0, jobs=1, target_frames=100,
-        )
-        assert dir_a == dir_b
-        assert len(second) == 100
+        assert len(calls) == 4
+        assert resumed_dir == frame_dir
+        assert len(frames) == 100
