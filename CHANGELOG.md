@@ -4,6 +4,8 @@ All notable changes to `/analyze-video` are documented here.
 
 ## [Unreleased]
 
+## [1.9.0] - 2026-10-22
+
 ### Changed
 - **Downloads are sized to the frames they feed.** `download.py` asked yt-dlp for the best stream up to 720p, but frames are rendered at `--resolution` pixels wide (512 by default) and the document embeds them at roughly 640 pixels, so every source pixel beyond that was transferred, written to the shared cache, and then discarded by ffmpeg's scaler. Format selection is now capped by source **width** at `max(854, --resolution)`, which picks a 480p stream for a 16:9 video: roughly half to a third of the bytes, with the extracted frames and the document unchanged.
 

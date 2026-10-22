@@ -29,11 +29,9 @@ Second line
 
 def _client_of(cmd):
     for part in cmd:
-        if part == "youtube:player-client=android":
-            return "android"
-        if part == "youtube:player-client=ios":
-            return "ios"
-    return "web"
+        if part.startswith("youtube:player-client="):
+            return part.partition("=")[2]
+    return "default"
 
 
 def _template_dir(cmd):
@@ -48,7 +46,7 @@ def _runner(succeed_on="android", langs=("en",), info=None):
     def run(cmd, capture_output=True, text=True):
         client = _client_of(cmd)
         calls.append(cmd)
-        if succeed_on == client:
+        if succeed_on == client or succeed_on in client.split(","):
             d = _template_dir(cmd)
             for lang in langs:
                 (d / f"captions.{lang}.vtt").write_text(VTT)
@@ -117,10 +115,15 @@ class TestDownloadCaptions:
         # Temp working dir is cleaned up.
         assert not any(p.name.startswith(".captions-") for p in tmp_path.iterdir())
 
-    def test_falls_back_through_clients(self, tmp_path, ytdlp):
+    def test_uses_merged_player_clients(self, tmp_path, ytdlp):
         runner = ytdlp(_runner(succeed_on="web"))
         download_captions("https://www.youtube.com/watch?v=x", tmp_path, langs="en", formats=["srt"])
-        assert [_client_of(c) for c in runner.calls] == ["android", "ios", "web"]
+        assert [_client_of(c) for c in runner.calls] == ["android,ios,web"]
+
+    def test_falls_back_to_yt_dlp_default_clients(self, tmp_path, ytdlp):
+        runner = ytdlp(_runner(succeed_on="default"))
+        download_captions("https://www.youtube.com/watch?v=x", tmp_path, langs="en", formats=["srt"])
+        assert [_client_of(c) for c in runner.calls] == ["android,ios,web", "default"]
 
     def test_multiple_languages_and_orig_dedupe(self, tmp_path, ytdlp):
         ytdlp(_runner(langs=("en", "en-orig", "es")))
