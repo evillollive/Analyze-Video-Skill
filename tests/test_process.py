@@ -307,7 +307,12 @@ class TestPatchManifestTranscript:
         _patch_manifest_transcript(tmp_path, _segs(), tmp_path / "t.txt")  # must not raise
 
 
-from process import DEFAULT_MAX_PARALLEL_CHUNKS, _resolve_jobs  # noqa: E402
+from process import (  # noqa: E402
+    DEFAULT_MAX_PARALLEL_CHUNKS,
+    _parallel_budget,
+    _resolve_frame_jobs,
+    _resolve_jobs,
+)
 
 
 class TestResolveJobs:
@@ -330,6 +335,26 @@ class TestResolveJobs:
     def test_non_positive_request_falls_back_to_auto(self):
         assert _resolve_jobs(0, 6) == _resolve_jobs(None, 6)
         assert _resolve_jobs(-3, 6) == _resolve_jobs(None, 6)
+
+
+class TestResolveFrameJobs:
+    def test_unchunked_video_gets_the_whole_budget(self):
+        """The common case: one chunk used to leave every spare core idle."""
+        assert _resolve_frame_jobs(None, 1) == _parallel_budget(None)
+        assert _resolve_frame_jobs(4, 1) == 4
+
+    def test_fully_fanned_out_chunks_leave_nothing_spare(self):
+        budget = _parallel_budget(None)
+        assert _resolve_frame_jobs(None, budget) == 1
+
+    def test_explicit_one_forces_sequential(self):
+        assert _resolve_frame_jobs(1, 1) == 1
+
+    def test_budget_is_shared_not_multiplied(self):
+        assert _resolve_frame_jobs(4, 2) * 2 == 4
+
+    def test_never_returns_zero(self):
+        assert _resolve_frame_jobs(2, 8) == 1
 
 
 from process import _segment_index, _shift_segments, _slice_indices  # noqa: E402

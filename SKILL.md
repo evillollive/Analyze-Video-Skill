@@ -190,7 +190,7 @@ Tool-runtime constraint:
 - If the execution shell has a short timeout budget (for example 45 seconds), do not run full-length processing there.
 - For long videos, run `process.py` in a host-side shell tool that can complete long-running commands, then continue analysis from the produced manifests.
 
-Process videos sequentially. Do not parallelize video processing; it can saturate network, CPU, disk, and token budget. (Within a single video, `process.py` already extracts its chunks in parallel — see below — so running one video at a time still uses the machine fully.) `process.py` prints the path to `manifest_lite.json` on stdout. Progress and warnings go to stderr.
+Process videos sequentially. Do not parallelize video processing; it can saturate network, CPU, disk, and token budget. (Within a single video, `process.py` already parallelizes frame extraction internally — see below — so running one video at a time still uses the machine fully.) `process.py` prints the path to `manifest_lite.json` on stdout. Progress and warnings go to stderr.
 
 Per-video outputs include:
 - `manifest_lite.json`: lightweight default manifest, schema v3 minus transcript text and per-frame arrays.
@@ -205,9 +205,13 @@ Per-video outputs include:
 - `audio.mp3` or `audio_START_END.mp3`: only if Whisper was used.
 - `status.json`: current pipeline stage, updated continuously (downloading, transcript_ready, extracting with `current_chunk`/`chunks_completed`, complete). Read it to see how far an interrupted run got.
 
-### Parallel chunk extraction
+### Parallel frame extraction
 
-When a video is auto-chunked, `process.py` extracts several chunks at once (frame extraction and contact-sheet tiling are independent per chunk). The default concurrency is auto-picked from the core count, capped at 4, and never exceeds the chunk count. Override it with `--jobs N`; `--jobs 1` forces the old sequential behavior (useful on a heavily loaded or memory-constrained host). Output is identical either way — chunks are always written to the manifest in chronological order.
+`process.py` works to a single concurrency budget, auto-picked from the core count and capped at 4. Override it with `--jobs N`; `--jobs 1` forces fully sequential extraction (useful on a heavily loaded or memory-constrained host).
+
+When a video is auto-chunked, the budget is spent running several chunks at once, since frame extraction and contact-sheet tiling are independent per chunk. When there are fewer chunks than the budget allows (including the common single-chunk case for videos under 12 minutes), each chunk spends the spare capacity splitting its own extraction into contiguous sub-ranges that run in parallel. The total number of concurrent ffmpeg processes is the same either way, so the CPU is never oversubscribed.
+
+Output is identical either way. Chunks are always written to the manifest in chronological order, and a split extraction reproduces the single-pass frame set byte for byte: frame `i` sits at `start + i / fps` whether one worker or four produced it. If any sub-range fails or comes up short, the whole range is silently redone in a single pass, so a split can cost time but never correctness.
 
 ### Resuming after a timeout
 `process.py` is resumable. Re-running with the same `--source` and `--out-dir` reuses any chunk whose frames are still valid (matched by an extraction signature), so an interrupted long video continues instead of restarting from zero. Each distinct set of extraction settings writes into its own `frames/<sig>/` subfolder, so a re-run never has to delete a previous run's files (which some sandboxes forbid) and stale frames can't pollute the result. Contact sheets are reused on the same terms: a sheet whose frames and tiling settings are unchanged is not re-tiled, so a resumed run skips a full ffmpeg pass per chunk. If a run is killed, check `status.json` to see where it stopped, then just re-run the same command. Pass `--force` to ignore cached output and re-download + re-extract everything.
