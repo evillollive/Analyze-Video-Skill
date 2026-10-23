@@ -24,3 +24,6 @@ node_modules/
 # test artifacts
 .pytest_cache/
 .coverage
+
+# packaged skill files (build output; releases attach dist/analyze-video.skill)
+*.skill
