@@ -47,6 +47,19 @@ python3 scripts/captions.py --source "<url>" --list                            #
 
 Formats: `srt` (default), `vtt`, `txt` (clean timestamped transcript), or `all`. Add `--no-auto` for uploader captions only. Files are named `<title> [<id>].<lang>.<ext>`.
 
+## Just want a high-quality local copy?
+
+Ask for a download-only run to skip frames, contact sheets, and the Word report. Choose a destination, MKV (any supported source codecs) or edit-friendly MP4 (H.264 + AAC streams only), and optional captions:
+
+```bash
+python3 scripts/download.py --best \
+  --source "<url>" --out-dir ~/Downloads/video-copy \
+  --container mkv --audio-lang original --subs none \
+  --temp-dir "$HOME/dltmp"
+```
+
+The command reports the selected streams before downloading, verifies the final codecs/resolution/fps and measured video bitrate with ffprobe, and runs a short decode test. It asks for explicit approval before downloading a result below 720p. MP4 never re-encodes video; if compatible H.264/AAC streams are unavailable, the command stops with an explanation.
+
 ## The clever bits
 
 ### Contact sheets save tokens
@@ -83,6 +96,7 @@ The setup script checks or installs:
 - Node.js and npm
 - ffmpeg and ffprobe
 - yt-dlp
+- A supported JavaScript runtime (Deno or Node.js) for full-quality YouTube extraction; setup installs/checks Deno when needed.
 - the `docx` npm module used by the Word document builder
 - optional LibreOffice support if you want PDF versions
 
@@ -229,7 +243,7 @@ Transcripts are cached too, because transcribing is the most expensive non-downl
 
 ### When a site blocks the download
 
-Some sites block unauthenticated download tools with login prompts, bot checks, age gates, members-only access, rate limits, or regional restrictions. The skill classifies those failures and gives a specific next step instead of repeatedly retrying. For public YouTube links it pins a merged `android,ios,web` player-client list so one yt-dlp call covers all three, falling back to yt-dlp's own default clients only if that produces nothing.
+Some sites block unauthenticated download tools with login prompts, bot checks, age gates, members-only access, rate limits, or regional restrictions. The skill classifies those failures and gives a specific next step instead of repeatedly retrying. Public YouTube requests use JS-enabled `default,web_safari,tv` clients first, then fall back to `android,ios,web` and yt-dlp's own defaults. Detected SABR-only or unexpectedly capped 360p results are retried; if still degraded, the skill stops and reports the quality issue instead of silently accepting it. `setup.py` checks for Deno or Node.js and requests yt-dlp's EJS challenge scripts.
 
 If you can already watch the video in your own browser and want the skill to use that authorized session, retry with one of yt-dlp's cookie options:
 
