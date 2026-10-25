@@ -4,10 +4,7 @@ All notable changes to `/analyze-video` are documented here.
 
 ## [Unreleased]
 
-### Security
-- Updated the `docx` npm dependency from 9.7.1 to 9.14.0, which clears the high-severity `nanoid` advisory (GHSA-28wg-ghj8-5hjv) in the transitive dependency tree.
-
-## [1.9.0] - 2026-10-22
+## [1.9.0] - 2026-10-24
 
 ### Changed
 - **Downloads are sized to the frames they feed.** `download.py` asked yt-dlp for the best stream up to 720p, but frames are rendered at `--resolution` pixels wide (512 by default) and the document embeds them at roughly 640 pixels, so every source pixel beyond that was transferred, written to the shared cache, and then discarded by ffmpeg's scaler. Format selection is now capped by source **width** at `max(854, --resolution)`, which picks a 480p stream for a 16:9 video: roughly half to a third of the bytes, with the extracted frames and the document unchanged.
@@ -27,6 +24,9 @@ All notable changes to `/analyze-video` are documented here.
   The optimization is gated, not unconditional: it only engages when the gap between sampled frames covers at least two keyframes, which guarantees each output frame lands on a distinct keyframe instead of the `fps` filter repeating one, and bounds frame drift at half the sampling interval. Long overview runs sample sparsely and get the speedup; focused `--start`/`--end` runs sample densely and keep a full decode automatically. The interval is measured with an `ffprobe` packet-header read over the first 120s (no decoding, well under a second), using the median inter-keyframe gap so a single scene-cut keyframe cannot skew it; when it cannot be established the full decode is used.
 
   New `--keyframe-sampling {auto,never,always}` (default `auto`) controls it; `never` reproduces the previous behavior exactly. If keyframe-only extraction yields no frames (a codec or container that exposes no keyframe flags), the chunk is transparently re-extracted with a full decode. Extraction signatures are unchanged for full-decode runs, so existing cached frame directories stay valid. The manifest gains `keyframe_interval_seconds` and a per-chunk `keyframe_sampled`.
+
+### Security
+- Updated the `docx` npm dependency from 9.7.1 to 9.14.0, which clears the high-severity `nanoid` advisory (GHSA-28wg-ghj8-5hjv) in the transitive dependency tree.
 
 ### Fixed
 - **Contact sheets are reused when their source frames and tiling options are unchanged.** Resume and rerun paths avoid retiling valid sheets; changed frames/options, missing or truncated sheets, and `--force` still trigger generation.
