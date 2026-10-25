@@ -15,6 +15,7 @@
 - **Video to report:** drop in a URL or local file and get a structured Word document.
 - **Screenshots included:** reports embed selected frames with descriptive captions, one per row or two-up side by side.
 - **Timestamped analysis:** transcript evidence and visuals are organized by time range.
+- **Open Filmmaker Toolkit export:** optionally package timestamped analysis and frame references as an `.oft.json` project.
 - **Token efficient:** contact sheets let the AI scan the whole video before reading only the important frames.
 - **Long-video ready:** runs can resume, reuse extracted frames, reuse cached downloads, and emit progress files.
 - **Accessible output:** embedded frames and contact sheets carry required alt text for screen readers.
@@ -194,6 +195,7 @@ Analyze-Video-Skill/
 │   ├── setup.py                 # First-run installer and preflight checks
 │   ├── host_env.py              # Host fingerprint and setup state helpers
 │   ├── build-docx.js            # Word document renderer
+│   ├── export_oft.py            # Open Filmmaker Toolkit project exporter
 │   ├── select_frames.py         # Frame selection helper
 │   ├── validate_spec_paths.py   # Fails fast on stale/missing asset paths
 │   ├── lint_spec_quality.py     # Spec structure/content quality guard

@@ -5,6 +5,7 @@ All notable changes to `/analyze-video` are documented here.
 ## [Unreleased]
 
 ### Added
+- **Optional Open Filmmaker Toolkit project export.** `scripts/export_oft.py` converts an analysis spec into a version 1 `.oft.json` project with one video asset per source, readable analysis notes, structured timestamped sections, captions, and relative frame paths. It uses schema-compatible asset fields that the Toolkit preserves without a schema change; existing output files are not overwritten.
 - **Best-copy download-only mode.** `download.py --best` downloads a local copy without running frame extraction or the docx pipeline, asks for explicit deliverable choices in the skill flow, supports MKV or H.264/AAC-only MP4, prefers original-language audio, optionally saves captions/transcript, and verifies the final file with ffprobe plus a short decode test.
 - **JavaScript-enabled YouTube extraction.** Setup checks for Deno or Node.js, installs yt-dlp with its `default` extras, and installs Deno without sudo on Linux when needed. Downloads use JS-enabled player clients and retry detected SABR/degraded results rather than silently accepting 360p.
 
