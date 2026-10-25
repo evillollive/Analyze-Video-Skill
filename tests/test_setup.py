@@ -78,6 +78,56 @@ class TestStatus:
                     assert "setup_state_file" in status
 
 
+class TestJavascriptRuntime:
+    def test_prefers_deno_over_node(self, monkeypatch):
+        monkeypatch.setattr(
+            setup, "_which",
+            lambda name: {"deno": "/user/.deno/bin/deno", "node": "/usr/bin/node"}.get(name),
+        )
+        assert setup._js_runtime() == {"name": "deno", "path": "/user/.deno/bin/deno"}
+
+    def test_accepts_node_as_the_runtime(self, monkeypatch):
+        monkeypatch.setattr(setup, "_which", lambda name: "/usr/bin/node" if name == "node" else None)
+        assert setup._js_runtime() == {"name": "node", "path": "/usr/bin/node"}
+
+    def test_installs_yt_dlp_with_default_extras(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(setup, "_which", lambda name: None)
+        monkeypatch.setattr(setup.shutil, "which", lambda name: "/usr/bin/pipx")
+        monkeypatch.setattr(
+            setup.subprocess,
+            "run",
+            lambda cmd, **kwargs: (calls.append(cmd) or type("Result", (), {"returncode": 0})()),
+        )
+        ok, _message = setup._install_ytdlp()
+        assert ok
+        assert calls == [["pipx", "install", "yt-dlp[default]"]]
+
+    def test_installs_deno_into_user_home_without_sudo(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(setup.Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(setup, "_which", lambda name: None)
+        monkeypatch.setattr(setup.shutil, "which", lambda name: "/usr/bin/curl")
+        calls = []
+
+        def run(cmd, **kwargs):
+            calls.append(cmd)
+            if cmd[0].endswith("/curl"):
+                return setup.subprocess.CompletedProcess(cmd, 0, stdout="installer", stderr="")
+            deno = tmp_path / ".deno" / "bin" / "deno"
+            deno.parent.mkdir(parents=True)
+            deno.write_text("binary")
+            return setup.subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        monkeypatch.setattr(setup.subprocess, "run", run)
+        ok, _message = setup._install_deno()
+        assert ok
+        assert calls == [
+            ["/usr/bin/curl", "-fsSL", "https://deno.land/install.sh"],
+            ["sh", "-s", "--", "-y"],
+        ]
+        assert not any("sudo" in cmd for cmd in calls)
+
+
 class TestDocxAvailable:
     def test_detects_cache_node_modules(self, tmp_path, monkeypatch):
         cache = tmp_path / "cache" / "node_modules"

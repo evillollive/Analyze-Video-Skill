@@ -137,6 +137,8 @@ class TestClearDownloadArtifacts:
 from download import (  # noqa: E402
     DEFAULT_DOWNLOAD_MAX_WIDTH,
     format_selector,
+    _best_format_selector,
+    _audio_matches,
     YOUTUBE_PLAYER_CLIENTS,
     is_youtube,
     player_client_attempts,
@@ -146,6 +148,7 @@ from download import (  # noqa: E402
     fetch_captions,
     fetch_title,
     download_url,
+    download_best_copy,
 )
 import subprocess as _subprocess  # noqa: E402
 
@@ -222,7 +225,7 @@ class TestFormatSelector:
         assert selector.endswith("/bv+ba/b")
 
     def test_zero_and_none_disable_the_cap(self):
-        uncapped = "bv*[height<=720]+ba/b[height<=720]/bv+ba/b"
+        uncapped = "bv*+ba/b"
         assert format_selector(0) == uncapped
         assert format_selector(None) == uncapped
 
@@ -233,6 +236,105 @@ class TestFormatSelector:
             max_width=640,
         )
         assert cmd[cmd.index("-f") + 1] == format_selector(640)
+
+
+class TestBestCopyFormats:
+    def test_mkv_prefers_original_audio_and_skips_drc(self):
+        selector = _best_format_selector("mkv", "original")
+        assert "ba[format_note*=original]" in selector
+        assert "[format_note!*=DRC]" in selector
+
+    def test_mp4_requires_h264_and_aac_without_video_reencoding(self):
+        selector = _best_format_selector("mp4", "original")
+        assert "vcodec^=avc1" in selector
+        assert "acodec^=mp4a" in selector
+
+    def test_audio_match_rejects_drc_and_requires_requested_language(self):
+        assert _audio_matches(
+            {"format_note": "original (default)", "acodec": "opus"},
+            "original",
+            "mkv",
+        )
+        assert not _audio_matches(
+            {"format_note": "original DRC", "acodec": "opus"},
+            "original",
+            "mkv",
+        )
+        assert _audio_matches({"language": "en-US", "acodec": "mp4a.40.2"}, "en", "mp4")
+
+    def test_best_copy_uses_selected_formats_and_verifies_output(self, tmp_path, monkeypatch):
+        final = tmp_path / "Movie [abc].mkv"
+        info = {
+            "title": "Movie",
+            "channel": "Channel",
+            "duration": 7000,
+            "duration_string": "1:56:40",
+            "requested_formats": [
+                {
+                    "format_id": "137",
+                    "vcodec": "avc1.640028",
+                    "acodec": "none",
+                    "protocol": "https",
+                    "width": 1920,
+                    "height": 1080,
+                    "fps": 24,
+                },
+                {
+                    "format_id": "251-20",
+                    "vcodec": "none",
+                    "acodec": "opus",
+                    "protocol": "https",
+                    "language": "en",
+                    "format_note": "original (default)",
+                },
+            ],
+        }
+        monkeypatch.setattr("download._resolve_tool", lambda name: "yt-dlp")
+        monkeypatch.setattr("download._ytdlp_runtime_args", lambda: [])
+        monkeypatch.setattr(
+            "download._inspect_best_format",
+            lambda *a, **k: (info, _subprocess.CompletedProcess([], 0, "", "")),
+        )
+        monkeypatch.setattr(
+            "download._probe_copy",
+            lambda path: {"path": str(path), "fps": 24, "height": 1080},
+        )
+
+        def run(cmd, capture_output=True, text=True):
+            assert cmd[cmd.index("-f") + 1] == "137+251-20"
+            assert cmd[cmd.index("--merge-output-format") + 1] == "mkv"
+            final.write_bytes(b"video")
+            return _subprocess.CompletedProcess(cmd, 0, str(final) + "\n", "")
+
+        monkeypatch.setattr("download.subprocess.run", run)
+        result = download_best_copy(
+            "https://vimeo.com/1",
+            tmp_path,
+            container="mkv",
+            temp_dir=tmp_path / "scratch",
+        )
+        assert result["video"]["path"] == str(final)
+
+    def test_best_copy_stops_before_download_below_720p(self, tmp_path, monkeypatch):
+        info = {
+            "requested_formats": [
+                {"format_id": "18", "vcodec": "avc1", "acodec": "mp4a", "height": 360,
+                 "format_note": "original"},
+            ],
+        }
+        monkeypatch.setattr("download._resolve_tool", lambda name: "yt-dlp")
+        monkeypatch.setattr("download._inspect_best_format", lambda *a, **k: (
+            info, _subprocess.CompletedProcess([], 0, "", "")
+        ))
+        monkeypatch.setattr(
+            "download.subprocess.run",
+            lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not download")),
+        )
+        try:
+            download_best_copy("https://vimeo.com/1", tmp_path, temp_dir=tmp_path / "scratch")
+            assert False, "expected SystemExit"
+        except SystemExit as exc:
+            assert "below 720p" in str(exc)
 
 
 class TestSourceMarkerWidthGating:
@@ -294,6 +396,48 @@ class TestDownloadUrlWidthBudget:
         # A narrower follow-up is served from the wider capture.
         download_url("https://vimeo.com/123", tmp_path, max_width=854)
         assert len(runner.calls) == 2
+
+
+class TestDownloadFallbacks:
+    def test_merge_failure_retries_with_http_only_selector(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("download._resolve_tool", lambda name: "yt-dlp")
+        calls = []
+
+        def run(cmd, capture_output=True, text=True):
+            calls.append(cmd)
+            if len(calls) == 1:
+                return _subprocess.CompletedProcess(
+                    cmd, 1, stdout="", stderr="Postprocessing: Conversion failed!"
+                )
+            (tmp_path / "video.mp4").write_bytes(b"video")
+            return _subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        monkeypatch.setattr("download.subprocess.run", run)
+        download_url("https://vimeo.com/123", tmp_path)
+        assert len(calls) == 2
+        assert "[protocol^=http]" in calls[1][calls[1].index("-f") + 1]
+
+    def test_degraded_youtube_result_retries_with_another_client(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("download._resolve_tool", lambda name: "yt-dlp")
+        seen = []
+
+        def run(cmd, capture_output=True, text=True):
+            client = _client_of(cmd)
+            seen.append(client)
+            (tmp_path / "video.mp4").write_bytes(b"video")
+            if client == "merged":
+                info = {
+                    "requested_formats": [{"format_id": "18", "height": 360}],
+                    "formats": [{"height": 360}, {"height": 1080}],
+                }
+            else:
+                info = {"requested_formats": [{"format_id": "137", "height": 1080}]}
+            (tmp_path / "video.info.json").write_text(json.dumps(info))
+            return _subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        monkeypatch.setattr("download.subprocess.run", run)
+        download_url("https://www.youtube.com/watch?v=x", tmp_path)
+        assert seen == ["merged", "android,ios,web"]
 
 
 class TestValidVideo:
@@ -363,10 +507,10 @@ class TestPlayerClientAttempts:
         attempts = player_client_attempts(
             "https://www.youtube.com/watch?v=x", authenticated=False
         )
-        assert attempts == [YOUTUBE_PLAYER_CLIENTS, None]
+        assert attempts == [YOUTUBE_PLAYER_CLIENTS, "android,ios,web", None]
 
-    def test_merged_list_covers_android_ios_and_web(self):
-        assert YOUTUBE_PLAYER_CLIENTS.split(",") == ["android", "ios", "web"]
+    def test_primary_list_uses_js_enabled_web_clients(self):
+        assert YOUTUBE_PLAYER_CLIENTS.split(",") == ["default", "web_safari", "tv"]
 
     def test_authenticated_youtube_uses_default_client_only(self):
         # android/ios ignore cookies, so pinning them would discard the session.
@@ -403,7 +547,7 @@ class TestDownloadUrlAttempts:
         monkeypatch.setattr("download.subprocess.run", run)
         download_url("https://www.youtube.com/watch?v=x", tmp_path)
         assert len(seen) == 1
-        assert "youtube:player-client=android,ios,web" in seen[0]
+        assert f"youtube:player-client={YOUTUBE_PLAYER_CLIENTS}" in seen[0]
 
     def test_youtube_falls_back_to_default_clients(self, tmp_path, monkeypatch):
         monkeypatch.setattr("download._resolve_tool", lambda name: "yt-dlp")
@@ -411,7 +555,7 @@ class TestDownloadUrlAttempts:
         monkeypatch.setattr("download.subprocess.run", runner)
         res = download_url("https://www.youtube.com/watch?v=x", tmp_path)
         assert res["downloaded"] is True
-        assert runner.calls == ["merged", "web"]
+        assert runner.calls == ["merged", "android,ios,web", "web"]
         marker = json.loads((tmp_path / ".source.json").read_text())
         assert marker["client"] == "web" and marker["auth"] == "none"
 
@@ -525,7 +669,9 @@ class TestDownloadResumesPartials:
 
         download_url(url, tmp_path)
 
-        assert [s["client"] for s in runner.seen] == ["merged", "web"]
+        assert [s["client"] for s in runner.seen] == [
+            "merged", "android,ios,web", "web",
+        ]
         assert runner.seen[-1]["partials"] == [
             "video.f399.mp4.part",
             "video.f399.mp4.ytdl",
@@ -620,7 +766,7 @@ class TestFetchCaptions:
         monkeypatch.setattr("download.subprocess.run", run)
         sub = fetch_captions("https://youtu.be/x", tmp_path)
         assert sub.name == "captions.en.vtt"
-        assert seen == ["merged", "web"]
+        assert seen == ["merged", "android,ios,web", "web"]
 
     def test_no_subs_raises(self, tmp_path, monkeypatch):
         monkeypatch.setattr("download._resolve_tool", lambda name: "yt-dlp")
