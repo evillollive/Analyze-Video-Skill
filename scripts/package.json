@@ -3,6 +3,6 @@
   "private": true,
   "description": "Runtime npm deps for the analyze-video skill builder.",
   "dependencies": {
-    "docx": "^9.7.1"
+    "docx": "^9.14.0"
   }
 }
