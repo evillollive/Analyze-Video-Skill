@@ -6,10 +6,12 @@ transcribe.py can parse them without needing Whisper.
 """
 from __future__ import annotations
 
+import argparse
 import json
 import shutil
 import subprocess
 import sys
+from fractions import Fraction
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -48,18 +50,11 @@ BLOCKED_PATTERNS: tuple[tuple[str, str], ...] = (
 )
 
 
-# YouTube gates most player clients' media formats behind a PO token, so no
-# single client is reliably usable and we used to try android, then ios, then
-# the default web client as three separate yt-dlp invocations. yt-dlp accepts a
-# comma-separated client list and merges the formats every listed client can see
-# into a single selection pass, so one invocation now covers all three.
-#
-# That removes up to two full extraction round trips per video (each one a fresh
-# negotiation with YouTube that also re-downloaded the subtitles and info.json
-# the next attempt promptly deleted), and it lets the format selector pick the
-# best format across all clients instead of the best one the first responding
-# client happened to offer.
-YOUTUBE_PLAYER_CLIENTS = "android,ios,web"
+# yt-dlp's JS-enabled web clients expose the full YouTube format ladder on
+# current installations. Keep the older clients as a fallback for environments
+# where those clients are blocked or do not expose a usable stream.
+YOUTUBE_PLAYER_CLIENTS = "default,web_safari,tv"
+YOUTUBE_FALLBACK_PLAYER_CLIENTS = "android,ios,web"
 
 
 def is_url(source: str) -> bool:
@@ -79,16 +74,24 @@ def is_youtube(url: str) -> bool:
 def player_client_attempts(url: str, *, authenticated: bool) -> list[str | None]:
     """Player-client values to try, in order, for `url`.
 
-    Public YouTube gets one merged multi-client attempt followed by a bare
-    fallback that lets yt-dlp apply its own current default client set (which
-    tracks upstream's best-known-good choice and may differ from our pinned
-    list). Everything else uses the default client only: non-YouTube sites
-    ignore the argument, and on authenticated YouTube the android/ios clients
-    ignore cookies, so pinning them would discard the session.
+    Public YouTube tries the JS-enabled web clients first, then the legacy
+    android/ios/web group, then yt-dlp's own defaults. Authenticated requests
+    use yt-dlp defaults because alternate clients may ignore cookies.
     """
     if is_youtube(url) and not authenticated:
-        return [YOUTUBE_PLAYER_CLIENTS, None]
+        return [YOUTUBE_PLAYER_CLIENTS, YOUTUBE_FALLBACK_PLAYER_CLIENTS, None]
     return [None]
+
+
+def _ytdlp_runtime_args() -> list[str]:
+    """Select yt-dlp's supported JavaScript runtime and EJS challenge scripts."""
+    deno = _resolve_tool("deno")
+    if deno:
+        return ["--js-runtimes", f"deno:{deno}", "--remote-components", "ejs:github"]
+    node = _resolve_tool("node")
+    if node:
+        return ["--js-runtimes", f"node:{node}", "--remote-components", "ejs:github"]
+    return []
 
 
 def resolve_local(path: str) -> dict:
@@ -421,7 +424,7 @@ def format_selector(max_width: int | None) -> str:
     ``max_width`` of ``None`` or ``0`` disables the cap entirely.
     """
     if not max_width or max_width <= 0:
-        return "bv*[height<=720]+ba/b[height<=720]/bv+ba/b"
+        return "bv*+ba/b"
     return (
         f"bv*[width<=?{max_width}]+ba/b[width<=?{max_width}]"
         "/bv*[height<=720]+ba/b[height<=720]"
@@ -438,6 +441,7 @@ def _build_ytdlp_cmd(
     cookies_from_browser: str | None,
     player_client: str | None,
     max_width: int | None = DEFAULT_DOWNLOAD_MAX_WIDTH,
+    selector: str | None = None,
 ) -> list[str]:
     """Assemble the yt-dlp command, optionally pinning a YouTube player client.
 
@@ -456,7 +460,8 @@ def _build_ytdlp_cmd(
     cmd = [
         ytdlp,
         "-N", "8",
-        "-f", format_selector(max_width),
+        "-f", selector or format_selector(max_width),
+        "-S", "proto:https",
         "--merge-output-format", "mp4",
         "--ignore-no-formats-error",
         "--write-info-json",
@@ -468,6 +473,7 @@ def _build_ytdlp_cmd(
         "--no-playlist",
         "-o", output_template,
     ]
+    cmd += _ytdlp_runtime_args()
     if player_client:
         cmd += ["--extractor-args", f"youtube:player-client={player_client}"]
     if cookie_path is not None:
@@ -476,6 +482,39 @@ def _build_ytdlp_cmd(
         cmd += ["--cookies-from-browser", cookies_from_browser]
     cmd.append(url)
     return cmd
+
+
+def _dash_only_selector(max_width: int | None) -> str:
+    """Format selector restricted to HTTP(S) media, excluding HLS playlists."""
+    if not max_width or max_width <= 0:
+        return "bv*[protocol^=http]+ba[protocol^=http]/b[protocol^=http]"
+    return (
+        f"bv*[protocol^=http][width<=?{max_width}]+ba[protocol^=http]"
+        f"/b[protocol^=http][width<=?{max_width}]"
+        f"/bv*[protocol^=http][height<=720]+ba[protocol^=http]"
+        f"/b[protocol^=http][height<=720]"
+        f"/bv*[protocol^=http]+ba[protocol^=http]/b[protocol^=http]"
+    )
+
+
+def _degraded_youtube_result(out_dir: Path, stderr: str) -> str | None:
+    """Describe an unexpectedly low-quality YouTube extraction, if detectable."""
+    if "sabr" in (stderr or "").lower():
+        return "yt-dlp reported YouTube's SABR-only streaming mode"
+    try:
+        info = json.loads((out_dir / "video.info.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    selected = info.get("requested_formats") or [info]
+    selected_ids = {str(fmt.get("format_id")) for fmt in selected}
+    selected_height = max((fmt.get("height") or 0 for fmt in selected), default=0)
+    available = info.get("formats") or []
+    has_higher = any((fmt.get("height") or 0) > selected_height for fmt in available)
+    if "18" in selected_ids and has_higher:
+        return "yt-dlp selected progressive format 18 despite higher-resolution formats"
+    if selected_height and selected_height <= 360 and has_higher:
+        return f"yt-dlp selected {selected_height}p despite higher-resolution formats"
+    return None
 
 
 def download_url(
@@ -490,8 +529,8 @@ def download_url(
     ytdlp = _resolve_tool("yt-dlp")
     if ytdlp is None:
         raise SystemExit(
-            "yt-dlp is not installed. Install with: brew install yt-dlp (macOS), "
-            "pipx install yt-dlp, or pip install --user yt-dlp"
+            "yt-dlp is not installed. Run scripts/setup.py or install with: "
+            "pipx install 'yt-dlp[default]' or pip install --user 'yt-dlp[default]'"
         )
     if cookies and cookies_from_browser:
         raise SystemExit("Use only one of --cookies or --cookies-from-browser")
@@ -528,17 +567,15 @@ def download_url(
 
     output_template = str(out_dir / "video.%(ext)s")
 
-    # Choose the client strategy. For public YouTube URLs with no cookies we pin
-    # a merged android,ios,web client list: android bypasses YouTube's
-    # n-challenge without a JavaScript runtime (which sandboxed/cloud yt-dlp
-    # installs lack), ios is a distinct extraction path that works when android
-    # is bot-flagged/429, and web covers what neither can see. yt-dlp merges
-    # their format lists in one pass, so this is a single invocation rather than
-    # three sequential ones. A bare fallback attempt (yt-dlp's own default
-    # clients) follows only if that produces no usable video. When cookies are
-    # supplied we honor the authenticated web session instead, since the
-    # android/ios clients ignore cookies.
+    # JS-enabled web clients expose YouTube's full format ladder. Legacy clients
+    # and yt-dlp defaults remain fallbacks for sources where those clients fail.
     attempts = player_client_attempts(url, authenticated=requested_auth != "none")
+    if is_youtube(url) and not _ytdlp_runtime_args():
+        print(
+            "[download] WARNING: no Deno or Node.js runtime found; "
+            "YouTube may offer only low-resolution formats",
+            file=sys.stderr,
+        )
 
     # A prior run may have been killed mid-download (the documented recovery path
     # is "re-run the exact same command"). yt-dlp resumes `.part` files by
@@ -557,6 +594,7 @@ def download_url(
 
     result: subprocess.CompletedProcess | None = None
     video: Path | None = None
+    degraded_reason: str | None = None
     used_client = "web"
     for player_client in attempts:
         client_label = player_client if player_client else "web"
@@ -573,24 +611,52 @@ def download_url(
         _write_source_marker(
             out_dir, url, requested_auth, client_label, complete=False, max_width=max_width
         )
-        cmd = _build_ytdlp_cmd(
-            ytdlp,
-            url,
-            output_template,
-            cookie_path=cookie_path,
-            cookies_from_browser=cookies_from_browser,
-            player_client=player_client,
-            max_width=max_width,
-        )
         if player_client:
             print(f"[download] trying yt-dlp player-client={player_client}", file=sys.stderr)
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        if result.stdout:
-            print(result.stdout, file=sys.stderr, end="" if result.stdout.endswith("\n") else "\n")
-        if result.stderr:
-            print(result.stderr, file=sys.stderr, end="" if result.stderr.endswith("\n") else "\n")
-        video = _valid_video(out_dir)
+        for selector in (format_selector(max_width), _dash_only_selector(max_width)):
+            if selector != format_selector(max_width):
+                if result is None or "conversion failed!" not in (
+                    (result.stderr or "") + (result.stdout or "")
+                ).lower():
+                    break
+                print("[download] merge failed; retrying with HTTP(S)-only formats", file=sys.stderr)
+                _clear_download_artifacts(out_dir, keep_partials=False)
+                _write_source_marker(
+                    out_dir, url, requested_auth, client_label, complete=False, max_width=max_width
+                )
+            cmd = _build_ytdlp_cmd(
+                ytdlp,
+                url,
+                output_template,
+                cookie_path=cookie_path,
+                cookies_from_browser=cookies_from_browser,
+                player_client=player_client,
+                max_width=max_width,
+                selector=selector,
+            )
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            if result.stdout:
+                print(result.stdout, file=sys.stderr, end="" if result.stdout.endswith("\n") else "\n")
+            if result.stderr:
+                print(result.stderr, file=sys.stderr, end="" if result.stderr.endswith("\n") else "\n")
+            conversion_failed = "conversion failed!" in (
+                (result.stderr or "") + (result.stdout or "")
+            ).lower()
+            video = None if conversion_failed else _valid_video(out_dir)
+            if video is not None:
+                break
         if video is not None:
+            degraded_reason = (
+                _degraded_youtube_result(out_dir, result.stderr or "")
+                if is_youtube(url)
+                else None
+            )
+            if degraded_reason:
+                print(f"[download] {degraded_reason}; trying another client", file=sys.stderr)
+                video = None
+                if player_client != attempts[-1]:
+                    continue
+                break
             used_client = client_label
             break
         if player_client != attempts[-1]:
@@ -600,6 +666,12 @@ def download_url(
                 file=sys.stderr,
             )
 
+    if video is None and degraded_reason:
+        raise SystemExit(
+            f"Download stopped because the available YouTube formats appear degraded: "
+            f"{degraded_reason}. Install a supported JavaScript runtime (Deno or Node.js), "
+            "then retry; if no higher-quality format is available, ask before accepting it."
+        )
     if video is None:
         out = (result.stdout or "") + "\n" + (result.stderr or "") if result else ""
         classified = classify_download_error(out)
@@ -661,8 +733,8 @@ def fetch_caption_tracks(
     ytdlp = _resolve_tool("yt-dlp")
     if ytdlp is None:
         raise SystemExit(
-            "yt-dlp is not installed. Install with: brew install yt-dlp (macOS), "
-            "pipx install yt-dlp, or pip install --user yt-dlp"
+            "yt-dlp is not installed. Run scripts/setup.py or install with: "
+            "pipx install 'yt-dlp[default]' or pip install --user 'yt-dlp[default]'"
         )
     if cookies and cookies_from_browser:
         raise SystemExit("Use only one of --cookies or --cookies-from-browser")
@@ -703,6 +775,7 @@ def fetch_caption_tracks(
             "--no-playlist",
             "-o", template,
         ]
+        cmd += _ytdlp_runtime_args()
         if write_info_json:
             cmd.append("--write-info-json")
         if player_client:
@@ -765,16 +838,17 @@ def list_caption_tracks(
     ytdlp = _resolve_tool("yt-dlp")
     if ytdlp is None:
         raise SystemExit(
-            "yt-dlp is not installed. Install with: brew install yt-dlp (macOS), "
-            "pipx install yt-dlp, or pip install --user yt-dlp"
+            "yt-dlp is not installed. Run scripts/setup.py or install with: "
+            "pipx install 'yt-dlp[default]' or pip install --user 'yt-dlp[default]'"
         )
     if cookies and cookies_from_browser:
         raise SystemExit("Use only one of --cookies or --cookies-from-browser")
     no_auth = not (cookies or cookies_from_browser)
-    attempts: list[str | None] = ["android", "ios", None] if (is_youtube(url) and no_auth) else [None]
+    attempts = player_client_attempts(url, authenticated=not no_auth)
     result: subprocess.CompletedProcess | None = None
     for player_client in attempts:
         cmd = [ytdlp, "-J", "--skip-download", "--ignore-no-formats-error", "--no-playlist"]
+        cmd += _ytdlp_runtime_args()
         if player_client:
             cmd += ["--extractor-args", f"youtube:player-client={player_client}"]
         if cookies:
@@ -817,8 +891,8 @@ def fetch_title(
     ytdlp = _resolve_tool("yt-dlp")
     if ytdlp is None:
         raise SystemExit(
-            "yt-dlp is not installed. Install with: brew install yt-dlp (macOS), "
-            "pipx install yt-dlp, or pip install --user yt-dlp"
+            "yt-dlp is not installed. Run scripts/setup.py or install with: "
+            "pipx install 'yt-dlp[default]' or pip install --user 'yt-dlp[default]'"
         )
     if cookies and cookies_from_browser:
         raise SystemExit("Use only one of --cookies or --cookies-from-browser")
@@ -833,6 +907,7 @@ def fetch_title(
 
     for player_client in attempts:
         cmd = [ytdlp, "--no-playlist", "--get-title"]
+        cmd += _ytdlp_runtime_args()
         if player_client:
             cmd += ["--extractor-args", f"youtube:player-client={player_client}"]
         if cookie_path is not None:
@@ -873,9 +948,404 @@ def download(
     return resolve_local(source)
 
 
-if __name__ == "__main__":
-    if len(sys.argv) < 3:
+def _best_format_selector(container: str, audio_lang: str) -> str:
+    audio_filter = (
+        "[format_note*=original]"
+        if audio_lang == "original"
+        else f"[language^={audio_lang}]"
+    )
+    audio_filter += "[format_note!*=DRC]"
+    if container == "mp4":
+        return (
+            f"bv*[vcodec^=avc1]+ba{audio_filter}[acodec^=mp4a]"
+            f"/b[vcodec^=avc1][acodec^=mp4a]{audio_filter}"
+        )
+    return f"bv*+ba{audio_filter}/b{audio_filter}"
+
+
+def _best_dash_selector(container: str, audio_lang: str) -> str:
+    audio_filter = (
+        "[format_note*=original]"
+        if audio_lang == "original"
+        else f"[language^={audio_lang}]"
+    )
+    audio_filter = f"[protocol^=http]{audio_filter}[format_note!*=DRC]"
+    if container == "mp4":
+        return (
+            "bv*[protocol^=http][vcodec^=avc1]+ba"
+            f"{audio_filter}[acodec^=mp4a]"
+            f"/b[protocol^=http][vcodec^=avc1][acodec^=mp4a]{audio_filter}"
+        )
+    return f"bv*[protocol^=http]+ba{audio_filter}/b[protocol^=http]{audio_filter}"
+
+
+def _format_parts(info: dict) -> tuple[dict, dict | None, list[dict]]:
+    formats = info.get("requested_formats") or [info]
+    video = next(
+        (fmt for fmt in formats if fmt.get("vcodec") not in (None, "none")),
+        None,
+    )
+    audio = next(
+        (fmt for fmt in formats if fmt.get("acodec") not in (None, "none")),
+        None,
+    )
+    return video or {}, audio, formats
+
+
+def _audio_matches(audio: dict | None, audio_lang: str, container: str) -> bool:
+    if not audio or "drc" in str(audio.get("format_note") or "").lower():
+        return False
+    if container == "mp4" and not str(audio.get("acodec") or "").startswith("mp4a"):
+        return False
+    if audio_lang == "original":
+        return "original" in str(audio.get("format_note") or "").lower()
+    return str(audio.get("language") or "").lower().startswith(audio_lang.lower())
+
+
+def _fps(fmt: dict) -> float | None:
+    value = fmt.get("fps")
+    try:
+        return float(value) if value else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _format_summary(fmt: dict, *, kind: str) -> str:
+    fields = [
+        f"id={fmt.get('format_id', '?')}",
+        f"codec={fmt.get('vcodec' if kind == 'video' else 'acodec', '?')}",
+        f"protocol={fmt.get('protocol', '?')}",
+    ]
+    if kind == "video":
+        fields += [
+            f"resolution={fmt.get('width', '?')}x{fmt.get('height', '?')}",
+            f"fps={fmt.get('fps', '?')}",
+        ]
+    else:
+        fields += [
+            f"language={fmt.get('language') or '?'}",
+            f"track={fmt.get('format_note') or '?'}",
+        ]
+    return ", ".join(fields)
+
+
+def _inspect_best_format(
+    ytdlp: str,
+    url: str,
+    *,
+    container: str,
+    audio_lang: str,
+    player_client: str | None,
+    cookie_path: Path | None,
+    cookies_from_browser: str | None,
+) -> tuple[dict | None, subprocess.CompletedProcess]:
+    cmd = [
+        ytdlp, "-J", "--skip-download", "--ignore-no-formats-error", "--no-playlist",
+        "-f", _best_format_selector(container, audio_lang),
+        "-S", "res,fps,proto:https,br,codec:h264",
+    ]
+    cmd += _ytdlp_runtime_args()
+    if player_client:
+        cmd += ["--extractor-args", f"youtube:player-client={player_client}"]
+    if cookie_path:
+        cmd += ["--cookies", str(cookie_path)]
+    if cookies_from_browser:
+        cmd += ["--cookies-from-browser", cookies_from_browser]
+    cmd.append(url)
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.stderr:
+        print(result.stderr, file=sys.stderr, end="" if result.stderr.endswith("\n") else "\n")
+    if result.returncode or not result.stdout.strip():
+        return None, result
+    try:
+        return json.loads(result.stdout), result
+    except json.JSONDecodeError:
+        return None, result
+
+
+def _probe_copy(path: Path) -> dict:
+    ffprobe = _resolve_tool("ffprobe")
+    ffmpeg = _resolve_tool("ffmpeg")
+    if not ffprobe or not ffmpeg:
+        raise SystemExit("ffprobe and ffmpeg are required to verify the downloaded copy")
+    result = subprocess.run(
+        [
+            ffprobe, "-v", "error", "-show_streams", "-show_format", "-of", "json", str(path),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    if result.returncode:
+        raise SystemExit(f"ffprobe could not read the downloaded file: {result.stderr.strip()[:300]}")
+    try:
+        metadata = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"ffprobe returned invalid metadata: {exc}") from exc
+    streams = metadata.get("streams", [])
+    video = next((s for s in streams if s.get("codec_type") == "video"), None)
+    audio = next((s for s in streams if s.get("codec_type") == "audio"), None)
+    if not video:
+        raise SystemExit("The downloaded file has no video stream")
+    duration = float((metadata.get("format") or {}).get("duration") or 0)
+    if not duration:
+        duration = float(video.get("duration") or 0)
+    if not duration:
+        raise SystemExit("ffprobe could not determine the downloaded video's duration")
+    packet_sizes = subprocess.run(
+        [
+            ffprobe, "-v", "error", "-select_streams", "v:0",
+            "-show_entries", "packet=size", "-of", "csv=p=0", str(path),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    video_bitrate = None
+    if packet_sizes.returncode == 0:
+        try:
+            bits = sum(int(line) for line in packet_sizes.stdout.splitlines() if line.strip().isdigit())
+            video_bitrate = round(bits * 8 / duration)
+        except ValueError:
+            pass
+    if video_bitrate is None and video.get("bit_rate"):
+        video_bitrate = int(video["bit_rate"])
+    frame_rate = video.get("avg_frame_rate") or video.get("r_frame_rate")
+    try:
+        frame_rate = round(float(Fraction(frame_rate)), 3)
+    except (ValueError, ZeroDivisionError, TypeError):
+        frame_rate = None
+    midpoint = max(0, duration / 2)
+    decode = subprocess.run(
+        [
+            ffmpeg, "-v", "error", "-ss", f"{midpoint:.3f}", "-i", str(path),
+            "-t", "2", "-map", "0:v:0", "-map", "0:a:0?", "-f", "null", "-",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    if decode.returncode:
+        raise SystemExit(f"Short decode test failed: {decode.stderr.strip()[:300]}")
+    return {
+        "path": str(path),
+        "size_bytes": path.stat().st_size,
+        "duration_seconds": round(duration, 3),
+        "width": video.get("width"),
+        "height": video.get("height"),
+        "video_codec": video.get("codec_name"),
+        "audio_codec": audio.get("codec_name") if audio else None,
+        "fps": frame_rate,
+        "video_bitrate_bps": video_bitrate,
+        "decode_test": "passed (2 seconds at the midpoint)",
+    }
+
+
+def download_best_copy(
+    url: str,
+    out_dir: Path,
+    *,
+    container: str = "mkv",
+    audio_lang: str = "original",
+    subs: str = "none",
+    allow_low_quality: bool = False,
+    cookies: str | None = None,
+    cookies_from_browser: str | None = None,
+    temp_dir: Path | None = None,
+) -> dict:
+    if not is_url(url):
+        raise SystemExit("--best requires an HTTP(S) URL")
+    if container not in {"mkv", "mp4"}:
+        raise SystemExit("--container must be mkv or mp4")
+    if subs not in {"none", "srt", "srt+transcript"}:
+        raise SystemExit("--subs must be none, srt, or srt+transcript")
+    if not audio_lang or audio_lang.strip() != audio_lang:
+        raise SystemExit("--audio-lang must be 'original' or a language code")
+    if audio_lang != "original" and any(
+        not (character.isalnum() or character == "-") for character in audio_lang
+    ):
+        raise SystemExit("--audio-lang must be 'original' or a simple language code")
+    if cookies and cookies_from_browser:
+        raise SystemExit("Use only one of --cookies or --cookies-from-browser")
+    cookie_path = Path(cookies).expanduser().resolve() if cookies else None
+    if cookie_path and not cookie_path.exists():
+        raise SystemExit(f"Cookie file not found: {cookie_path}")
+    ytdlp = _resolve_tool("yt-dlp")
+    if not ytdlp:
+        raise SystemExit(
+            "yt-dlp is not installed. Run scripts/setup.py or install yt-dlp[default]."
+        )
+    if is_youtube(url) and not _ytdlp_runtime_args():
+        print(
+            "[download] WARNING: no Deno or Node.js runtime found; YouTube may expose "
+            "only low-resolution formats",
+            file=sys.stderr,
+        )
+    out_dir = out_dir.expanduser().resolve()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    temp_dir = (temp_dir or (Path.home() / "dltmp")).expanduser().resolve()
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    attempts = player_client_attempts(url, authenticated=bool(cookies or cookies_from_browser))
+    selected_info: dict | None = None
+    selected_client: str | None = None
+    selected_video: dict = {}
+    selected_audio: dict | None = None
+    last_error = ""
+    low_height: int | None = None
+    for client in attempts:
+        info, result = _inspect_best_format(
+            ytdlp, url, container=container, audio_lang=audio_lang,
+            player_client=client, cookie_path=cookie_path,
+            cookies_from_browser=cookies_from_browser,
+        )
+        if not info:
+            last_error = (result.stderr or result.stdout or "").strip()
+            continue
+        video, audio, formats = _format_parts(info)
+        if not video or not audio or not _audio_matches(audio, audio_lang, container):
+            last_error = (
+                f"No {audio_lang} audio stream satisfies the requested "
+                f"{container.upper()} codec requirements"
+            )
+            continue
+        height = max((fmt.get("height") or 0 for fmt in formats), default=0)
+        selected_info, selected_client = info, client
+        selected_video, selected_audio = video, audio
+        if height >= 720 or allow_low_quality:
+            break
+        print(
+            f"[download] available best stream is only {height or 'unknown'}p; "
+            "checking another YouTube client",
+            file=sys.stderr,
+        )
+        low_height = height or None
+        selected_info = None
+    if selected_info is None:
+        if last_error and "audio stream" in last_error:
+            raise SystemExit(last_error)
+        if low_height is not None:
+            raise SystemExit(
+                f"The best available stream is only {low_height}p, below 720p. Ask the user "
+                "before accepting a lower-quality copy; pass --allow-low-quality only after approval."
+            )
+        raise SystemExit(
+            "yt-dlp could not select a compatible video and original-audio format."
+            + (f" {last_error[:300]}" if last_error else "")
+        )
+
+    print(
+        f"[download] title: {selected_info.get('title') or 'Unknown'}\n"
+        f"[download] channel: {selected_info.get('channel') or selected_info.get('uploader') or 'Unknown'}\n"
+        f"[download] duration: {selected_info.get('duration_string') or selected_info.get('duration') or 'Unknown'}\n"
+        f"[download] video: {_format_summary(selected_video, kind='video')}\n"
+        f"[download] audio: {_format_summary(selected_audio or {}, kind='audio')}",
+        file=sys.stderr,
+    )
+    requested_formats = selected_info.get("requested_formats") or [selected_info]
+    format_ids = "+".join(str(fmt["format_id"]) for fmt in requested_formats if fmt.get("format_id"))
+    if not format_ids:
+        raise SystemExit("yt-dlp did not identify the selected format IDs")
+    template = str(out_dir / "%(title)s [%(id)s].%(ext)s")
+    download_cmd = [
+        ytdlp, "--no-playlist", "--no-progress", "--no-overwrites",
+        "-f", format_ids, "-S", "res,fps,proto:https,br,codec:h264",
+        "--merge-output-format", container,
+        "-P", f"temp:{temp_dir}",
+        "-o", template,
+        "--print", "after_move:filepath",
+    ]
+    download_cmd += _ytdlp_runtime_args()
+    if selected_client:
+        download_cmd += ["--extractor-args", f"youtube:player-client={selected_client}"]
+    if cookie_path:
+        download_cmd += ["--cookies", str(cookie_path)]
+    if cookies_from_browser:
+        download_cmd += ["--cookies-from-browser", cookies_from_browser]
+    download_cmd.append(url)
+    result = subprocess.run(download_cmd, capture_output=True, text=True)
+    if result.stderr:
+        print(result.stderr, file=sys.stderr, end="" if result.stderr.endswith("\n") else "\n")
+    if result.returncode and "conversion failed!" in (
+        (result.stderr or "") + (result.stdout or "")
+    ).lower():
+        print("[download] merge failed; retrying with HTTP(S)-only formats", file=sys.stderr)
+        download_cmd[download_cmd.index("-f") + 1] = _best_dash_selector(container, audio_lang)
+        result = subprocess.run(download_cmd, capture_output=True, text=True)
+        if result.stderr:
+            print(result.stderr, file=sys.stderr, end="" if result.stderr.endswith("\n") else "\n")
+    if result.returncode:
+        raise SystemExit(f"yt-dlp failed (exit {result.returncode}): {(result.stderr or '').strip()[-600:]}")
+    video_path = next(
+        (Path(line.strip()) for line in reversed((result.stdout or "").splitlines())
+         if Path(line.strip()).is_file()),
+        None,
+    )
+    if video_path is None:
+        raise SystemExit("yt-dlp reported success but did not return the downloaded file path")
+    verified = _probe_copy(video_path)
+    if (verified.get("height") or 0) < 720 and not allow_low_quality:
+        raise SystemExit(
+            f"The downloaded file is only {verified.get('height') or 'unknown'}p. Ask before accepting "
+            "this quality; pass --allow-low-quality only after approval."
+        )
+    if subs != "none":
+        from captions import download_captions
+
+        summary = download_captions(
+            url,
+            out_dir,
+            langs="en",
+            formats=["srt", "txt"] if subs == "srt+transcript" else ["srt"],
+            cookies=cookies,
+            cookies_from_browser=cookies_from_browser,
+        )
+        verified["captions"] = summary["files"]
+    return {
+        "title": selected_info.get("title"),
+        "channel": selected_info.get("channel") or selected_info.get("uploader"),
+        "duration_seconds": selected_info.get("duration"),
+        "video": verified,
+    }
+
+
+def main(argv: list[str] | None = None) -> int:
+    argv = sys.argv[1:] if argv is None else argv
+    if "--best" in argv:
+        parser = argparse.ArgumentParser(
+            prog="download.py --best",
+            description="Download and verify a best-quality local video copy without analysis.",
+        )
+        parser.add_argument("--best", action="store_true", required=True)
+        parser.add_argument("--source", required=True, help="Video URL")
+        parser.add_argument("--out-dir", required=True, help="Final destination directory")
+        parser.add_argument("--container", choices=("mkv", "mp4"), default="mkv")
+        parser.add_argument("--audio-lang", default="original", help="original or a language code")
+        parser.add_argument("--subs", choices=("none", "srt", "srt+transcript"), default="none")
+        parser.add_argument("--allow-low-quality", action="store_true")
+        parser.add_argument("--cookies")
+        parser.add_argument("--cookies-from-browser")
+        parser.add_argument("--temp-dir", default=str(Path.home() / "dltmp"))
+        args = parser.parse_args(argv)
+        result = download_best_copy(
+            args.source,
+            Path(args.out_dir),
+            container=args.container,
+            audio_lang=args.audio_lang,
+            subs=args.subs,
+            allow_low_quality=args.allow_low_quality,
+            cookies=args.cookies,
+            cookies_from_browser=args.cookies_from_browser,
+            temp_dir=Path(args.temp_dir),
+        )
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+        return 0
+    if len(argv) < 2:
         print("usage: download.py <url-or-path> <out-dir>", file=sys.stderr)
-        raise SystemExit(2)
-    result = download(sys.argv[1], Path(sys.argv[2]))
+        return 2
+    result = download(argv[0], Path(argv[1]))
     print(json.dumps(result, indent=2))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

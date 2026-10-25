@@ -104,11 +104,29 @@ OPENAI_API_KEY=
 
 
 def _which(name: str) -> str | None:
-    return _resolve_tool(name)
+    resolved = _resolve_tool(name)
+    if resolved:
+        return resolved
+    if name == "deno":
+        user_deno = Path.home() / ".deno" / "bin" / "deno"
+        if user_deno.is_file():
+            return str(user_deno)
+    return None
 
 
 def _check_binaries() -> list[str]:
-    return [b for b in REQUIRED_BINARIES if not _which(b)]
+    missing = [b for b in REQUIRED_BINARIES if not _which(b)]
+    if not (_which("deno") or _which("node")):
+        missing.append("JavaScript runtime (Deno or Node.js)")
+    return missing
+
+
+def _js_runtime() -> dict[str, str] | None:
+    for name in ("deno", "node"):
+        path = _which(name)
+        if path:
+            return {"name": name, "path": path}
+    return None
 
 
 def _check_file_permissions(path: Path) -> None:
@@ -239,6 +257,9 @@ def _brew_pkg(missing: list[str]) -> list[str]:
         elif bin_name in ("node", "npm"):
             if "node" not in pkgs:
                 pkgs.append("node")
+        elif bin_name == "JavaScript runtime (Deno or Node.js)":
+            if "deno" not in pkgs:
+                pkgs.append("deno")
         else:
             pkgs.append(bin_name)
     return pkgs
@@ -246,19 +267,33 @@ def _brew_pkg(missing: list[str]) -> list[str]:
 
 def _install_macos(missing: list[str]) -> tuple[bool, str]:
     if _which("brew") is None:
+        brew_pkgs = _brew_pkg([item for item in missing if item != "yt-dlp"])
+        manual = []
+        if brew_pkgs:
+            manual.append(f"`brew install {' '.join(brew_pkgs)}`")
+        if "yt-dlp" in missing:
+            manual.append("`pipx install 'yt-dlp[default]'`")
         return False, (
             "Homebrew is not installed. Install it from https://brew.sh, then re-run setup. "
-            "Or install manually: `brew install " + " ".join(_brew_pkg(missing)) + "`"
+            + ("Or install manually: " + " and ".join(manual) if manual else "")
         )
-    pkgs = _brew_pkg(missing)
+    pip_ytdlp = "yt-dlp" in missing
+    pkgs = _brew_pkg([item for item in missing if item != "yt-dlp"])
     if not pkgs:
-        return True, "nothing to install"
-    cmd = ["brew", "install", *pkgs]
-    print(f"[setup] running: {' '.join(cmd)}", file=sys.stderr)
-    result = subprocess.run(cmd)
-    if result.returncode != 0:
-        return False, f"brew install failed with exit code {result.returncode}"
-    return True, f"installed via brew: {', '.join(pkgs)}"
+        brew_msg = "nothing to install"
+    else:
+        cmd = ["brew", "install", *pkgs]
+        print(f"[setup] running: {' '.join(cmd)}", file=sys.stderr)
+        result = subprocess.run(cmd)
+        if result.returncode != 0:
+            return False, f"brew install failed with exit code {result.returncode}"
+        brew_msg = f"installed via brew: {', '.join(pkgs)}"
+    if pip_ytdlp:
+        ok, msg = _install_ytdlp()
+        if not ok:
+            return False, f"{brew_msg}; yt-dlp install failed: {msg}"
+        return True, f"{brew_msg}; {msg}"
+    return True, brew_msg
 
 
 def _path_export_hint(tool: str) -> str | None:
@@ -268,7 +303,7 @@ def _path_export_hint(tool: str) -> str | None:
     Python userbase bin, which isn't on PATH in fresh sandboxes. Surfacing the
     exact export line is what keeps the very next bash call from failing.
     """
-    resolved = _resolve_tool(tool)
+    resolved = _which(tool)
     if not resolved:
         return None
     bindir = Path(resolved).resolve().parent
@@ -307,11 +342,47 @@ def _install_ytdlp() -> tuple[bool, str]:
         return True, "already installed"
     if shutil.which("pipx"):
         result = subprocess.run(
-            ["pipx", "install", "yt-dlp"], capture_output=True, text=True
+            ["pipx", "install", "yt-dlp[default]"], capture_output=True, text=True
         )
         if result.returncode == 0:
-            return True, "installed yt-dlp (pipx)"
-    return _pip_install_user("yt-dlp")
+            return True, "installed yt-dlp[default] (pipx)"
+    return _pip_install_user("yt-dlp[default]")
+
+
+def _install_deno() -> tuple[bool, str]:
+    """Install Deno into the user's home directory without sudo."""
+    if _which("deno"):
+        return True, "already installed"
+    curl = shutil.which("curl")
+    if not curl:
+        return False, "curl is required to install Deno"
+    try:
+        script = subprocess.run(
+            [curl, "-fsSL", "https://deno.land/install.sh"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        if script.returncode:
+            return False, f"could not download Deno installer (exit {script.returncode})"
+        env = {**os.environ, "DENO_INSTALL": str(Path.home() / ".deno")}
+        result = subprocess.run(
+            ["sh", "-s", "--", "-y"],
+            input=script.stdout,
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=180,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return False, f"Deno install failed: {exc}"
+    if result.returncode:
+        detail = (result.stderr or result.stdout).strip()[:200]
+        return False, f"Deno install failed: {detail or f'exit {result.returncode}'}"
+    deno = Path.home() / ".deno" / "bin" / "deno"
+    if deno.exists():
+        return True, f"installed Deno at {deno}"
+    return False, "Deno installer completed but ~/.deno/bin/deno was not found"
 
 
 def _install_hint_linux(missing: list[str]) -> str:
@@ -320,9 +391,14 @@ def _install_hint_linux(missing: list[str]) -> str:
     if "ffmpeg" in pkgs:
         hints.append("apt: `sudo apt install ffmpeg` or dnf: `sudo dnf install ffmpeg`")
     if "yt-dlp" in pkgs:
-        hints.append("`pipx install yt-dlp` (recommended) or `pip install --user yt-dlp`")
+        hints.append(
+            "`pipx install 'yt-dlp[default]'` (recommended) or "
+            "`pip install --user 'yt-dlp[default]'`"
+        )
     if "node" in pkgs:
         hints.append("apt: `sudo apt install nodejs npm` or use nvm (https://github.com/nvm-sh/nvm)")
+    if "JavaScript runtime (Deno or Node.js)" in missing:
+        hints.append("Deno: `curl -fsSL https://deno.land/install.sh | sh -s -- -y`")
     return "\n  ".join(hints) if hints else "nothing to install"
 
 
@@ -332,9 +408,14 @@ def _install_hint_windows(missing: list[str]) -> str:
     if "ffmpeg" in pkgs:
         hints.append("winget: `winget install Gyan.FFmpeg`")
     if "yt-dlp" in pkgs:
-        hints.append("winget: `winget install yt-dlp.yt-dlp` or pip: `pip install --user yt-dlp`")
+        hints.append(
+            "winget: `winget install yt-dlp.yt-dlp` or "
+            "pip: `pip install --user 'yt-dlp[default]'`"
+        )
     if "node" in pkgs:
         hints.append("winget: `winget install OpenJS.NodeJS`")
+    if "JavaScript runtime (Deno or Node.js)" in missing:
+        hints.append("Deno: https://deno.com/install")
     return "\n  ".join(hints) if hints else "nothing to install"
 
 
@@ -463,8 +544,11 @@ def _status() -> dict:
 
     return {
         "status": status,
+        "python_version": platform.python_version(),
+        "yt_dlp_python_deprecation_warning": sys.version_info[:2] == (3, 10),
         "first_run": is_first_run(),
         "missing_binaries": missing,
+        "js_runtime": _js_runtime(),
         "whisper_backend": backend,
         "has_api_key": has_key,
         "docx_installed": docx_installed,
@@ -496,6 +580,8 @@ def cmd_check() -> int:
     parts = []
     if s["missing_binaries"]:
         parts.append(f"missing binaries: {', '.join(s['missing_binaries'])}")
+    if not s["js_runtime"]:
+        parts.append("YouTube quality may be limited without Deno or Node.js")
     if not s["docx_installed"]:
         parts.append("missing npm package: docx")
     installer = Path(__file__).resolve()
@@ -517,10 +603,19 @@ def cmd_json() -> int:
 def cmd_install() -> int:
     missing = _check_binaries()
     installed_deps = False
-    if missing:
-        system = platform.system()
+    system = platform.system()
+    if sys.version_info[:2] == (3, 10):
+        print(
+            "[setup] WARNING: yt-dlp may emit a Python 3.10 deprecation warning; "
+            "use Python 3.11+ when available.",
+            file=sys.stderr,
+        )
+    if missing or (system in {"Darwin", "Linux"} and not _which("deno")):
         if system == "Darwin":
-            ok, msg = _install_macos(missing)
+            install_items = list(missing)
+            if not _which("deno"):
+                install_items.append("JavaScript runtime (Deno or Node.js)")
+            ok, msg = _install_macos(install_items)
             print(f"[setup] {msg}", file=sys.stderr)
             if not ok:
                 return 2
@@ -546,6 +641,18 @@ def cmd_install() -> int:
                         f"[setup] yt-dlp is not on PATH yet. Add it with:\n  {hint}",
                         file=sys.stderr,
                     )
+            if "JavaScript runtime (Deno or Node.js)" in missing:
+                ok, msg = _install_deno()
+                print(f"[setup] JavaScript runtime: {msg}", file=sys.stderr)
+                hint = _path_export_hint("deno")
+                if ok and hint:
+                    print(f"[setup] Deno is not on PATH yet. Add it with:\n  {hint}", file=sys.stderr)
+            elif not _which("deno"):
+                ok, msg = _install_deno()
+                print(f"[setup] Deno: {msg}", file=sys.stderr)
+                hint = _path_export_hint("deno")
+                if ok and hint:
+                    print(f"[setup] Deno is not on PATH yet. Add it with:\n  {hint}", file=sys.stderr)
             still_missing = _check_binaries()
             if still_missing:
                 print(
@@ -601,7 +708,7 @@ def cmd_install() -> int:
     # ffmpeg/ffprobe/yt-dlp by absolute path), but the agent's own bare `node` /
     # `npm` calls and any new shell still need them on PATH.
     path_hints = []
-    for binary in REQUIRED_BINARIES:
+    for binary in [*REQUIRED_BINARIES, "deno"]:
         hint = _path_export_hint(binary)
         if hint and hint not in path_hints:
             path_hints.append(hint)

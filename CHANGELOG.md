@@ -4,6 +4,16 @@ All notable changes to `/analyze-video` are documented here.
 
 ## [Unreleased]
 
+### Added
+- **Best-copy download-only mode.** `download.py --best` downloads a local copy without running frame extraction or the docx pipeline, asks for explicit deliverable choices in the skill flow, supports MKV or H.264/AAC-only MP4, prefers original-language audio, optionally saves captions/transcript, and verifies the final file with ffprobe plus a short decode test.
+- **JavaScript-enabled YouTube extraction.** Setup checks for Deno or Node.js, installs yt-dlp with its `default` extras, and installs Deno without sudo on Linux when needed. Downloads use JS-enabled player clients and retry detected SABR/degraded results rather than silently accepting 360p.
+
+### Fixed
+- `--download-max-width 0` now selects the best available format without retaining the former 720p fallback cap.
+
+### Changed
+- Analysis downloads prefer HTTP(S)/DASH formats and retry once with a DASH-only selector after a merge failure. The default 854px analysis width budget is unchanged.
+
 ## [1.9.0] - 2026-10-24
 
 ### Changed

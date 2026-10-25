@@ -1,6 +1,11 @@
 ---
 name: analyze-video
-description: Use when the user wants to analyze one or more videos (URLs or local files) and produce a Word document with embedded frames and a written timestamp-based analysis. Triggers on "analyze this video", "make a report from this video", "write up this YouTube link", "document what's in these videos", "analyze these clips", "video analysis", or any request that includes video URLs or local video paths and asks for a written deliverable. Also use when the user only wants caption/subtitle files (SRT, VTT, or plain-text transcript) downloaded from a video URL: "download the captions", "get the subtitles", "grab the SRT", "what subtitle languages does this have".
+description: >-
+  Analyze video URLs and local files into timestamped Word reports. Also handle
+  caption downloads and best-quality local video copies. Triggers include
+  "analyze this video", "make a report from this video", "download the captions",
+  "get the subtitles", "download this video", "get me a local copy",
+  "best quality copy", and "save this YouTube video".
 allowed-tools: Bash, Read, Write, AskUserQuestion
 homepage: https://github.com/evillollive/Analyze-Video-Skill
 repository: https://github.com/evillollive/Analyze-Video-Skill
@@ -50,6 +55,30 @@ Stdout is a JSON array with one entry per source: `files` (`lang`, `format`, `pa
 
 Do not offer cleanup or PDF steps in this mode. Report the file paths and stop.
 
+## Download-only mode
+
+When the user asks for a local copy without analysis, skip setup of the docx stack, frame extraction, contact sheets, and the report pipeline. Before downloading, ask only for unanswered choices:
+
+1. Deliverable: video file only, or video file plus analysis.
+2. Container: MKV (any compatible source codec), edit-friendly MP4 (H.264 video + AAC audio), or both.
+3. Captions: none, SRT, or SRT plus a timestamped transcript.
+4. Destination folder.
+
+Use the user's chosen destination for final files. Keep yt-dlp temporary fragments outside synced folders (in Cowork, use `"$HOME/dltmp"` as the temp directory). The standalone script requires only yt-dlp, ffprobe, and ffmpeg:
+
+```bash
+python3 "${SKILL_DIR}/scripts/download.py" --best \
+  --source "<url>" --out-dir "<destination>" \
+  --container mkv --audio-lang original --subs none \
+  --temp-dir "$HOME/dltmp"
+```
+
+Use `--audio-lang <code>` only when the user requests a specific language. The default `original` selects the track yt-dlp labels original and excludes DRC variants. MP4 selects H.264 + AAC streams without re-encoding video; if those exact compatible streams are unavailable, explain that and stop rather than silently re-encoding. For "both", run the selected container choices separately.
+
+The script prints the title, channel, duration, and selected streams before downloading. If the best available stream is below 720p, stop and ask whether the user wants to accept it; only after approval retry with `--allow-low-quality`. After downloading, report actual stream codecs, resolution, fps, and video bitrate measured from the downloaded packets, plus the short decode-test result. Do not use yt-dlp's estimated `~` sizes or bitrates to choose a format.
+
+If the user also wants analysis, first download the local file, then run the normal analysis flow against that file. Do not analyze or build a `.docx` when the user asked for the file only.
+
 ## Step 0: Setup preflight
 
 First, resolve the skill directory. Most runners set a skill-dir env var such as `COPILOT_SKILL_DIR` (GitHub Copilot) or `CLAUDE_SKILL_DIR` (Claude), but some sandboxes don't. Resolve in priority order and, if none is set, fall back to the directory this `SKILL.md` lives in:
@@ -64,6 +93,9 @@ Use `"$SKILL_DIR/scripts/..."` consistently. Never hardcode `~/.cache/analyze-vi
 
 Execution host contract:
 - `setup.py` and `process.py` must run on the same host environment.
+- In Cowork, `device_bash` is an aarch64 Ubuntu 22.04 VM on the user's Mac, not macOS. Setup follows its Linux path. It has been observed with ffmpeg 4.4.2, Python 3.10, and Node 22; surface yt-dlp's Python 3.10 deprecation warning rather than hiding it.
+- Cowork downloads can reach YouTube without the bot check that blocks cloud containers. Run yt-dlp in Cowork rather than the cloud. Calls are limited to about 180 seconds and background processes are killed when a call returns. For a long transfer, run in the foreground with `timeout -s INT 165`, then rerun the same command to resume yt-dlp's fragments.
+- Keep Cowork fragment/temp files outside synced folders (`--temp-dir "$HOME/dltmp"`); put final files in the user's Dropbox destination, not VM scratch. The user must choose the Dropbox folder; never assume an arbitrary Dropbox path.
 - If preflight/setup ran in a sandbox but processing will run host-side (for example via Desktop Commander), run preflight again on the host before processing:
 
 ```bash
@@ -87,8 +119,9 @@ python3 "${SKILL_DIR}/scripts/setup.py"
 ```
 
 The installer:
-- macOS with Homebrew: installs missing `ffmpeg`, `yt-dlp`, Node.js/npm dependencies, and the `docx` npm module.
+- macOS with Homebrew: installs missing `ffmpeg`, `yt-dlp`, Node.js/npm dependencies, Deno if it is missing, and the `docx` npm module.
 - Linux: auto-installs the no-sudo dependencies (`yt-dlp` via `pipx`/`pip --user`, and the `docx` npm module into `~/.cache/analyze-video`). For packages that need root (`ffmpeg`, Node.js/npm), it prints exact install commands. If `yt-dlp` lands in a user-local bin that isn't on `PATH`, setup prints the exact `export PATH=...` line; run it before invoking the pipeline.
+- Installs yt-dlp with its `default` extras and checks for a supported JavaScript runtime (Deno or Node.js). YouTube extraction uses that runtime and requests the EJS challenge scripts with `--remote-components ejs:github`; if no runtime is available, setup warns that YouTube quality may be limited.
 - Windows: prints exact install commands.
 - Scaffolds `~/.config/analyze-video/.env` at mode 0600.
 - Marks setup complete once required local dependencies are ready.
@@ -444,14 +477,14 @@ If cleanup requested, remove per-video working directories and any spec/build sc
 - **Setup/process host mismatch**: if setup was run in one environment (for example Linux sandbox) and processing will run in another (for example Mac host), re-run `python3 "${SKILL_DIR}/scripts/setup.py" --check` on the actual execution host before `process.py`.
 - **Runner timeout on long videos**: if the current shell has a short timeout budget, run `process.py` in a host-side shell tool that supports long-running commands, then resume from generated manifests.
 - **Interrupted download**: re-run the exact same command. A download killed partway through resumes from the bytes already on disk rather than starting over, so a timed-out or dropped transfer does not re-fetch the whole video. Use `--force` only when the partial data should be discarded.
-- **Download blocked by login, age gate, bot check, members-only, or private access**: explain the specific access issue. For public YouTube URLs, `download.py` pins a merged `android,ios,web` player-client list in a single yt-dlp call: android bypasses YouTube's n-challenge without a JavaScript runtime and avoids the 403s the web client hits from server/cloud IPs, ios is a separate extraction path that often works when android is bot-flagged or 429-rate-limited, and web covers what neither can see. yt-dlp merges the formats all three clients can see into one selection pass, so this replaces what used to be three sequential attempts; only if it produces no usable video does a second attempt run with yt-dlp's own default clients. Every attempt runs with `--ignore-no-formats-error` so that when a client's media formats are gated behind a PO token, yt-dlp still writes the subtitle tracks it located instead of aborting with "Requested format is not available". If access still fails and the user can view the video and authorizes it, retry with `--cookies-from-browser <browser>` or `--cookies <file>`. Otherwise ask for a local file. Note: `--cookies-from-browser` only works when yt-dlp runs on the SAME OS as the browser. In a Linux/cloud sandbox it cannot read a macOS/Windows browser's cookie store — and public YouTube itself is frequently bot-flagged (429) from datacenter IPs — so run yt-dlp host-side (e.g. via a Mac/Windows shell tool) for both cookie-based access and bot-check avoidance, then point `process.py` at the resulting local file.
+- **Download blocked by login, age gate, bot check, members-only, or private access**: explain the specific access issue. Public YouTube attempts use JS-enabled `default,web_safari,tv` clients first, then try `android,ios,web` and yt-dlp's defaults. A detected SABR-only or unexpectedly capped 360p result is retried with another client; if still degraded, stop and explain instead of silently accepting it. Every attempt uses `--ignore-no-formats-error` so gated media formats do not prevent subtitle writes. If access still fails and the user can view the video and authorizes it, retry with `--cookies-from-browser <browser>` or `--cookies <file>`. Otherwise ask for a local file. `--cookies-from-browser` only works when yt-dlp runs on the same OS as the browser.
 - **Rate limited**: wait before retrying. User-authorized browser cookies may help if the content is accessible in their browser.
 - **Geo restricted**: ask for a local file or another source the user can access from this environment.
-- **No transcript**: proceed frames-only and note it in the docx. If the source is a YouTube URL but the video was processed from a separately downloaded local file (so the caption pass never ran), retrofit the transcript without re-downloading: `python3 "${SKILL_DIR}/scripts/process.py" --captions-only --source <url> --out-dir <video-dir>`. This fetches auto-subs (one merged `android,ios,web` client call, then yt-dlp's default clients as a fallback, with `--ignore-no-formats-error` so gated formats don't block the subtitle write), writes `transcript.txt`, and patches any existing `manifest(_lite).json` transcript fields.
+- **No transcript**: proceed frames-only and note it in the docx. If the source is a YouTube URL but the video was processed from a separately downloaded local file (so the caption pass never ran), retrofit the transcript without re-downloading: `python3 "${SKILL_DIR}/scripts/process.py" --captions-only --source <url> --out-dir <video-dir>`. This fetches auto-subs with `--ignore-no-formats-error`, writes `transcript.txt`, and patches any existing `manifest(_lite).json` transcript fields.
 - **Whisper backend failed**: when both keys exist and `--whisper` was not pinned, `process.py` tries Groq then OpenAI. If both fail, proceed frames-only.
 - **Whisper audio too large**: rerun with a focused `--start`/`--end` range or use a source with native captions.
 - **Long-video preview warning**: prefer focused reruns or quick mode rather than reading every contact sheet.
-- **yt-dlp "No supported JavaScript runtime" warning**: harmless for most sources (including any with native captions) and for public YouTube URLs (the merged android/ios/web client path needs no JS runtime). Some sites need JS-based extraction; if a download fails for that reason, install a JS runtime yt-dlp supports (e.g. Deno) or use a local file. This is a yt-dlp requirement, not a skill bug.
+- **yt-dlp "No supported JavaScript runtime" warning**: YouTube's android/ios clients may now be SABR-limited and return only 360p. Run `setup.py` to install/check Deno or use the installed Node.js runtime, then retry. Do not deliver a detected degraded stream without asking first.
 - **yt-dlp can't find Node / n-challenge fails**: prefer a pipx/pip-installed `yt-dlp` over a frozen standalone binary. The standalone binary cannot reliably locate a system Node.js for subprocess-based extraction even with `PATH` exported, whereas the pip-installed version uses the system interpreter. `setup.py` installs the pip version.
 - **yt-dlp installed but not on PATH (Linux)**: apply the exact `export PATH=...` line from setup in the same shell invocation that runs `process.py`, or run by absolute tool path.
 - **Spec has stale/missing frame paths**: re-run `select_frames.py` in the current session and re-generate `spec.json`; do not reuse prior-session frame paths.
