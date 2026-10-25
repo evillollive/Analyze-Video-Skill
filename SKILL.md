@@ -1,11 +1,13 @@
 ---
 name: analyze-video
 description: >-
-  Analyze video URLs and local files into timestamped Word reports. Also handle
-  caption downloads and best-quality local video copies. Triggers include
+  Analyze video URLs and local files into timestamped Word reports and
+  Open Filmmaker Toolkit project files. Also handle caption downloads and
+  best-quality local video copies. Triggers include
   "analyze this video", "make a report from this video", "download the captions",
-  "get the subtitles", "download this video", "get me a local copy",
-  "best quality copy", and "save this YouTube video".
+  "get the subtitles", "export this analysis as an Open Filmmaker Toolkit project",
+  "download this video", "get me a local copy", "best quality copy", and
+  "save this YouTube video".
 allowed-tools: Bash, Read, Write, AskUserQuestion
 homepage: https://github.com/evillollive/Analyze-Video-Skill
 repository: https://github.com/evillollive/Analyze-Video-Skill
@@ -15,7 +17,7 @@ user-invocable: true
 
 # analyze-video
 
-Self-contained pipeline that takes one or more video sources, downloads or resolves them locally, extracts frames, uses captions or Whisper for transcripts when available, tiles frames into contact sheets for cheap visual review, selects representative frames, and produces a polished Word document with timestamped analysis.
+Self-contained pipeline that takes one or more video sources, downloads or resolves them locally, extracts frames, uses captions or Whisper for transcripts when available, tiles frames into contact sheets for cheap visual review, selects representative frames, and produces a polished Word document with timestamped analysis. It can also export that analysis as an Open Filmmaker Toolkit project file.
 
 ## Safety and privacy boundary
 
@@ -373,11 +375,14 @@ Spec shape:
       "sections": [
         {
           "heading": "Opening (0:00 to 0:18)",
+          "time_range": "0:00 to 0:18",
           "body": "Analysis prose.",
           "frame_layout": "2up",
           "frames": [
             {
               "path": "/absolute/path/frame_0001.jpg",
+              "timestamp_seconds": 3.5,
+              "timestamp_formatted": "0:03",
               "caption": "Concrete frame caption."
             }
           ]
@@ -411,6 +416,18 @@ Use `manifest_lite.docx_image_dimensions` as the per-video default. `build-docx.
 
 `appendix_transcript` adds a full-transcript appendix. Give each entry a `heading` and a `path` pointing at the video's `manifest_lite.transcript_path` (the `transcript.txt` the pipeline writes). The builder reads the file itself, so never paste the transcript text into the spec. Only include this when the user asked for the transcript in the document and a transcript exists (`transcript_segment_count > 0`).
 
+### Optional: Open Filmmaker Toolkit export
+
+If the user asks for an Open Filmmaker Toolkit export, or approves it in the delivery question, create a standalone `.oft.json` project from the same analysis spec:
+
+```bash
+python3 "${SKILL_DIR}/scripts/export_oft.py" \
+  --spec "$OUT_DIR/spec.json" \
+  --out "$OUT_DIR/analysis.oft.json"
+```
+
+The exporter creates one video asset per analyzed video, puts a readable version of its timestamped analysis in the standard asset `notes` field, and stores structured sections and frame references in an `analysis` field on that asset. It uses the OFT project `format` and `formatVersion` fields, and frame images are referenced by paths relative to the project file rather than embedded. Keep the referenced frame files at those relative paths when moving the project. The OFT schema permits additional asset fields, and Toolkit tools preserve fields they do not edit; this export does not require a Toolkit schema change. Existing output files are never overwritten.
+
 **If `node` reports it can't find `docx` (EACCES / `Cannot find module 'docx'`):** the skill directory is read-only, so `npm install` there fails silently. The builder already tries `DOCX_NODE_MODULES`, `NODE_PATH`, `scripts/node_modules`, and finally installs into `~/.cache/analyze-video/node_modules`. To point it at an existing install instead, run:
 
 ```bash
@@ -430,7 +447,8 @@ Ask once for the batch using `AskUserQuestion` (skip any option that doesn't app
 > 2. Include the full transcript as an appendix *inside* the document?
 > 3. Keep standalone copies of the contact sheet(s) and/or the transcript as separate files next to the document?
 > 4. Also want a PDF version?
-> 5. Clean up the remaining working files afterward?"
+> 5. Clean up the remaining working files afterward?
+> 6. Also export the analysis as an Open Filmmaker Toolkit project file?"
 
 Default every appendix answer to "no" unless the user says yes. If the user gives no answer or declines, build with no appendices.
 
@@ -442,6 +460,8 @@ Then build with only the appendices the user explicitly approved:
 Build the docx once, after the answers, so only the requested appendices are included.
 
 Run the builder and confirm the `.docx` exists. If path validation fails, rebuild the spec from the current `select_frames.py` output and re-run validation before build-docx. If a docx validator is available, run it; otherwise skip validation silently. Present the document with a `computer://` link.
+
+If the user approved the Open Filmmaker Toolkit export, run `export_oft.py` with the same spec and deliver the resulting `.oft.json` file with a `computer://` link. Do not attempt the export if the user declined it.
 
 ### Optional: review and revise in the Word canvas (Copilot)
 
