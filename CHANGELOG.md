@@ -4,6 +4,9 @@ All notable changes to `/analyze-video` are documented here.
 
 ## [Unreleased]
 
+### Security
+- Updated the `docx` npm dependency from 9.7.1 to 9.14.0, which clears the high-severity `nanoid` advisory (GHSA-28wg-ghj8-5hjv) in the transitive dependency tree.
+
 ## [1.9.0] - 2026-10-22
 
 ### Changed
