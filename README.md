@@ -205,6 +205,7 @@ Analyze-Video-Skill/
 │   ├── host_env.py              # Host fingerprint and setup state helpers
 │   ├── build-docx.js            # Word document renderer
 │   ├── export_oft.py            # Open Filmmaker Toolkit project exporter
+│   ├── mcp_server.py            # Optional MCP server (prepare, captions, validate, get_image)
 │   ├── select_frames.py         # Frame selection helper
 │   ├── validate_spec_paths.py   # Fails fast on stale/missing asset paths
 │   ├── lint_spec_quality.py     # Spec structure/content quality guard
