@@ -36,6 +36,15 @@ Each document is named after the video plus the word `analysis` (for example `ho
 
 One video or a whole batch works. Long videos are automatically chunked so the workflow stays manageable.
 
+## Use it from any MCP client (experimental)
+
+`scripts/mcp_server.py` exposes the pipeline as MCP tools: `prepare` (download, frames, transcript, contact sheets), `captions`, `validate` (spec paths and alt text) and `get_image` (return a frame or contact sheet). Building the `.docx` is not exposed yet.
+
+```bash
+pip install "mcp<2"
+python3 scripts/mcp_server.py   # stdio; point your client's MCP config at this command
+```
+
 ## Just want the captions?
 
 Ask "download the captions for <url>" and the skill skips the report entirely. Or run it directly (only `yt-dlp` is required):
