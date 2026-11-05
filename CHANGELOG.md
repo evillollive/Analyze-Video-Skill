@@ -4,6 +4,8 @@ All notable changes to `/analyze-video` are documented here.
 
 ## [Unreleased]
 
+## [1.10.0] - 2026-11-05
+
 ### Added
 - **yt-dlp updates itself when YouTube breaks it.** When a download, caption fetch, caption listing, or best-copy format check fails in a way that points at an out-of-date yt-dlp (signature or n-challenge extraction errors, "Requested format is not available", SABR warnings, or a 360p-only result), the skill updates yt-dlp to the latest stable build and retries, then tries the nightly build. It uses the same install method yt-dlp came from (pipx, pip, Homebrew, or the standalone binary), only counts an update when the version actually changed, and tries each channel at most once per run. Login walls, bot checks, private or members-only videos, region locks, and rate limits never trigger an update. `ANALYZE_VIDEO_NO_YTDLP_UPDATE=1` turns it off.
 - **yt-dlp version tracking.** `.source.json` records the yt-dlp version and JavaScript runtime that produced each download, and best-copy results report them. `setup.py --json` reports the installed version, its age, and its install method; `setup.py --check` prints a one-line note (still exit 0) when yt-dlp is more than 45 days old. New `setup.py --update-ytdlp [--nightly]` updates on request.
