@@ -67,6 +67,7 @@ def _runner(succeed_on="android", langs=("en",), info=None):
 @pytest.fixture
 def ytdlp(monkeypatch):
     monkeypatch.setattr("download._resolve_tool", lambda name: "yt-dlp")
+    monkeypatch.setattr("ytdlp._resolve_tool", lambda name: "yt-dlp")
 
     def install(runner):
         monkeypatch.setattr("download.subprocess.run", runner)
@@ -169,6 +170,7 @@ class TestMain:
 
     def test_list_mode(self, tmp_path, monkeypatch, capsys):
         monkeypatch.setattr("download._resolve_tool", lambda name: "yt-dlp")
+        monkeypatch.setattr("ytdlp._resolve_tool", lambda name: "yt-dlp")
         info = {"title": "T", "id": "i", "subtitles": {"en": [], "live_chat": []}, "automatic_captions": {"fr": [], "en": []}}
 
         def run(cmd, capture_output=True, text=True):

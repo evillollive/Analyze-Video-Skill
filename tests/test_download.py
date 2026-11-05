@@ -290,7 +290,8 @@ class TestBestCopyFormats:
             ],
         }
         monkeypatch.setattr("download._resolve_tool", lambda name: "yt-dlp")
-        monkeypatch.setattr("download._ytdlp_runtime_args", lambda: [])
+        monkeypatch.setattr("ytdlp._resolve_tool", lambda name: "yt-dlp")
+        monkeypatch.setattr("ytdlp.runtime_args", lambda: [])
         monkeypatch.setattr(
             "download._inspect_best_format",
             lambda *a, **k: (info, _subprocess.CompletedProcess([], 0, "", "")),
@@ -323,6 +324,7 @@ class TestBestCopyFormats:
             ],
         }
         monkeypatch.setattr("download._resolve_tool", lambda name: "yt-dlp")
+        monkeypatch.setattr("ytdlp._resolve_tool", lambda name: "yt-dlp")
         monkeypatch.setattr("download._inspect_best_format", lambda *a, **k: (
             info, _subprocess.CompletedProcess([], 0, "", "")
         ))
@@ -380,6 +382,7 @@ class TestSourceMarkerWidthGating:
 class TestDownloadUrlWidthBudget:
     def test_marker_records_the_budget(self, tmp_path, monkeypatch):
         monkeypatch.setattr("download._resolve_tool", lambda name: "yt-dlp")
+        monkeypatch.setattr("ytdlp._resolve_tool", lambda name: "yt-dlp")
         runner = _fake_runner(tmp_path, succeed_on="web")
         monkeypatch.setattr("download.subprocess.run", runner)
         download_url("https://vimeo.com/123", tmp_path, max_width=640)
@@ -387,6 +390,7 @@ class TestDownloadUrlWidthBudget:
 
     def test_wider_rerun_redownloads_instead_of_reusing(self, tmp_path, monkeypatch):
         monkeypatch.setattr("download._resolve_tool", lambda name: "yt-dlp")
+        monkeypatch.setattr("ytdlp._resolve_tool", lambda name: "yt-dlp")
         runner = _fake_runner(tmp_path, succeed_on="web")
         monkeypatch.setattr("download.subprocess.run", runner)
         download_url("https://vimeo.com/123", tmp_path, max_width=640)
@@ -401,6 +405,7 @@ class TestDownloadUrlWidthBudget:
 class TestDownloadFallbacks:
     def test_merge_failure_retries_with_http_only_selector(self, tmp_path, monkeypatch):
         monkeypatch.setattr("download._resolve_tool", lambda name: "yt-dlp")
+        monkeypatch.setattr("ytdlp._resolve_tool", lambda name: "yt-dlp")
         calls = []
 
         def run(cmd, capture_output=True, text=True):
@@ -419,6 +424,7 @@ class TestDownloadFallbacks:
 
     def test_degraded_youtube_result_retries_with_another_client(self, tmp_path, monkeypatch):
         monkeypatch.setattr("download._resolve_tool", lambda name: "yt-dlp")
+        monkeypatch.setattr("ytdlp._resolve_tool", lambda name: "yt-dlp")
         seen = []
 
         def run(cmd, capture_output=True, text=True):
@@ -526,6 +532,7 @@ class TestPlayerClientAttempts:
 class TestDownloadUrlAttempts:
     def test_youtube_merged_client_succeeds_in_one_invocation(self, tmp_path, monkeypatch):
         monkeypatch.setattr("download._resolve_tool", lambda name: "yt-dlp")
+        monkeypatch.setattr("ytdlp._resolve_tool", lambda name: "yt-dlp")
         runner = _fake_runner(tmp_path, succeed_on="merged")
         monkeypatch.setattr("download.subprocess.run", runner)
         res = download_url("https://youtu.be/x", tmp_path)
@@ -537,6 +544,7 @@ class TestDownloadUrlAttempts:
     def test_merged_attempt_pins_every_client_in_one_command(self, tmp_path, monkeypatch):
         """The three clients must be merged into a single --extractor-args value."""
         monkeypatch.setattr("download._resolve_tool", lambda name: "yt-dlp")
+        monkeypatch.setattr("ytdlp._resolve_tool", lambda name: "yt-dlp")
         seen = []
 
         def run(cmd, capture_output=True, text=True):
@@ -551,6 +559,7 @@ class TestDownloadUrlAttempts:
 
     def test_youtube_falls_back_to_default_clients(self, tmp_path, monkeypatch):
         monkeypatch.setattr("download._resolve_tool", lambda name: "yt-dlp")
+        monkeypatch.setattr("ytdlp._resolve_tool", lambda name: "yt-dlp")
         runner = _fake_runner(tmp_path, succeed_on="web")
         monkeypatch.setattr("download.subprocess.run", runner)
         res = download_url("https://www.youtube.com/watch?v=x", tmp_path)
@@ -561,6 +570,7 @@ class TestDownloadUrlAttempts:
 
     def test_non_youtube_uses_web_only(self, tmp_path, monkeypatch):
         monkeypatch.setattr("download._resolve_tool", lambda name: "yt-dlp")
+        monkeypatch.setattr("ytdlp._resolve_tool", lambda name: "yt-dlp")
         runner = _fake_runner(tmp_path, succeed_on="web")
         monkeypatch.setattr("download.subprocess.run", runner)
         download_url("https://vimeo.com/123", tmp_path)
@@ -568,6 +578,7 @@ class TestDownloadUrlAttempts:
 
     def test_youtube_with_cookies_skips_android(self, tmp_path, monkeypatch):
         monkeypatch.setattr("download._resolve_tool", lambda name: "yt-dlp")
+        monkeypatch.setattr("ytdlp._resolve_tool", lambda name: "yt-dlp")
         cookie = tmp_path / "c.txt"
         cookie.write_text("# cookies")
         runner = _fake_runner(tmp_path, succeed_on="web")
@@ -578,6 +589,7 @@ class TestDownloadUrlAttempts:
 
     def test_all_attempts_fail_raises(self, tmp_path, monkeypatch):
         monkeypatch.setattr("download._resolve_tool", lambda name: "yt-dlp")
+        monkeypatch.setattr("ytdlp._resolve_tool", lambda name: "yt-dlp")
         runner = _fake_runner(tmp_path, succeed_on="never")
         monkeypatch.setattr("download.subprocess.run", runner)
         try:
@@ -627,6 +639,7 @@ class TestDownloadResumesPartials:
         url = "https://www.youtube.com/watch?v=x"
         self._interrupted(tmp_path, url)
         monkeypatch.setattr("download._resolve_tool", lambda name: "yt-dlp")
+        monkeypatch.setattr("ytdlp._resolve_tool", lambda name: "yt-dlp")
         runner = self._observing_runner(tmp_path)
         monkeypatch.setattr("download.subprocess.run", runner)
 
@@ -641,6 +654,7 @@ class TestDownloadResumesPartials:
         url = "https://www.youtube.com/watch?v=x"
         self._interrupted(tmp_path, url)
         monkeypatch.setattr("download._resolve_tool", lambda name: "yt-dlp")
+        monkeypatch.setattr("ytdlp._resolve_tool", lambda name: "yt-dlp")
         runner = self._observing_runner(tmp_path)
         monkeypatch.setattr("download.subprocess.run", runner)
 
@@ -651,6 +665,7 @@ class TestDownloadResumesPartials:
     def test_different_url_discards_partials(self, tmp_path, monkeypatch):
         self._interrupted(tmp_path, "https://www.youtube.com/watch?v=other")
         monkeypatch.setattr("download._resolve_tool", lambda name: "yt-dlp")
+        monkeypatch.setattr("ytdlp._resolve_tool", lambda name: "yt-dlp")
         runner = self._observing_runner(tmp_path)
         monkeypatch.setattr("download.subprocess.run", runner)
 
@@ -664,6 +679,7 @@ class TestDownloadResumesPartials:
         url = "https://www.youtube.com/watch?v=x"
         self._interrupted(tmp_path, url, client="web")
         monkeypatch.setattr("download._resolve_tool", lambda name: "yt-dlp")
+        monkeypatch.setattr("ytdlp._resolve_tool", lambda name: "yt-dlp")
         runner = self._observing_runner(tmp_path, succeed_on="web")
         monkeypatch.setattr("download.subprocess.run", runner)
 
@@ -683,6 +699,7 @@ class TestDownloadResumesPartials:
         cookie = tmp_path / "c.txt"
         cookie.write_text("# cookies")
         monkeypatch.setattr("download._resolve_tool", lambda name: "yt-dlp")
+        monkeypatch.setattr("ytdlp._resolve_tool", lambda name: "yt-dlp")
         runner = self._observing_runner(tmp_path, succeed_on="web")
         monkeypatch.setattr("download.subprocess.run", runner)
 
@@ -693,6 +710,7 @@ class TestDownloadResumesPartials:
     def test_marker_written_before_download_so_a_kill_is_recoverable(self, tmp_path, monkeypatch):
         url = "https://www.youtube.com/watch?v=x"
         monkeypatch.setattr("download._resolve_tool", lambda name: "yt-dlp")
+        monkeypatch.setattr("ytdlp._resolve_tool", lambda name: "yt-dlp")
         runner = self._observing_runner(tmp_path)
         monkeypatch.setattr("download.subprocess.run", runner)
 
@@ -712,6 +730,7 @@ class TestDownloadResumesPartials:
         url = "https://www.youtube.com/watch?v=x"
         self._interrupted(tmp_path, url, client="web")
         monkeypatch.setattr("download._resolve_tool", lambda name: "yt-dlp")
+        monkeypatch.setattr("ytdlp._resolve_tool", lambda name: "yt-dlp")
         monkeypatch.setattr(
             "download.subprocess.run", self._observing_runner(tmp_path, succeed_on="merged")
         )
@@ -727,6 +746,7 @@ class TestDownloadResumesPartials:
         )
         (tmp_path / "video.mp4").write_bytes(b"data")
         monkeypatch.setattr("download._resolve_tool", lambda name: "yt-dlp")
+        monkeypatch.setattr("ytdlp._resolve_tool", lambda name: "yt-dlp")
         runner = self._observing_runner(tmp_path)
         monkeypatch.setattr("download.subprocess.run", runner)
 
@@ -739,6 +759,7 @@ class TestDownloadResumesPartials:
 class TestFetchCaptions:
     def test_writes_vtt_via_merged_client_for_youtube(self, tmp_path, monkeypatch):
         monkeypatch.setattr("download._resolve_tool", lambda name: "yt-dlp")
+        monkeypatch.setattr("ytdlp._resolve_tool", lambda name: "yt-dlp")
 
         def run(cmd, capture_output=True, text=True):
             assert "--skip-download" in cmd
@@ -753,6 +774,7 @@ class TestFetchCaptions:
 
     def test_falls_back_to_default_client_when_merged_yields_no_subs(self, tmp_path, monkeypatch):
         monkeypatch.setattr("download._resolve_tool", lambda name: "yt-dlp")
+        monkeypatch.setattr("ytdlp._resolve_tool", lambda name: "yt-dlp")
         seen = []
 
         def run(cmd, capture_output=True, text=True):
@@ -770,6 +792,7 @@ class TestFetchCaptions:
 
     def test_no_subs_raises(self, tmp_path, monkeypatch):
         monkeypatch.setattr("download._resolve_tool", lambda name: "yt-dlp")
+        monkeypatch.setattr("ytdlp._resolve_tool", lambda name: "yt-dlp")
         monkeypatch.setattr(
             "download.subprocess.run",
             lambda *a, **k: _subprocess.CompletedProcess([], 1, stdout="", stderr="no subs"),
@@ -784,6 +807,7 @@ class TestFetchCaptions:
 class TestFetchTitle:
     def test_youtube_uses_merged_client(self, monkeypatch):
         monkeypatch.setattr("download._resolve_tool", lambda name: "yt-dlp")
+        monkeypatch.setattr("ytdlp._resolve_tool", lambda name: "yt-dlp")
 
         calls = []
 
@@ -799,6 +823,7 @@ class TestFetchTitle:
 
     def test_falls_back_to_default_client_when_merged_fails(self, monkeypatch):
         monkeypatch.setattr("download._resolve_tool", lambda name: "yt-dlp")
+        monkeypatch.setattr("ytdlp._resolve_tool", lambda name: "yt-dlp")
         calls = []
 
         def run(cmd, capture_output=True, text=True):
@@ -814,6 +839,7 @@ class TestFetchTitle:
 
     def test_returns_none_when_all_attempts_fail(self, monkeypatch):
         monkeypatch.setattr("download._resolve_tool", lambda name: "yt-dlp")
+        monkeypatch.setattr("ytdlp._resolve_tool", lambda name: "yt-dlp")
         monkeypatch.setattr(
             "download.subprocess.run",
             lambda *a, **k: _subprocess.CompletedProcess([], 1, stdout="", stderr="blocked"),
@@ -824,6 +850,7 @@ class TestFetchTitle:
         # A leftover captions file from a prior run must not be returned when the
         # current fetch produces nothing; the failure path must still fire.
         monkeypatch.setattr("download._resolve_tool", lambda name: "yt-dlp")
+        monkeypatch.setattr("ytdlp._resolve_tool", lambda name: "yt-dlp")
         (tmp_path / "captions.en.vtt").write_text("WEBVTT\nstale\n")
         monkeypatch.setattr(
             "download.subprocess.run",
