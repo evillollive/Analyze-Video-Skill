@@ -195,7 +195,9 @@ Analyze-Video-Skill/
 ├── scripts/
 │   ├── process.py               # Main pipeline entry point
 │   ├── captions.py              # Standalone caption/subtitle downloader (SRT/VTT/TXT)
-│   ├── download.py              # yt-dlp wrapper and failure classification
+│   ├── download.py              # Download logic, format choice, failure classification
+│   ├── ytdlp.py                 # The one place that talks to yt-dlp; update-and-retry policy
+│   ├── health_check.py          # Checks YouTube still offers full quality (no download)
 │   ├── cache_utils.py           # Self-pruning download + transcript caches
 │   ├── frames.py                # Frame extraction and contact sheets
 │   ├── transcribe.py            # VTT parser and deduper
@@ -278,6 +280,18 @@ Note that `--cookies-from-browser` only works when yt-dlp runs on the same machi
 ```bash
 python3 scripts/process.py --captions-only --source "<url>" --out-dir /tmp/video
 ```
+
+### Keeping yt-dlp working
+
+YouTube changes its player every few weeks, and yt-dlp usually ships a fix within days. The skill keeps up on its own:
+
+- Every yt-dlp call goes through `scripts/ytdlp.py`, so the rest of the skill never depends on how yt-dlp is installed or invoked.
+- When a download, caption fetch, or format check fails in a way an update can fix (a broken signature or challenge, a missing format, or a 360p-only result), the skill updates yt-dlp to the latest stable build and retries, then tries the nightly build if that wasn't enough. Login walls, private videos, region locks, and rate limits never trigger an update, since updating can't fix them. Set `ANALYZE_VIDEO_NO_YTDLP_UPDATE=1` to turn this off.
+- `setup.py --check` notes when the installed yt-dlp is more than 45 days old. Update by hand with `python3 scripts/setup.py --update-ytdlp` (add `--nightly` for the nightly build).
+- Each download's `.source.json` records the yt-dlp version and JavaScript runtime that produced it.
+- `python3 scripts/health_check.py` asks YouTube which formats a known 1080p video offers, without downloading, and exits non-zero if full quality is gone. Run it from the machine that does the downloads, since cloud servers are often blocked by YouTube's bot check.
+
+Direct links to a media file or an HLS/DASH manifest (`.mp4`, `.webm`, `.m3u8`, `.mpd`, etc.) still download with ffmpeg alone when yt-dlp is missing or fails. For anything else, the fallback is always available: download the video yourself and pass the local file path.
 
 ## Help share it
 

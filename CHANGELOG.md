@@ -5,6 +5,10 @@ All notable changes to `/analyze-video` are documented here.
 ## [Unreleased]
 
 ### Added
+- **yt-dlp updates itself when YouTube breaks it.** When a download, caption fetch, caption listing, or best-copy format check fails in a way that points at an out-of-date yt-dlp (signature or n-challenge extraction errors, "Requested format is not available", SABR warnings, or a 360p-only result), the skill updates yt-dlp to the latest stable build and retries, then tries the nightly build. It uses the same install method yt-dlp came from (pipx, pip, Homebrew, or the standalone binary), only counts an update when the version actually changed, and tries each channel at most once per run. Login walls, bot checks, private or members-only videos, region locks, and rate limits never trigger an update. `ANALYZE_VIDEO_NO_YTDLP_UPDATE=1` turns it off.
+- **yt-dlp version tracking.** `.source.json` records the yt-dlp version and JavaScript runtime that produced each download, and best-copy results report them. `setup.py --json` reports the installed version, its age, and its install method; `setup.py --check` prints a one-line note (still exit 0) when yt-dlp is more than 45 days old. New `setup.py --update-ytdlp [--nightly]` updates on request.
+- **YouTube health check.** `scripts/health_check.py` asks YouTube which formats a known 1080p video offers, without downloading, and reports the best height, client, yt-dlp version, JS runtime, and any problems as JSON (exit 1 when full quality is gone). It applies the same update-and-retry policy as real downloads.
+- **Direct media links work without yt-dlp.** URLs that point straight at a media file or an HLS/DASH manifest are fetched with ffmpeg when yt-dlp is missing or fails. Download failures now end with a clear fallback: download the video yourself and re-run with the local file path.
 - **Minimal MCP server.** `scripts/mcp_server.py` exposes `prepare`, `captions`, `validate` and `get_image` tools over stdio so any MCP client can drive the existing scripts. It shells out to the same CLIs, so behavior matches the skill. Requires the optional `mcp<2` package; nothing else changes if it is not installed.
 - **Optional Open Filmmaker Toolkit project export.** `scripts/export_oft.py` converts an analysis spec into a version 1 `.oft.json` project with one video asset per source, readable analysis notes, structured timestamped sections, captions, and relative frame paths. It uses schema-compatible asset fields that the Toolkit preserves without a schema change; existing output files are not overwritten.
 - **Best-copy download-only mode.** `download.py --best` downloads a local copy without running frame extraction or the docx pipeline, asks for explicit deliverable choices in the skill flow, supports MKV or H.264/AAC-only MP4, prefers original-language audio, optionally saves captions/transcript, and verifies the final file with ffprobe plus a short decode test.
@@ -14,6 +18,7 @@ All notable changes to `/analyze-video` are documented here.
 - `--download-max-width 0` now selects the best available format without retaining the former 720p fallback cap.
 
 ### Changed
+- **All yt-dlp calls go through `scripts/ytdlp.py`.** Finding yt-dlp, choosing the JavaScript runtime, player-client and cookie arguments, running commands, versioning, and updating now live in one module that `download.py`, `captions.py` (through `download.py`), and `health_check.py` share. Behavior is unchanged apart from the additions above; if yt-dlp ever has to be replaced, only this module changes.
 - Analysis downloads prefer HTTP(S)/DASH formats and retry once with a DASH-only selector after a merge failure. The default 854px analysis width budget is unchanged.
 
 ## [1.9.0] - 2026-10-24
