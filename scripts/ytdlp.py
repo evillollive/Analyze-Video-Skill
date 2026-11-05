@@ -345,7 +345,7 @@ def try_update(channel: str = "stable") -> tuple[bool, str]:
     after = version(find() or ytdlp, refresh=True)
     if after and after != before:
         message = f"updated yt-dlp {before or '?'} -> {after}"
-        print(f"[yt-dlp] {message}; retrying", file=sys.stderr)
+        print(f"[yt-dlp] {message}", file=sys.stderr)
         return True, message
     message = f"yt-dlp is still {after or before or 'unknown'} after trying {channel}"
     if last_error:
@@ -374,6 +374,7 @@ def with_update_retry(
             return outcome
         changed, _ = try_update(channel)
         if changed:
+            print("[yt-dlp] retrying with the updated yt-dlp", file=sys.stderr)
             outcome = attempt()
     return outcome
 

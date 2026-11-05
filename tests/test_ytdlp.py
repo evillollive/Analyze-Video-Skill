@@ -319,7 +319,11 @@ class TestHealthCheck:
         return json.dumps({
             "title": "Metropolis",
             "_version": {"version": "2026.11.01"},
-            "formats": [{"height": 360}, {"height": height}],
+            "formats": [
+                {"height": 90, "vcodec": "none", "acodec": "none", "ext": "mhtml"},
+                {"height": 360, "vcodec": "avc1"},
+                {"height": height, "vcodec": "avc1"},
+            ],
         })
 
     def test_healthy(self, monkeypatch):
@@ -347,3 +351,16 @@ class TestHealthCheck:
 
         monkeypatch.setattr(ytdlp, "_resolve_tool", lambda name: None)
         assert health_check.main(["--no-update"]) == 2
+
+    def test_storyboards_are_not_video_and_bot_check_is_named(self, monkeypatch):
+        import health_check
+
+        info = json.dumps({"formats": [{"height": 90, "vcodec": "none", "acodec": "none"}]})
+        monkeypatch.setattr(ytdlp, "_resolve_tool", lambda name: name if name in {"yt-dlp", "node"} else None)
+        monkeypatch.setattr(
+            subprocess, "run",
+            lambda cmd, **k: _proc(cmd, out=info, err="WARNING: Sign in to confirm you're not a bot"),
+        )
+        report = health_check.check("https://www.youtube.com/watch?v=x", 1080)
+        assert report["max_height"] == 0
+        assert "bot check" in report["problems"][0]

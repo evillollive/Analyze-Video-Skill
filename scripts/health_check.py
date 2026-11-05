@@ -44,8 +44,15 @@ def _probe(ytdlp_path: str, url: str) -> dict:
             info = json.loads(result.stdout) if result.stdout.strip() else {}
         except json.JSONDecodeError:
             info = {}
-        formats = info.get("formats") or []
-        height = max((f.get("height") or 0 for f in formats), default=0)
+        # Storyboards (thumbnail strips) carry a height but no video codec.
+        formats = [
+            f for f in (info.get("formats") or [])
+            if f.get("vcodec") not in (None, "none") or f.get("acodec") not in (None, "none")
+        ]
+        height = max(
+            (f.get("height") or 0 for f in formats if f.get("vcodec") not in (None, "none")),
+            default=0,
+        )
         if height > best["max_height"]:
             best.update(
                 max_height=height,
@@ -78,6 +85,12 @@ def check(url: str, min_height: int) -> dict:
     )
     version = probe.get("ytdlp_version") or yt.version(yt.find() or ytdlp_path)
     problems = []
+    lowered = probe["output"].lower()
+    if "not a bot" in lowered or "http error 429" in lowered:
+        problems.append(
+            "YouTube's bot check or rate limit blocked this machine; that is about this "
+            "network, not yt-dlp. Run the check from the machine that does the downloads"
+        )
     if probe["max_height"] == 0:
         problems.append("yt-dlp returned no formats (extraction failed or the video is gone)")
     elif probe["max_height"] < min_height:
