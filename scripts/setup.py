@@ -4,6 +4,8 @@
 Modes:
   setup.py --check      Silent preflight. Exit 0 if ready, 2 on required deps failure.
   setup.py --json       Machine-readable status for the agent to parse.
+  setup.py --update-ytdlp [--nightly]
+                        Update yt-dlp now (stable by default, or the nightly build).
   setup.py              Installer. Auto-installs deps, scaffolds .env, marks SETUP_COMPLETE.
 
 Design:
@@ -163,6 +165,25 @@ try:
     import host_env
 except ImportError:  # pragma: no cover
     host_env = None
+
+try:
+    import ytdlp as yt
+except ImportError:  # pragma: no cover
+    yt = None
+
+
+def _ytdlp_status() -> dict:
+    """Installed yt-dlp version, its age in days, and a staleness warning."""
+    if yt is None or not _which("yt-dlp"):
+        return {"version": None, "age_days": None, "stale_warning": None, "install_method": None}
+    path = _which("yt-dlp")
+    version = yt.version(path)
+    return {
+        "version": version,
+        "age_days": yt.age_days(version),
+        "stale_warning": yt.staleness_warning(version),
+        "install_method": yt.install_method(path) if path else None,
+    }
 
 
 def _read_env_key(name: str) -> str | None:
@@ -549,6 +570,7 @@ def _status() -> dict:
         "first_run": is_first_run(),
         "missing_binaries": missing,
         "js_runtime": _js_runtime(),
+        "ytdlp": _ytdlp_status(),
         "whisper_backend": backend,
         "has_api_key": has_key,
         "docx_installed": docx_installed,
@@ -575,6 +597,12 @@ def cmd_check() -> int:
     if s["status"] in {"ready", "ready_no_whisper_key"}:
         if host_env is not None:
             host_env.write_setup_state()
+        # Not a failure, but worth one line: an old yt-dlp is the most common
+        # reason YouTube downloads break or come back at 360p.
+        stale = (s.get("ytdlp") or {}).get("stale_warning")
+        if stale:
+            sys.stderr.write(f"[analyze-video] note: {stale}\n")
+            sys.stderr.flush()
         return 0
 
     parts = []
@@ -592,6 +620,26 @@ def cmd_check() -> int:
     sys.stderr.flush()
 
     return 2
+
+
+def cmd_update_ytdlp(channel: str = "stable") -> int:
+    """Update yt-dlp on request, regardless of the automatic-update setting."""
+    if yt is None:
+        sys.stderr.write("[setup] ytdlp.py helper is missing from the skill\n")
+        return 2
+    if not _which("yt-dlp"):
+        ok, msg = _install_ytdlp()
+        print(f"[setup] {msg}", file=sys.stderr)
+        return 0 if ok else 2
+    os.environ.pop(yt.NO_UPDATE_ENV, None)
+    changed, msg = yt.try_update(channel)
+    if changed:
+        print(f"[setup] {msg}", file=sys.stderr)
+        return 0
+    version = yt.version(_which("yt-dlp"), refresh=True)
+    print(f"[setup] yt-dlp {version or '(unknown version)'}: {msg}", file=sys.stderr)
+    # "Already current" is not an error.
+    return 0 if version else 2
 
 
 def cmd_json() -> int:
@@ -808,6 +856,8 @@ def main() -> int:
             return cmd_check()
         if arg == "--json":
             return cmd_json()
+        if arg == "--update-ytdlp":
+            return cmd_update_ytdlp("nightly" if "--nightly" in sys.argv[2:] else "stable")
         if arg == "--set-key":
             if len(sys.argv) < 4:
                 sys.stderr.write("usage: setup.py --set-key <groq|openai> <KEY>\n")
