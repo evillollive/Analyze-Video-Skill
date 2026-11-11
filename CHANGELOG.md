@@ -14,6 +14,9 @@ All notable changes to `/analyze-video` are documented here.
 - **Step 0 no longer assumes a particular agent.** The skill folder resolves from `SKILL_DIR` if already set, then `CLAUDE_SKILL_DIR`, then `COPILOT_SKILL_DIR`, then the folder `SKILL.md` lives in. The README describes the skill as agent-neutral.
 
 ### Fixed
+- **Setup no longer crashes on Windows.** `setup.py` and `build-docx.js` ran `npm` by its bare name, which Windows cannot launch (it is `npm.cmd` there), so installing the Word document module failed with `FileNotFoundError`. Both now launch it in a way that works on Windows.
+- Setup no longer prints a `chmod 600` warning for the `.env` file on Windows, where it does not apply.
+- Three tests assumed POSIX paths and permission bits and failed on Windows.
 - SKILL.md described `status.json` twice in the per-video outputs list; the two bullets are now one.
 - SKILL.md's bundled-runtime list now includes `ytdlp.py`, `health_check.py`, `export_oft.py`, and `mcp_server.py`.
 - Removed a compiled `scripts/__pycache__/frames.cpython-310.pyc` that was committed by mistake.

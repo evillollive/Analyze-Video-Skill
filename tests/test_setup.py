@@ -224,3 +224,44 @@ class TestPathExportHint:
     def test_returns_none_when_unresolved(self, monkeypatch):
         monkeypatch.setattr(setup, "_resolve_tool", lambda name: None)
         assert setup._path_export_hint("yt-dlp") is None
+
+
+class TestNpmInstallDocxWindows:
+    def test_runs_npm_by_resolved_path(self, tmp_path, monkeypatch):
+        """Windows ships npm as npm.cmd, so the bare name cannot be launched."""
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+
+            class Result:
+                returncode = 0
+                stderr = ""
+
+            return Result()
+
+        resolved = str(tmp_path / "nodejs" / "npm.cmd")
+        monkeypatch.setattr(setup.shutil, "which", lambda name: resolved if name == "npm" else None)
+        monkeypatch.setattr(setup.subprocess, "run", fake_run)
+        ok, _ = setup._npm_install_docx(tmp_path / "prefix")
+        assert ok
+        assert calls[0][0] == resolved
+
+    def test_reports_failure_when_npm_cannot_start(self, tmp_path, monkeypatch):
+        def boom(cmd, **kwargs):
+            raise FileNotFoundError("npm")
+
+        monkeypatch.setattr(setup.subprocess, "run", boom)
+        ok, msg = setup._npm_install_docx(tmp_path / "prefix")
+        assert not ok
+        assert "could not run npm" in msg
+
+
+class TestFilePermissionWarning:
+    def test_no_chmod_warning_on_windows(self, tmp_path, monkeypatch, capsys):
+        env = tmp_path / ".env"
+        env.write_text("GROQ_API_KEY=x\n")
+        env.chmod(0o644)
+        monkeypatch.setattr(setup.os, "name", "nt")
+        setup._check_file_permissions(env)
+        assert capsys.readouterr().err == ""
