@@ -265,3 +265,31 @@ class TestFilePermissionWarning:
         monkeypatch.setattr(setup.os, "name", "nt")
         setup._check_file_permissions(env)
         assert capsys.readouterr().err == ""
+
+
+class TestWindowsInstall:
+    def test_installs_missing_tools_with_winget_and_pip(self, monkeypatch):
+        ran = []
+        monkeypatch.setattr(setup, "_install_ytdlp", lambda: (True, "installed yt-dlp[default] (pip --user)"))
+        monkeypatch.setattr(setup, "_winget_install", lambda pkg: (ran.append(pkg), (True, f"installed {pkg} (winget)"))[1])
+        messages = setup._install_windows(
+            ["ffmpeg", "ffprobe", "yt-dlp", "node", "npm", "JavaScript runtime (Deno or Node.js)"]
+        )
+        assert ran == ["Gyan.FFmpeg", "OpenJS.NodeJS.LTS", "DenoLand.Deno"]
+        assert messages[0].startswith("yt-dlp:")
+
+    def test_winget_missing_is_reported_not_raised(self, monkeypatch):
+        monkeypatch.setattr(setup.shutil, "which", lambda name: None)
+        ok, msg = setup._winget_install("Gyan.FFmpeg")
+        assert not ok and "winget is not available" in msg
+
+    def test_winget_failure_is_reported(self, monkeypatch):
+        class Result:
+            returncode = 1
+            stdout = "No package found matching input criteria."
+            stderr = ""
+
+        monkeypatch.setattr(setup.shutil, "which", lambda name: "C:/winget.exe")
+        monkeypatch.setattr(setup.subprocess, "run", lambda *a, **k: Result())
+        ok, msg = setup._winget_install("Nope.Nope")
+        assert not ok and "No package found" in msg

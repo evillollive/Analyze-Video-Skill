@@ -59,12 +59,14 @@ jobs:
         if: runner.os == 'macOS'
         run: brew install ffmpeg
 
-      - name: Install ffmpeg (Windows)
-        if: runner.os == 'Windows'
-        run: choco install ffmpeg -y --no-progress
+      # Windows gets no ffmpeg, yt-dlp or Deno here on purpose: setup.py has to
+      # install them itself, the way it would on a user's machine.
+      - name: Install yt-dlp (macOS)
+        if: runner.os == 'macOS'
+        run: python -m pip install --quiet "yt-dlp[default]"
 
-      - name: Install yt-dlp and pytest
-        run: python -m pip install --quiet "yt-dlp[default]" pytest
+      - name: Install pytest
+        run: python -m pip install --quiet pytest
 
       - name: Python tests
         run: python -m pytest tests/ -q
@@ -79,8 +81,12 @@ jobs:
           set -euo pipefail
           SKILL="$PWD"
           WORK="$(python -c 'import tempfile; print(tempfile.mkdtemp().replace(chr(92), "/"))')"
+          FFMPEG="$(python -c "import sys; sys.path.insert(0, 'scripts'); from env_utils import resolve_tool; print(resolve_tool('ffmpeg'))")"
           cd "$WORK"
-          ffmpeg -hide_banner -loglevel error \
+          # Use the tool finder rather than PATH: a tool setup.py just installed
+          # is not on this shell's PATH yet.
+          echo "ffmpeg resolved to: $FFMPEG"
+          "$FFMPEG" -hide_banner -loglevel error \
             -f lavfi -i testsrc=size=320x240:rate=10:duration=4 \
             -f lavfi -i sine=frequency=440:duration=4 \
             -c:v libx264 -pix_fmt yuv420p -c:a aac -shortest sample.mp4

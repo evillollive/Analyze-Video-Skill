@@ -120,9 +120,9 @@ The installer adds what it can without administrator rights and prints exact ins
 
 - macOS with Homebrew: installs missing `ffmpeg`, `yt-dlp`, Node.js, Deno and the `docx` npm module.
 - Linux: installs `yt-dlp`, Deno and the `docx` npm module without sudo; prints commands for `ffmpeg` and Node.js.
-- Windows: installs the `docx` npm module; prints commands for the other tools.
+- Windows: installs `yt-dlp` with pip and missing `ffmpeg`, Node.js and Deno with winget, plus the `docx` npm module; prints commands for anything that fails.
 
-If setup prints `export PATH=...` lines, apply them before running the pipeline. If `--check` notes that yt-dlp is more than 45 days old, `setup.py --update-ytdlp` updates it.
+If setup prints `export PATH=...` lines, apply them before running the pipeline. On Windows, newly installed tools are found by the scripts right away, but need a new terminal before you can call them by name. If `--check` notes that yt-dlp is more than 45 days old, `setup.py --update-ytdlp` updates it.
 
 A Whisper API key is optional. Without one, videos with native captions still get transcript analysis and captionless videos are processed frames-only. If the user wants transcripts for captionless videos, ask whether they have a Groq key (preferred) or an OpenAI key, then store it:
 

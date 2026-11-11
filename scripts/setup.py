@@ -658,6 +658,56 @@ def cmd_json() -> int:
     return 0
 
 
+WINGET_IDS = {
+    "ffmpeg": "Gyan.FFmpeg",
+    "node": "OpenJS.NodeJS.LTS",
+    "deno": "DenoLand.Deno",
+}
+
+
+def _winget_install(package_id: str) -> tuple[bool, str]:
+    """Install one package with winget, without prompts."""
+    winget = shutil.which("winget")
+    if not winget:
+        return False, "winget is not available"
+    cmd = [
+        winget, "install", "--id", package_id, "--exact", "--source", "winget",
+        "--accept-source-agreements", "--accept-package-agreements",
+        "--silent", "--disable-interactivity",
+    ]
+    print(f"[setup] running: winget install --id {package_id}", file=sys.stderr)
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=900)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return False, f"winget install {package_id} failed: {exc}"
+    if result.returncode != 0:
+        detail = (result.stdout or result.stderr or "").strip().splitlines()
+        tail = detail[-1][:200] if detail else f"exit {result.returncode}"
+        return False, f"winget install {package_id} failed: {tail}"
+    return True, f"installed {package_id} (winget)"
+
+
+def _install_windows(missing: list[str]) -> list[str]:
+    """Install what can be installed on Windows. Returns progress messages.
+
+    yt-dlp comes from pip, matching the other platforms. ffmpeg, Node.js and
+    Deno come from winget, which ships with Windows 10 and 11. Anything that
+    fails is left for the printed manual commands.
+    """
+    messages: list[str] = []
+    if "yt-dlp" in missing:
+        _, msg = _install_ytdlp()
+        messages.append(f"yt-dlp: {msg}")
+    wanted: list[str] = []
+    for pkg in _brew_pkg([item for item in missing if item != "yt-dlp"]):
+        if pkg in WINGET_IDS and pkg not in wanted:
+            wanted.append(pkg)
+    for pkg in wanted:
+        _, msg = _winget_install(WINGET_IDS[pkg])
+        messages.append(f"{pkg}: {msg}")
+    return messages
+
+
 def cmd_install() -> int:
     missing = _check_binaries()
     installed_deps = False
@@ -668,7 +718,7 @@ def cmd_install() -> int:
             "use Python 3.11+ when available.",
             file=sys.stderr,
         )
-    if missing or (system in {"Darwin", "Linux"} and not _which("deno")):
+    if missing or (system in {"Darwin", "Linux", "Windows"} and not _which("deno")):
         if system == "Darwin":
             install_items = list(missing)
             if not _which("deno"):
@@ -722,9 +772,26 @@ def cmd_install() -> int:
                 return 2
             installed_deps = True
         elif system == "Windows":
-            print("[setup] dependencies missing on Windows, please install:", file=sys.stderr)
-            print("  " + _install_hint_windows(missing), file=sys.stderr)
-            return 2
+            install_items = list(missing)
+            if not _which("deno") and "JavaScript runtime (Deno or Node.js)" not in install_items:
+                install_items.append("JavaScript runtime (Deno or Node.js)")
+            for msg in _install_windows(install_items):
+                print(f"[setup] {msg}", file=sys.stderr)
+            still_missing = _check_binaries()
+            if still_missing:
+                print(
+                    "[setup] could not install everything automatically on Windows. "
+                    "Please install:",
+                    file=sys.stderr,
+                )
+                print("  " + _install_hint_windows(still_missing), file=sys.stderr)
+                print(
+                    "[setup] if you just installed one of these, open a new terminal "
+                    "so it is on PATH, then re-run setup.",
+                    file=sys.stderr,
+                )
+                return 2
+            installed_deps = True
         else:
             print(
                 f"[setup] unsupported platform ({system}) for auto-install. Install manually:",
@@ -770,7 +837,16 @@ def cmd_install() -> int:
         hint = _path_export_hint(binary)
         if hint and hint not in path_hints:
             path_hints.append(hint)
-    if path_hints:
+    if path_hints and os.name == "nt":
+        # `export PATH=...` is not Windows syntax, and the installers have
+        # already updated PATH for new terminals.
+        print(
+            "[setup] NOTE: some tools were installed but this terminal cannot see "
+            "them yet. The skill's scripts find them anyway; open a new terminal "
+            "to use them by name.",
+            file=sys.stderr,
+        )
+    elif path_hints:
         print(
             "[setup] NOTE: some tools are installed but not on PATH. "
             "Run before invoking the skill:",

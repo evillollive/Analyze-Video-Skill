@@ -59,5 +59,6 @@ yt-dlp prints a deprecation warning on Python 3.10 and older. Pass the warning o
 ## Windows
 
 - Use `python` if `python3` is not a command.
-- `setup.py` prints exact install commands for missing tools rather than installing them. Run those, then re-run `setup.py`.
+- `setup.py` installs missing tools itself: yt-dlp with pip, and ffmpeg, Node.js and Deno with winget. Installing Node.js may ask for administrator approval. For anything that fails it prints the exact commands; run those, then re-run `setup.py`.
+- A tool installed a moment ago is not on the running terminal's PATH. The skill's scripts find it anyway, but calling it by name (for example `ffmpeg` or `node`) needs a new terminal.
 - Paths with spaces need quotes, as on every system.
