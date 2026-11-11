@@ -25,7 +25,7 @@ manifest.json -> chunks[].frames[].absolute_path
 
 `select_frames.py` reads them for you (it loads the full manifest automatically via the lite file's `manifest_path` pointer), so you rarely need to open `manifest.json` by hand just to pick frames.
 
-Each chunk's `contact_sheet` has `absolute_path`, `cols`, `rows` and `labeled`. When `labeled` is true, every tile shows its tile number and its time in the video; the tile number is that frame's `index`. `labeled` is false when the installed ffmpeg cannot draw text, and the sheet is then plain.
+Each chunk's `contact_sheet` has `absolute_path`, `cols`, `rows` and `labeled`. When `labeled` is true, every tile shows its tile number and its time in the video; the tile number is that frame's `index`. The labels need no font. `labeled` is false only if labelling failed, and the sheet is then plain.
 
 Chunk schema field names (lite and full): `index`, `start_seconds`, `end_seconds`, `start_formatted`, `end_formatted`, `duration_seconds`, `frame_count`, `contact_sheet`, `transcript_slice`. (They are `index`/`start_formatted`/`end_formatted`, not `chunk_index`/`start_time_str`.)
 

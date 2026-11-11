@@ -719,33 +719,114 @@ def _concat_list(frames: list[Path]) -> str:
     return "\n".join(lines) + "\n"
 
 
-FONT_DIR = Path(__file__).resolve().parent / "fonts"
-LABEL_FONT = "DejaVuSansMono-Bold.ttf"
+# ---------------------------------------------------------------------------
+# Tile labels
+# ---------------------------------------------------------------------------
+# Labels are small images this module draws itself and ffmpeg overlays on each
+# tile. Many ffmpeg builds (Homebrew's, for one) are compiled without text
+# drawing, so relying on ffmpeg's drawtext filter or on a font file would leave
+# those users with unlabelled sheets. Overlaying an image works everywhere.
+
+# 5x7 pixel glyphs for the only characters a label needs.
+_GLYPHS = {
+    "0": ("01110", "10001", "10011", "10101", "11001", "10001", "01110"),
+    "1": ("00100", "01100", "00100", "00100", "00100", "00100", "01110"),
+    "2": ("01110", "10001", "00001", "00010", "00100", "01000", "11111"),
+    "3": ("11110", "00001", "00001", "01110", "00001", "00001", "11110"),
+    "4": ("00010", "00110", "01010", "10010", "11111", "00010", "00010"),
+    "5": ("11111", "10000", "11110", "00001", "00001", "10001", "01110"),
+    "6": ("00110", "01000", "10000", "11110", "10001", "10001", "01110"),
+    "7": ("11111", "00001", "00010", "00100", "01000", "01000", "01000"),
+    "8": ("01110", "10001", "10001", "01110", "10001", "10001", "01110"),
+    "9": ("01110", "10001", "10001", "01111", "00001", "00010", "01100"),
+    ":": ("00000", "00100", "00100", "00000", "00100", "00100", "00000"),
+    " ": ("00000",) * 7,
+}
+_GLYPH_W, _GLYPH_H = 5, 7
 
 
-def _label_filter(tile_width: int, start_seconds: float | None, interval_seconds: float | None) -> str:
-    """ffmpeg drawtext filter that prints "<tile number>  <m:ss>" on each tile.
+def _png_rgba(width: int, height: int, rgba: bytes) -> bytes:
+    """Encode raw RGBA pixels as a PNG, using only the standard library."""
+    import struct
+    import zlib
 
-    The tile number is the frame's 1-based position in the chunk, which is also
-    its ``index`` in the manifest. The time is ``start + n * interval``, the same
-    grid the manifest records. Everything is computed from ffmpeg's frame
-    counter ``n``, so it does not depend on how the frames are fed in.
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        body = kind + data
+        return struct.pack(">I", len(data)) + body + struct.pack(">I", zlib.crc32(body) & 0xFFFFFFFF)
 
-    The font is named without a path: the caller runs ffmpeg from the font's
-    folder, which avoids escaping drive letters and spaces inside a filter.
-    """
-    number = r"%{eif\:n+1\:d}"
-    text = number
-    if start_seconds is not None and interval_seconds:
-        t = f"({start_seconds:.3f}+n*{interval_seconds:.6f})"
-        minutes = rf"%{{eif\:floor({t}/60)\:d}}"
-        seconds = rf"%{{eif\:mod(floor({t})\,60)\:d\:2}}"
-        text = rf"{number}  {minutes}\:{seconds}"
-    size = max(9, round(tile_width / 12))
+    stride = width * 4
+    rows = b"".join(b"\x00" + rgba[y * stride:(y + 1) * stride] for y in range(height))
     return (
-        f"drawtext=fontfile={LABEL_FONT}:text='{text}':fontsize={size}:fontcolor=white"
-        f":box=1:boxcolor=black@0.65:boxborderw=3:x=3:y=3"
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0))
+        + chunk(b"IDAT", zlib.compress(rows, 9))
+        + chunk(b"IEND", b"")
     )
+
+
+def _label_text(tile: int, seconds: float | None) -> str:
+    """"59 12:57": the tile number, then the time when it is known."""
+    if seconds is None:
+        return str(tile)
+    whole = max(0, int(seconds))
+    hours, minutes, secs = whole // 3600, (whole % 3600) // 60, whole % 60
+    clock = f"{hours}:{minutes:02d}:{secs:02d}" if hours else f"{minutes}:{secs:02d}"
+    return f"{tile} {clock}"
+
+
+def _label_png(text: str, scale: int) -> bytes:
+    """Draw ``text`` in white pixel digits on a translucent black box."""
+    pad = 2 * scale
+    step = (_GLYPH_W + 1) * scale
+    width = pad * 2 + len(text) * step - scale
+    height = pad * 2 + _GLYPH_H * scale
+    background = bytes((0, 0, 0, 170))
+    pixels = bytearray(background * (width * height))
+    for position, char in enumerate(text):
+        glyph = _GLYPHS.get(char, _GLYPHS[" "])
+        for gy, row in enumerate(glyph):
+            for gx, bit in enumerate(row):
+                if bit != "1":
+                    continue
+                for dy in range(scale):
+                    for dx in range(scale):
+                        x = pad + position * step + gx * scale + dx
+                        y = pad + gy * scale + dy
+                        offset = (y * width + x) * 4
+                        pixels[offset:offset + 4] = b"\xff\xff\xff\xff"
+    return _png_rgba(width, height, bytes(pixels))
+
+
+def _label_scale(tile_width: int) -> int:
+    """Pixel size of the label digits: 2x for normal tiles, 1x for very small ones."""
+    return 2 if tile_width >= 150 else 1
+
+
+def _write_label_images(
+    folder: Path,
+    count: int,
+    tile_width: int,
+    start_seconds: float | None,
+    interval_seconds: float | None,
+) -> list[Path]:
+    """Write one label image per tile and return their paths in tile order."""
+    scale = _label_scale(tile_width)
+    texts: list[str] = []
+    for n in range(count):
+        seconds = None
+        if start_seconds is not None and interval_seconds:
+            seconds = start_seconds + n * interval_seconds
+        elif start_seconds is not None and count == 1:
+            seconds = start_seconds
+        texts.append(_label_text(n + 1, seconds))
+    # Every label image must be the same size: ffmpeg reads them as one stream.
+    width = max((len(t) for t in texts), default=0)
+    paths: list[Path] = []
+    for n, text in enumerate(texts):
+        path = folder / f"label_{n + 1:04d}.png"
+        path.write_bytes(_label_png(text.ljust(width), scale))
+        paths.append(path)
+    return paths
 
 
 def contact_sheet_is_labeled(out_path: Path) -> bool:
@@ -774,8 +855,9 @@ def make_contact_sheet(
     left-to-right, top-to-bottom). With ``labels`` on, each tile carries its
     tile number (the frame's ``index`` in the manifest) and, when
     ``start_seconds`` and ``interval_seconds`` are given, its time in the
-    video. Labels need an ffmpeg that can draw text; if it cannot, the sheet is
-    built without them and :func:`contact_sheet_is_labeled` reports False.
+    video. The labels are images drawn here and overlaid by ffmpeg, so no font
+    or text support is needed. If labelling fails for any reason the sheet is
+    built without labels and :func:`contact_sheet_is_labeled` reports False.
 
     Pass ``frame_count`` when the caller already knows it (it comes back from
     ``extract``) to skip re-listing the directory.
@@ -819,33 +901,27 @@ def make_contact_sheet(
     except OSError:
         pass
 
-    # Absolute paths throughout: the labelled pass runs ffmpeg from the font folder.
     frames_dir = Path(frames_dir).resolve()
     out_abs = Path(out_path).resolve()
     base = [ffmpeg, "-hide_banner", "-loglevel", "error", "-y"]
+    tile_filter = f"tile={cols}x{rows}:padding=4:margin=4:color=0x111111"
+    output_args = ["-frames:v", "1", "-q:v", str(quality), str(out_abs)]
 
-    def run_tile(extra_filter: str | None, cwd: Path | None):
-        chain = [f"scale={tile_width}:-2"]
-        if extra_filter:
-            chain.append(extra_filter)
-        chain.append(f"tile={cols}x{rows}:padding=4:margin=4:color=0x111111")
-        tile_args = ["-vf", ",".join(chain), "-frames:v", "1", "-q:v", str(quality), str(out_abs)]
-        kwargs = {"capture_output": True, "text": True}
-        if cwd is not None:
-            kwargs["cwd"] = str(cwd)
+    def run_plain():
+        tile_args = ["-vf", f"scale={tile_width}:-2,{tile_filter}"] + output_args
         glob_cmd = base + ["-pattern_type", "glob", "-i", str(frames_dir / "frame_*.jpg")] + tile_args
         # ffmpeg builds for Windows are compiled without glob support, so there the
         # frames are passed as an explicit list instead. The same list path is the
         # fallback anywhere else a build turns out to lack globbing.
         res = None
         if not _IS_WINDOWS:
-            res = subprocess.run(glob_cmd, **kwargs)
+            res = subprocess.run(glob_cmd, capture_output=True, text=True)
         if res is None or (res.returncode != 0 and _GLOB_UNSUPPORTED in (res.stderr or "")):
             list_path = out_abs.with_name(out_abs.name + ".frames.txt")
             try:
                 list_path.write_text(_concat_list(_list_frames(frames_dir)), encoding="utf-8")
                 list_cmd = base + ["-f", "concat", "-safe", "0", "-i", str(list_path)] + tile_args
-                res = subprocess.run(list_cmd, **kwargs)
+                res = subprocess.run(list_cmd, capture_output=True, text=True)
             finally:
                 try:
                     list_path.unlink()
@@ -853,14 +929,53 @@ def make_contact_sheet(
                     pass
         return res
 
+    def run_labeled():
+        """Overlay a label image on every frame, then tile. Two image lists in, one sheet out."""
+        import tempfile
+
+        frame_paths = _list_frames(frames_dir)
+        work = Path(tempfile.mkdtemp(prefix="analyze-video-labels-"))
+        try:
+            labels_list = work / "labels.txt"
+            frames_list = work / "frames.txt"
+            label_paths = _write_label_images(
+                work, len(frame_paths), tile_width, start_seconds, interval_seconds
+            )
+            frames_list.write_text(_concat_list(frame_paths), encoding="utf-8")
+            labels_list.write_text(_concat_list(label_paths), encoding="utf-8")
+            # Number both streams by frame count on one clock, so the Nth label
+            # always lands on the Nth frame whatever timing ffmpeg assigns to
+            # still images.
+            graph = (
+                f"[0:v]settb=1/25,setpts=N,scale={tile_width}:-2[frame];"
+                f"[1:v]settb=1/25,setpts=N[label];"
+                f"[frame][label]overlay=3:3:format=auto[marked];"
+                f"[marked]{tile_filter}[sheet]"
+            )
+            cmd = base + [
+                "-f", "concat", "-safe", "0", "-i", str(frames_list),
+                "-f", "concat", "-safe", "0", "-i", str(labels_list),
+                "-filter_complex", graph, "-map", "[sheet]",
+            ] + output_args
+            return subprocess.run(cmd, capture_output=True, text=True)
+        except OSError:
+            return None
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
+
     labeled = False
     result = None
-    if labels and (FONT_DIR / LABEL_FONT).is_file():
-        result = run_tile(_label_filter(tile_width, start_seconds, interval_seconds), FONT_DIR)
-        labeled = result.returncode == 0 and out_abs.exists() and out_abs.stat().st_size > 0
+    if labels:
+        result = run_labeled()
+        labeled = (
+            result is not None
+            and result.returncode == 0
+            and out_abs.exists()
+            and out_abs.stat().st_size > 0
+        )
     if not labeled:
-        # No labels asked for, no font, or this ffmpeg cannot draw text: plain sheet.
-        result = run_tile(None, None)
+        # Labels were not asked for, or could not be drawn: build a plain sheet.
+        result = run_plain()
     if result.returncode != 0:
         raise SystemExit(f"contact sheet tile failed: {result.stderr.strip()}")
     if not out_path.exists() or out_path.stat().st_size == 0:

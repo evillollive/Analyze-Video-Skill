@@ -5,7 +5,7 @@ All notable changes to `/analyze-video` are documented here.
 ## [Unreleased]
 
 ### Added
-- **Numbered contact sheets.** Every tile now shows its tile number and its time in the video, so a frame can be named by reading it off the sheet. The labels use a bundled copy of DejaVu Sans Mono Bold (`scripts/fonts/`, with its license). If the installed ffmpeg cannot draw text, the sheet is built without labels as before, and the manifest's `contact_sheet.labeled` says which.
+- **Numbered contact sheets.** Every tile now shows its tile number and its time in the video, so a frame can be named by reading it off the sheet. The labels are small images the skill draws itself and ffmpeg overlays, so they need no font and work with ffmpeg builds that cannot draw text (Homebrew's, for one). If labelling ever fails, the sheet is built without labels as before, and the manifest's `contact_sheet.labeled` says which.
 - **Pick frames by tile.** `select_frames.py --tiles 1:4,2:59` returns the path and timestamps for exactly those tiles, so swapping a frame no longer means reading the full manifest by hand. Each pick in the helper's output now carries a `tile` field.
 
 ### Changed

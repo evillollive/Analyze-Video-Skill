@@ -102,7 +102,7 @@ jobs:
           sel = json.load(open("out/selected.json"))
           assert len(sel) == 3, sel
           assert all(f.get("tile") for f in sel), sel
-          # The bundled font must work with this platform's ffmpeg.
+          # Tile labels must really be drawn with this platform's ffmpeg.
           assert d["chunks"][0]["contact_sheet"]["labeled"] is True, d["chunks"][0]["contact_sheet"]
           spec = {
               "out": os.path.abspath("out/analysis.docx"),
