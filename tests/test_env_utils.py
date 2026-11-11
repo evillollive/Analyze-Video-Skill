@@ -94,3 +94,46 @@ class TestResolveTool:
         monkeypatch.setenv("PATH", "")
         monkeypatch.setattr(env_utils, "_user_bin_dirs", lambda: [userbin])
         assert resolve_tool("yt-dlp") is None
+
+
+class TestWindowsToolLookup:
+    """On Windows a freshly installed tool is not on the running shell's PATH."""
+
+    def test_finds_exe_in_a_known_dir(self, tmp_path, monkeypatch):
+        tooldir = tmp_path / "Links"
+        tooldir.mkdir()
+        exe = tooldir / "ffmpeg.exe"
+        exe.write_text("x")
+        exe.chmod(0o755)
+        monkeypatch.setenv("PATH", "")
+        monkeypatch.setattr(env_utils.os, "name", "nt")
+        monkeypatch.setattr(env_utils, "_user_bin_dirs", lambda: [tooldir])
+        monkeypatch.setattr(env_utils, "_windows_winget_package_tool", lambda name: None)
+        monkeypatch.setattr(env_utils.shutil, "which", lambda name: None)
+        try:
+            found = resolve_tool("ffmpeg")
+        finally:
+            monkeypatch.undo()
+        assert found == str(exe)
+
+    def test_candidate_names_add_windows_extensions(self, monkeypatch):
+        monkeypatch.setattr(env_utils.os, "name", "nt")
+        try:
+            names = env_utils._candidate_names("npm")
+            keeps_suffix = env_utils._candidate_names("npm.cmd")
+        finally:
+            monkeypatch.undo()
+        assert names[:3] == ["npm.exe", "npm.cmd", "npm.bat"]
+        assert keeps_suffix == ["npm.cmd"]
+
+    def test_finds_tool_inside_a_winget_package_folder(self, tmp_path, monkeypatch):
+        pkg = tmp_path / "Microsoft" / "WinGet" / "Packages" / "Gyan.FFmpeg_x" / "ffmpeg-7-full_build" / "bin"
+        pkg.mkdir(parents=True)
+        (pkg / "ffprobe.exe").write_text("x")
+        monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+        assert env_utils._windows_winget_package_tool("ffprobe") == str(pkg / "ffprobe.exe")
+        assert env_utils._windows_winget_package_tool("nope") is None
+
+    def test_posix_names_are_unchanged(self):
+        if env_utils.os.name != "nt":
+            assert env_utils._candidate_names("ffmpeg") == ["ffmpeg"]

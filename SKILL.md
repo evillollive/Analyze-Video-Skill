@@ -125,7 +125,7 @@ The installer:
 - Linux: auto-installs the no-sudo dependencies (`yt-dlp` via `pipx`/`pip --user`, and the `docx` npm module into `~/.cache/analyze-video`). For packages that need root (`ffmpeg`, Node.js/npm), it prints exact install commands. If `yt-dlp` lands in a user-local bin that isn't on `PATH`, setup prints the exact `export PATH=...` line; run it before invoking the pipeline.
 - Reports the installed yt-dlp version; `--check` prints one note (and still exits 0) when it is more than 45 days old. `setup.py --update-ytdlp [--nightly]` updates it on request.
 - Installs yt-dlp with its `default` extras and checks for a supported JavaScript runtime (Deno or Node.js). YouTube extraction uses that runtime and requests the EJS challenge scripts with `--remote-components ejs:github`; if no runtime is available, setup warns that YouTube quality may be limited.
-- Windows: prints exact install commands.
+- Windows: installs `yt-dlp` with pip and missing `ffmpeg`, Node.js and Deno with winget, plus the `docx` npm module. If something cannot be installed, it prints the exact commands.
 - Scaffolds `~/.config/analyze-video/.env` at mode 0600.
 - Marks setup complete once required local dependencies are ready.
 
