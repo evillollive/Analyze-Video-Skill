@@ -209,7 +209,7 @@ class TestBuildYtdlpCmd:
             "yt-dlp", "u", "/o/video.%(ext)s",
             cookie_path=Path("/tmp/c.txt"), cookies_from_browser=None, player_client=None,
         )
-        assert "--cookies" in cmd and "/tmp/c.txt" in cmd
+        assert "--cookies" in cmd and str(Path("/tmp/c.txt")) in cmd
 
 
 class TestFormatSelector:

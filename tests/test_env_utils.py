@@ -2,6 +2,8 @@
 import sys
 from pathlib import Path
 
+import pytest
+
 SCRIPTS_DIR = str(Path(__file__).resolve().parent.parent / "scripts")
 if SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, SCRIPTS_DIR)
@@ -80,6 +82,7 @@ class TestResolveTool:
         monkeypatch.setattr(env_utils, "_user_bin_dirs", lambda: [tmp_path])
         assert resolve_tool("definitely-not-a-real-tool-xyz") is None
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="Windows has no executable permission bit")
     def test_ignores_non_executable_user_bin_entry(self, tmp_path, monkeypatch):
         """A non-executable file in a user-bin dir must not be treated as the tool."""
         userbin = tmp_path / "userbin"
