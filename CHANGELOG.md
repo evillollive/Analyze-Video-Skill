@@ -4,6 +4,10 @@ All notable changes to `/analyze-video` are documented here.
 
 ## [Unreleased]
 
+## [1.11.0] - 2026-11-10
+
+The skill now runs on Windows as well as macOS and Linux, its instructions are split into a short core plus reference files, and nothing in them assumes a particular agent, machine or storage service.
+
 ### Added
 - **Setup installs missing tools on Windows.** `setup.py` used to print install commands on Windows and stop. It now installs yt-dlp with pip and ffmpeg, Node.js and Deno with winget, then falls back to the printed commands for anything that fails. Tools installed a moment ago are found even though the running terminal's PATH does not include them yet.
 - **CI now runs on macOS and Windows.** A new job runs the test suite, `setup.py`, and a full local-file pipeline through the Word document build on real macOS and Windows machines, so setup and path handling are checked outside Linux.
