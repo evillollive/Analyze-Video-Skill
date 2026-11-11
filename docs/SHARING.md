@@ -133,4 +133,3 @@ For blocked sites, the supported path is user-authorized access: if you can watc
 - [ ] Add a sample generated `.docx` or PDF to the next release.
 - [ ] Submit PRs to relevant "awesome" lists.
 - [ ] Consider a small landing page if the project gets traction.
-- [ ] Explore a native GitHub Copilot App wrapper or canvas for source input, progress, frame selection, and docx download.
