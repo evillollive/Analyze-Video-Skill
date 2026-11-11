@@ -198,7 +198,14 @@ def _slugify(text: str, *, max_len: int = 60) -> str:
     """Lowercase, hyphen-separated slug safe for filenames ('' if no usable chars)."""
     slug = re.sub(r"[^a-zA-Z0-9]+", "-", text or "").strip("-").lower()
     if len(slug) > max_len:
-        slug = slug[:max_len].rstrip("-")
+        cut = slug[:max_len]
+        # Prefer ending on a whole word: if the cut landed mid-word, back up to
+        # the previous hyphen, unless that would throw away most of the slug.
+        if slug[max_len] != "-" and "-" in cut:
+            whole = cut[: cut.rindex("-")]
+            if len(whole) >= max_len // 2:
+                cut = whole
+        slug = cut.rstrip("-")
     return slug
 
 

@@ -173,28 +173,35 @@ function h1(text) {
 
 function h2(text) {
   return new Paragraph({
+    keepNext: true,                    // never strand a heading at the foot of a page
     spacing: { before: 300, after: 120 },
     children: [new TextRun({ text, bold: true, size: 24, font: 'Arial', color: '2D6A9F' })],
   });
 }
 
-function body(text) {
+function body(text, opts) {
   // Split on blank lines so multi-paragraph body text renders correctly
   // (TextRun does not honor \n; each paragraph is its own element).
   const blocks = String(text || '').split(/\n\s*\n/).map(s => s.trim()).filter(Boolean);
   if (blocks.length === 0) return [];
-  return blocks.map(block => new Paragraph({
+  // When frames follow, tie the last paragraph to them so a section's text and
+  // its first frames land on the same page.
+  const keepLastWithNext = Boolean(opts && opts.keepWithNext);
+  return blocks.map((block, i) => new Paragraph({
+    keepLines: true,
+    keepNext: keepLastWithNext && i === blocks.length - 1,
     spacing: { before: 0, after: 180 },
     children: [new TextRun({ text: block, size: 22, font: 'Arial' })],
   }));
 }
 
-function imgPara(filePath, dim, alt) {
+function imgPara(filePath, dim, alt, keepWithCaption) {
   const w = (dim && typeof dim.width === 'number' && dim.width > 0) ? dim.width : 480;
   const h = (dim && typeof dim.height === 'number' && dim.height > 0) ? dim.height : 270;
   const transformation = { width: w, height: h };
   if (!fs.existsSync(filePath)) throw new Error(`missing frame: ${filePath}`);
   return new Paragraph({
+    keepNext: Boolean(keepWithCaption),  // an image and its caption stay together
     spacing: { before: 220, after: 0 },
     children: [new ImageRun({
       type: 'jpg',                                       // REQUIRED for jpg
@@ -249,7 +256,7 @@ function frameCell(frame, videoDim) {
   const baseDim = (frame.width && frame.height)
     ? { width: frame.width, height: frame.height }
     : videoDim;
-  const children = [imgPara(frame.path, scaledForTwoUp(baseDim), frame.caption || 'video frame')];
+  const children = [imgPara(frame.path, scaledForTwoUp(baseDim), frame.caption || 'video frame', Boolean(frame.caption))];
   if (frame.caption) children.push(cap(frame.caption));
   return new TableCell({
     children,
@@ -267,6 +274,7 @@ function framesTwoUp(frames, videoDim) {
   const rows = [];
   for (let i = 0; i < valid.length; i += 2) {
     rows.push(new TableRow({
+      cantSplit: true,                 // a pair of frames never breaks across pages
       children: [frameCell(valid[i], videoDim), frameCell(valid[i + 1], videoDim)],
     }));
   }
@@ -302,7 +310,7 @@ function jpegSize(buf) {
 // layout). Letter/A4 printable height is ~9in; capping each image block near
 // ~4in (plus its heading/caption) lets two stack per page instead of one image
 // ballooning to a full page each. Aspect ratio is always preserved.
-function contactSheetPara(filePath, alt, explicitDim) {
+function contactSheetPara(filePath, alt, explicitDim, keepWithCaption) {
   const MAX_W = 520;
   const MAX_H = 400;
   if (!fs.existsSync(filePath)) {
@@ -326,6 +334,7 @@ function contactSheetPara(filePath, alt, explicitDim) {
     h = Math.max(1, Math.round(intrinsic.height * scale));
   }
   return new Paragraph({
+    keepNext: Boolean(keepWithCaption),  // an image and its caption stay together
     spacing: { before: 220, after: 0 },
     children: [new ImageRun({
       type: 'jpg',
@@ -459,9 +468,10 @@ function buildChildren(spec) {
     for (const section of sections) {
       if (!section || typeof section !== 'object') continue;
       if (section.heading) children.push(h2(section.heading));
-      if (section.body) children.push(...body(section.body));
-
       const frames = Array.isArray(section.frames) ? section.frames : [];
+      const hasFrames = frames.some(f => f && f.path);
+      if (section.body) children.push(...body(section.body, { keepWithNext: hasFrames }));
+
       const layout = section.frame_layout
         ? (section.frame_layout === '2up' ? '2up' : '1up')
         : videoLayout;
@@ -475,7 +485,7 @@ function buildChildren(spec) {
         const dim = (frame.width && frame.height)
           ? { width: frame.width, height: frame.height }
           : videoDim;
-        children.push(imgPara(frame.path, dim, frame.caption || 'video frame'));
+        children.push(imgPara(frame.path, dim, frame.caption || 'video frame', Boolean(frame.caption)));
         if (frame.caption) children.push(cap(frame.caption));
       }
     }
@@ -503,7 +513,7 @@ function buildChildren(spec) {
         ? { width: sheet.width, height: sheet.height }
         : null;
       const alt = sheet.alt || sheet.caption || 'contact sheet: grid of video frames';
-      children.push(contactSheetPara(sheet.path, alt, dim));
+      children.push(contactSheetPara(sheet.path, alt, dim, Boolean(sheet.caption)));
       if (sheet.caption) children.push(cap(sheet.caption));
     }
   }

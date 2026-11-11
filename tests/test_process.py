@@ -140,6 +140,14 @@ class TestSuggestedDocxName:
     def test_slugify_collapses_and_trims_separators(self):
         assert _slugify("  --Multiple   Spaces & Symbols--  ") == "multiple-spaces-symbols"
 
+    def test_slugify_truncates_on_a_word_boundary(self):
+        title = "Big Buck Bunny 60fps 4K - Official Blender Foundation Short Film"
+        assert _slugify(title) == "big-buck-bunny-60fps-4k-official-blender-foundation-short"
+        assert _suggested_docx_name(title, "u").endswith("-short-analysis.docx")
+
+    def test_slugify_keeps_a_hard_cut_for_one_long_word(self):
+        assert _slugify("a" * 80) == "a" * 60
+
     def test_slugify_truncates_without_trailing_hyphen(self):
         out = _slugify("a" * 40 + " " + "b" * 40, max_len=50)
         assert len(out) <= 50
