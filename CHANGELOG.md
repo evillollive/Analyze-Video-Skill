@@ -5,7 +5,10 @@ All notable changes to `/analyze-video` are documented here.
 ## [Unreleased]
 
 ### Removed
-- **GitHub Copilot is no longer a supported target.** The Copilot-only Word canvas review step, the `COPILOT_SKILL_DIR` lookup in Step 0, and the README's Copilot CLI section are gone. The skill directory still resolves from `CLAUDE_SKILL_DIR` and then from the folder `SKILL.md` lives in, so nothing changes under Claude Code or Codex.
+- **The GitHub Copilot Word canvas review step.** It only worked inside Copilot. The README's Copilot CLI section went with it.
+
+### Changed
+- **Step 0 no longer assumes a particular agent.** The skill folder resolves from `SKILL_DIR` if already set, then `CLAUDE_SKILL_DIR`, then `COPILOT_SKILL_DIR`, then the folder `SKILL.md` lives in. The README describes the skill as agent-neutral.
 
 ### Fixed
 - SKILL.md described `status.json` twice in the per-video outputs list; the two bullets are now one.
