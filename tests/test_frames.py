@@ -514,3 +514,53 @@ class TestParallelExtract:
         assert len(calls) == 4
         assert resumed_dir == frame_dir
         assert len(frames) == 100
+
+
+class TestContactSheetWithoutGlob:
+    """ffmpeg builds for Windows have no glob support; frames go in as a list."""
+
+    def _seed(self, tmp_path, monkeypatch):
+        frames_dir = tmp_path / "frames" / "fr_abc123"
+        _seed_frames(frames_dir, 4)
+        monkeypatch.setattr(frames_mod.shutil, "which", lambda name: "/usr/bin/ffmpeg")
+        return frames_dir, tmp_path / "contact_sheet.jpg"
+
+    def test_windows_uses_an_explicit_frame_list(self, tmp_path, monkeypatch):
+        frames_dir, out_path = self._seed(tmp_path, monkeypatch)
+        cmds, lists = [], []
+
+        def fake_run(cmd, **kw):
+            cmds.append(cmd)
+            if "concat" in cmd:
+                lists.append(Path(cmd[cmd.index("-i") + 1]).read_text())
+            Path(cmd[-1]).write_bytes(b"sheet")
+            return _FakeResult()
+
+        monkeypatch.setattr(frames_mod.subprocess, "run", fake_run)
+        monkeypatch.setattr(frames_mod, "_IS_WINDOWS", True)
+        make_contact_sheet(frames_dir, out_path, frame_count=4)
+        assert len(cmds) == 1 and "glob" not in cmds[0] and "concat" in cmds[0]
+        names = [line for line in lists[0].splitlines() if line]
+        assert len(names) == 4
+        assert names[0].endswith("frame_0001.jpg'") and names[-1].endswith("frame_0004.jpg'")
+        assert not list(tmp_path.glob("*.frames.txt"))
+
+    def test_falls_back_when_a_build_lacks_glob(self, tmp_path, monkeypatch):
+        frames_dir, out_path = self._seed(tmp_path, monkeypatch)
+        cmds = []
+
+        def fake_run(cmd, **kw):
+            cmds.append(cmd)
+            if "glob" in cmd:
+                result = _FakeResult()
+                result.returncode = 1
+                result.stderr = "Pattern type 'glob' was selected but globbing is not supported by this libavformat build"
+                return result
+            Path(cmd[-1]).write_bytes(b"sheet")
+            return _FakeResult()
+
+        monkeypatch.setattr(frames_mod.subprocess, "run", fake_run)
+        monkeypatch.setattr(frames_mod, "_IS_WINDOWS", False)
+        make_contact_sheet(frames_dir, out_path, frame_count=4)
+        assert len(cmds) == 2 and "concat" in cmds[1]
+        assert out_path.read_bytes() == b"sheet"

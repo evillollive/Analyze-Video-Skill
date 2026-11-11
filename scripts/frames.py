@@ -700,6 +700,23 @@ def _sheet_sig_path(out_path: Path) -> Path:
     return out_path.with_name(f".{out_path.name}.sheet.json")
 
 
+_GLOB_UNSUPPORTED = "globbing is not supported"
+_IS_WINDOWS = os.name == "nt"
+
+
+def _concat_list(frames: list[Path]) -> str:
+    """Build an ffmpeg concat-demuxer list naming each frame, in order.
+
+    Paths use forward slashes (valid on Windows too) and single quotes are
+    escaped the way the concat demuxer expects.
+    """
+    lines = []
+    for frame in frames:
+        escaped = frame.resolve().as_posix().replace("'", "'\\''")
+        lines.append(f"file '{escaped}'")
+    return "\n".join(lines) + "\n"
+
+
 def make_contact_sheet(
     frames_dir: Path,
     out_path: Path,
@@ -753,20 +770,32 @@ def make_contact_sheet(
     except OSError:
         pass
 
-    cmd = [
-        ffmpeg,
-        "-hide_banner",
-        "-loglevel", "error",
-        "-y",
-        "-pattern_type", "glob",
-        "-i", str(frames_dir / "frame_*.jpg"),
+    tile_args = [
         "-vf",
         f"scale={tile_width}:-2,tile={cols}x{rows}:padding=4:margin=4:color=0x111111",
         "-frames:v", "1",
         "-q:v", str(quality),
         str(out_path),
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    base = [ffmpeg, "-hide_banner", "-loglevel", "error", "-y"]
+    glob_cmd = base + ["-pattern_type", "glob", "-i", str(frames_dir / "frame_*.jpg")] + tile_args
+    # ffmpeg builds for Windows are compiled without glob support, so there the
+    # frames are passed as an explicit list instead. The same list path is the
+    # fallback anywhere else a build turns out to lack globbing.
+    result = None
+    if not _IS_WINDOWS:
+        result = subprocess.run(glob_cmd, capture_output=True, text=True)
+    if result is None or (result.returncode != 0 and _GLOB_UNSUPPORTED in (result.stderr or "")):
+        list_path = out_path.with_name(out_path.name + ".frames.txt")
+        try:
+            list_path.write_text(_concat_list(_list_frames(frames_dir)), encoding="utf-8")
+            list_cmd = base + ["-f", "concat", "-safe", "0", "-i", str(list_path)] + tile_args
+            result = subprocess.run(list_cmd, capture_output=True, text=True)
+        finally:
+            try:
+                list_path.unlink()
+            except OSError:
+                pass
     if result.returncode != 0:
         raise SystemExit(f"contact sheet tile failed: {result.stderr.strip()}")
     if not out_path.exists() or out_path.stat().st_size == 0:

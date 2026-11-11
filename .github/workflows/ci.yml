@@ -31,6 +31,91 @@ jobs:
           bash scripts/build-skill.sh
           test -f dist/analyze-video.skill
 
+  cross-platform:
+    name: Setup and end-to-end on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install ffmpeg (macOS)
+        if: runner.os == 'macOS'
+        run: brew install ffmpeg
+
+      - name: Install ffmpeg (Windows)
+        if: runner.os == 'Windows'
+        run: choco install ffmpeg -y --no-progress
+
+      - name: Install yt-dlp and pytest
+        run: python -m pip install --quiet "yt-dlp[default]" pytest
+
+      - name: Python tests
+        run: python -m pytest tests/ -q
+
+      - name: setup.py installs what it can, then --check passes
+        run: |
+          python scripts/setup.py || true
+          python scripts/setup.py --check
+
+      - name: End-to-end pipeline on a synthetic local video
+        run: |
+          set -euo pipefail
+          SKILL="$PWD"
+          WORK="$(python -c 'import tempfile; print(tempfile.mkdtemp().replace(chr(92), "/"))')"
+          cd "$WORK"
+          ffmpeg -hide_banner -loglevel error \
+            -f lavfi -i testsrc=size=320x240:rate=10:duration=4 \
+            -f lavfi -i sine=frequency=440:duration=4 \
+            -c:v libx264 -pix_fmt yuv420p -c:a aac -shortest sample.mp4
+          python "$SKILL/scripts/process.py" --source sample.mp4 --out-dir out --no-whisper
+          test -f out/manifest_lite.json
+          python "$SKILL/scripts/select_frames.py" out/manifest_lite.json 3 > out/selected.json
+          python - <<'PY'
+          import json, os
+          d = json.load(open("out/manifest_lite.json"))
+          sel = json.load(open("out/selected.json"))
+          assert len(sel) == 3, sel
+          spec = {
+              "out": os.path.abspath("out/analysis.docx"),
+              "title": "CI cross-platform analysis",
+              "videos": [{
+                  "title": d.get("title") or "sample",
+                  "source": d["source"],
+                  "sections": [{
+                      "heading": "Overview (0:00 to 0:04)",
+                      "body": "Synthetic test pattern with a counter and a steady tone.",
+                      "frames": [{
+                          "path": f["absolute_path"],
+                          "caption": "Color bars test pattern with a frame counter.",
+                          "alt": "Color bars test pattern.",
+                      } for f in sel],
+                  }],
+              }],
+          }
+          json.dump(spec, open("out/spec.json", "w"))
+          PY
+          python "$SKILL/scripts/validate_spec_paths.py" --spec out/spec.json
+          node "$SKILL/scripts/build-docx.js" --spec out/spec.json
+          test -f out/analysis.docx
+          echo "cross-platform OK"
+
   integration:
     name: Constrained-environment integration
     runs-on: ubuntu-latest

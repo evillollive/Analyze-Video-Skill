@@ -96,8 +96,13 @@ function resolveDocx() {
     fs.mkdirSync(cacheParent, { recursive: true });
     const { execFileSync } = require('child_process');
     process.stderr.write('[build-docx] installing docx into ' + cacheModules + ' ...\n');
-    execFileSync('npm', ['install', 'docx@^9', '--no-audit', '--no-fund', '--prefix', cacheParent], {
+    // On Windows npm is `npm.cmd`, which Node only launches through a shell;
+    // with a shell the prefix must be quoted in case the home path has spaces.
+    const isWin = process.platform === 'win32';
+    const prefixArg = isWin ? '"' + cacheParent + '"' : cacheParent;
+    execFileSync('npm', ['install', 'docx@^9', '--no-audit', '--no-fund', '--prefix', prefixArg], {
       stdio: ['ignore', 'ignore', 'inherit'],
+      shell: isWin,
     });
     return require(path.join(cacheModules, 'docx'));
   } catch (e) {

@@ -26,7 +26,7 @@ class TestArgs:
 
     def test_auth_args(self):
         assert ytdlp.auth_args(None, None) == []
-        assert ytdlp.auth_args(Path("/c.txt"), None) == ["--cookies", "/c.txt"]
+        assert ytdlp.auth_args(Path("/c.txt"), None) == ["--cookies", str(Path("/c.txt"))]
         assert ytdlp.auth_args(None, "firefox") == ["--cookies-from-browser", "firefox"]
 
     def test_runtime_prefers_deno(self, monkeypatch):

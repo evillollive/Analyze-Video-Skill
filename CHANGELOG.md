@@ -4,6 +4,9 @@ All notable changes to `/analyze-video` are documented here.
 
 ## [Unreleased]
 
+### Added
+- **CI now runs on macOS and Windows.** A new job runs the test suite, `setup.py`, and a full local-file pipeline through the Word document build on real macOS and Windows machines, so setup and path handling are checked outside Linux.
+
 ### Removed
 - **The GitHub Copilot Word canvas review step.** It only worked inside Copilot. The README's Copilot CLI section went with it.
 
@@ -11,6 +14,10 @@ All notable changes to `/analyze-video` are documented here.
 - **Step 0 no longer assumes a particular agent.** The skill folder resolves from `SKILL_DIR` if already set, then `CLAUDE_SKILL_DIR`, then `COPILOT_SKILL_DIR`, then the folder `SKILL.md` lives in. The README describes the skill as agent-neutral.
 
 ### Fixed
+- **Setup no longer crashes on Windows.** `setup.py` and `build-docx.js` ran `npm` by its bare name, which Windows cannot launch (it is `npm.cmd` there), so installing the Word document module failed with `FileNotFoundError`. Both now launch it in a way that works on Windows.
+- **Contact sheets now build on Windows.** ffmpeg builds for Windows have no glob support, so tiling failed with "globbing is not supported". Frames are passed to ffmpeg as an explicit list there, and as a fallback on any other build without globbing. The resulting sheet is byte-identical.
+- Setup no longer prints a `chmod 600` warning for the `.env` file on Windows, where it does not apply.
+- Three tests assumed POSIX paths and permission bits and failed on Windows.
 - SKILL.md described `status.json` twice in the per-video outputs list; the two bullets are now one.
 - SKILL.md's bundled-runtime list now includes `ytdlp.py`, `health_check.py`, `export_oft.py`, and `mcp_server.py`.
 - Removed a compiled `scripts/__pycache__/frames.cpython-310.pyc` that was committed by mistake.

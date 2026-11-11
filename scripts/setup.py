@@ -133,6 +133,10 @@ def _js_runtime() -> dict[str, str] | None:
 
 def _check_file_permissions(path: Path) -> None:
     """Warn to stderr if a secrets file is world/group readable."""
+    if os.name == "nt":
+        # Windows has no POSIX permission bits; st_mode always looks readable
+        # and `chmod 600` is not a fix there.
+        return
     try:
         mode = path.stat().st_mode
         if mode & 0o044:
@@ -459,11 +463,17 @@ def _npm_install_docx(prefix: Path) -> tuple[bool, str]:
             )
         except OSError:
             pass
-    result = subprocess.run(
-        ["npm", "install", "--no-audit", "--no-fund", "--prefix", str(prefix), "docx@^9"],
-        capture_output=True,
-        text=True,
-    )
+    # Resolve npm to a full path first: on Windows it is `npm.cmd`, which
+    # subprocess cannot launch by the bare name "npm".
+    npm = shutil.which("npm") or "npm"
+    try:
+        result = subprocess.run(
+            [npm, "install", "--no-audit", "--no-fund", "--prefix", str(prefix), "docx@^9"],
+            capture_output=True,
+            text=True,
+        )
+    except OSError as exc:
+        return False, f"could not run npm: {exc}"
     if result.returncode != 0:
         return False, f"npm install docx failed: {result.stderr.strip()[:300]}"
     return True, f"installed into {prefix / 'node_modules'}"
