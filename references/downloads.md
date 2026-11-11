@@ -42,6 +42,25 @@ python3 "${SKILL_DIR}/scripts/process.py" \
 
 `--cookies-from-browser` only works when yt-dlp runs on the same operating system as the browser.
 
+## Low-resolution results
+
+A small or soft picture is only a problem if the source offers better. Some videos exist only at 240p or 360p. To see what a video offers, list its formats (use the full path to yt-dlp if it is not on PATH):
+
+```bash
+yt-dlp -F "<url>"
+```
+
+If the list tops out at the resolution you got, the result is the source's limit: say so in the document's `meta` line and carry on. If the list shows higher resolutions than you got, treat it as a degraded download and follow the failures below.
+
+Analysis downloads are deliberately capped near 480p, because frames are rendered about 512 pixels wide. Pass `--download-max-width 0` to `process.py` only when the user needs larger frames.
+
+## Warnings that are safe to pass along
+
+When the download succeeds, these yt-dlp messages need no action. Mention them to the user once and continue:
+
+- "Support for Python version 3.10 has been deprecated": a future yt-dlp may require a newer Python.
+- "no impersonate target is available": an optional yt-dlp component is not installed. It matters only if a download fails.
+
 ## Download failures
 
 - **Interrupted download**: re-run the exact same command. A download killed partway through resumes from the bytes already on disk rather than starting over, so a timed-out or dropped transfer does not re-fetch the whole video. Use `--force` only when the partial data should be discarded.
