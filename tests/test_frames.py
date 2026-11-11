@@ -561,6 +561,123 @@ class TestContactSheetWithoutGlob:
 
         monkeypatch.setattr(frames_mod.subprocess, "run", fake_run)
         monkeypatch.setattr(frames_mod, "_IS_WINDOWS", False)
-        make_contact_sheet(frames_dir, out_path, frame_count=4)
+        # The plain (unlabelled) path is the one that uses ffmpeg's glob input.
+        make_contact_sheet(frames_dir, out_path, frame_count=4, labels=False)
         assert len(cmds) == 2 and "concat" in cmds[1]
         assert out_path.read_bytes() == b"sheet"
+
+
+class TestContactSheetLabels:
+    """Tiles carry their number and time, drawn without any font or text filter."""
+
+    def _seed(self, tmp_path, monkeypatch):
+        frames_dir = tmp_path / "frames" / "fr_abc123"
+        _seed_frames(frames_dir, 4)
+        monkeypatch.setattr(frames_mod.shutil, "which", lambda name: "/usr/bin/ffmpeg")
+        monkeypatch.setattr(frames_mod, "_IS_WINDOWS", False)
+        return frames_dir, tmp_path / "contact_sheet.jpg"
+
+    def test_label_text(self):
+        assert frames_mod._label_text(59, 777.4) == "59 12:57"
+        assert frames_mod._label_text(1, 0.0) == "1 0:00"
+        assert frames_mod._label_text(3, 3725.0) == "3 1:02:05"
+        assert frames_mod._label_text(7, None) == "7"
+
+    def test_label_png_is_a_valid_image_of_the_expected_size(self):
+        import struct
+        import zlib
+
+        data = frames_mod._label_png("59 12:57", 2)
+        assert data[:8] == b"\x89PNG\r\n\x1a\n"
+        width, height, depth, color = struct.unpack(">IIBB", data[16:26])
+        assert (depth, color) == (8, 6)                       # 8-bit RGBA
+        assert height == 2 * 2 * 2 + 7 * 2                    # padding + glyph rows
+        assert width == 2 * 2 * 2 + 8 * 12 - 2                # padding + 8 characters
+        # the IDAT payload inflates to exactly the pixel rows
+        idat_len = struct.unpack(">I", data[33:37])[0]
+        raw = zlib.decompress(data[41:41 + idat_len])
+        assert len(raw) == height * (1 + width * 4)
+        assert b"\xff\xff\xff\xff" in raw and bytes((0, 0, 0, 170)) in raw
+
+    def test_every_glyph_is_five_by_seven(self):
+        for char, rows in frames_mod._GLYPHS.items():
+            assert len(rows) == 7 and all(len(r) == 5 for r in rows), char
+        assert set("0123456789: ") <= set(frames_mod._GLYPHS)
+
+    def test_label_images_share_one_size(self, tmp_path):
+        paths = frames_mod._write_label_images(tmp_path, 12, 200, 595.0, 3.0)
+        assert [p.name for p in paths][:2] == ["label_0001.png", "label_0002.png"]
+        sizes = {p.read_bytes()[16:24] for p in paths}     # width and height in the header
+        assert len(sizes) == 1
+
+    def test_labeled_run_overlays_label_images(self, tmp_path, monkeypatch):
+        frames_dir, out_path = self._seed(tmp_path, monkeypatch)
+        calls = []
+
+        def fake_run(cmd, **kw):
+            # the label list must exist while ffmpeg runs
+            lists = [Path(cmd[i + 1]) for i, a in enumerate(cmd) if a == "-i"]
+            calls.append((cmd, [p.read_text() for p in lists]))
+            Path(cmd[-1]).write_bytes(b"sheet")
+            return _FakeResult()
+
+        monkeypatch.setattr(frames_mod.subprocess, "run", fake_run)
+        make_contact_sheet(frames_dir, out_path, frame_count=4, start_seconds=0.0, interval_seconds=2.0)
+        assert len(calls) == 1
+        cmd, lists = calls[0]
+        graph = cmd[cmd.index("-filter_complex") + 1]
+        assert "overlay=" in graph and "tile=" in graph and "drawtext" not in graph
+        assert lists[0].count("frame_") == 4 and lists[1].count("label_") == 4
+        assert Path(cmd[-1]).is_absolute()
+        assert frames_mod.contact_sheet_is_labeled(out_path)
+
+    def test_falls_back_to_a_plain_sheet_when_labelling_fails(self, tmp_path, monkeypatch):
+        frames_dir, out_path = self._seed(tmp_path, monkeypatch)
+        calls = []
+
+        def fake_run(cmd, **kw):
+            calls.append(cmd)
+            if "-filter_complex" in cmd:
+                result = _FakeResult()
+                result.returncode = 1
+                result.stderr = "overlay failed"
+                return result
+            Path(cmd[-1]).write_bytes(b"sheet")
+            return _FakeResult()
+
+        monkeypatch.setattr(frames_mod.subprocess, "run", fake_run)
+        make_contact_sheet(frames_dir, out_path, frame_count=4, start_seconds=0.0, interval_seconds=2.0)
+        assert len(calls) == 2
+        assert out_path.read_bytes() == b"sheet"
+        assert not frames_mod.contact_sheet_is_labeled(out_path)
+
+    def test_labels_off_builds_a_plain_sheet(self, tmp_path, monkeypatch):
+        frames_dir, out_path = self._seed(tmp_path, monkeypatch)
+        calls = []
+
+        def fake_run(cmd, **kw):
+            calls.append(cmd)
+            Path(cmd[-1]).write_bytes(b"sheet")
+            return _FakeResult()
+
+        monkeypatch.setattr(frames_mod.subprocess, "run", fake_run)
+        make_contact_sheet(frames_dir, out_path, frame_count=4, labels=False)
+        assert len(calls) == 1 and "-filter_complex" not in calls[0]
+        assert not frames_mod.contact_sheet_is_labeled(out_path)
+
+    def test_labeled_sheet_is_reused_on_rerun(self, tmp_path, monkeypatch):
+        frames_dir, out_path = self._seed(tmp_path, monkeypatch)
+        ran = {"count": 0}
+
+        def fake_run(cmd, **kw):
+            ran["count"] += 1
+            Path(cmd[-1]).write_bytes(b"sheet")
+            return _FakeResult()
+
+        monkeypatch.setattr(frames_mod.subprocess, "run", fake_run)
+        for _ in range(2):
+            make_contact_sheet(frames_dir, out_path, frame_count=4, start_seconds=0.0, interval_seconds=2.0)
+        assert ran["count"] == 1
+        # A different time grid is a different sheet.
+        make_contact_sheet(frames_dir, out_path, frame_count=4, start_seconds=10.0, interval_seconds=2.0)
+        assert ran["count"] == 2

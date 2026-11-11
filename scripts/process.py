@@ -56,6 +56,7 @@ from frames import (  # noqa: E402
     extract,
     format_time,
     get_metadata,
+    contact_sheet_is_labeled,
     make_contact_sheet,
     parse_time,
     probe_keyframe_interval,
@@ -444,6 +445,13 @@ def _process_chunk(
             tile_width=tile_width,
             frame_count=len(chunk_frames),
             force=getattr(args, "force", False),
+            start_seconds=chunk_frames[0]["timestamp_seconds"],
+            interval_seconds=(
+                (chunk_frames[-1]["timestamp_seconds"] - chunk_frames[0]["timestamp_seconds"])
+                / (len(chunk_frames) - 1)
+                if len(chunk_frames) > 1
+                else None
+            ),
         )
 
     # Per-chunk transcript = indices into the top-level segments array (no
@@ -482,6 +490,8 @@ def _process_chunk(
                 "cols": args.contact_sheet_cols,
                 "rows": (len(chunk_frames) + args.contact_sheet_cols - 1)
                 // args.contact_sheet_cols,
+                # True when each tile shows its number (= frames[].index) and time.
+                "labeled": contact_sheet_is_labeled(chunk_sheet),
             }
             if chunk_sheet
             else None

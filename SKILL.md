@@ -200,32 +200,40 @@ Do not read every frame. The pipeline produces contact sheets and a lightweight 
 
 1. Read `manifest_lite.json` first. It has chunk metadata, timestamps, contact-sheet paths, `docx_image_dimensions`, `suggested_docx_name`, `transcript_path` and quick-mode flags, but no transcript text or per-frame arrays.
 2. If `quick_mode` is true, skip contact-sheet preview unless the user asked for detailed visual analysis.
-3. Otherwise read each relevant contact sheet from `manifest_lite.chunks[].contact_sheet.absolute_path`. For very long videos, read only the chunks that match the user's focus.
+3. Otherwise read each relevant contact sheet from `manifest_lite.chunks[].contact_sheet.absolute_path`. Each tile is labeled with its tile number and its time in the video. For very long videos, read only the chunks that match the user's focus.
 4. Read the full `manifest.json` only when you need transcript text (`manifest.transcript_segments[]`) for quotes, section writing, or refining section boundaries.
 
 Videos over 12 minutes are split into chunks of about 10 minutes that overlap by a few seconds, so the last tiles of one sheet and the first tiles of the next can show the same moment. Each chunk has its own contact sheet and its own frame spacing. If `manifest_lite.preview_cost_warning` is true and the user asked about a narrow moment, prefer re-running with `--start` and `--end` over reading every contact sheet.
 
 ## Step 5: Select frames
 
-Use the helper instead of re-deriving the frame-selection math:
+Start from the helper's picks:
 
 ```bash
 python3 "${SKILL_DIR}/scripts/select_frames.py" "$VIDEO_DIR/manifest_lite.json" <N>
 ```
 
-You can pass `manifest_lite.json` or `manifest.json`; the helper transparently loads the full manifest for the per-frame paths.
+It spreads the picks across the video and swaps out any frame that looks nearly identical to one already picked, so a talk filmed from one camera gives a few shots of the speaker plus the cutaways, not the same shot twenty times. It also avoids near-blank frames. Add `--even` only if the user wants strictly even spacing.
 
-Always run `select_frames.py` in the current session before spec build. Do not reuse selected-frame paths from prior-session notes or summaries.
+The output is a JSON list with `chunk_index`, `frame_index`, `tile`, `absolute_path` and timestamps. Always run it in the current session; do not reuse frame paths from earlier notes or summaries.
 
-The output is a JSON list of selected frames with `chunk_index`, `frame_index`, `absolute_path`, and timestamps. Refine the picks after looking at contact sheets when needed:
+The helper judges how frames look, not what they mean. Refine its picks after looking at the contact sheets:
+
 - Shift toward visible scene transitions.
 - Include opening and closing frames if visually distinct.
-- Prefer frames that show concrete UI/text/action over near-duplicates.
+- Prefer frames that show concrete UI, text or action.
+- Bring back anything important it dropped, such as a name graphic or title card.
 - Do not spend more than one frame on end credits or a static end card unless the user asked about them.
 
-To swap in a different frame, count tiles on the chunk's contact sheet left to right, top to bottom, starting at 1. Tile N is `chunks[].frames[N-1]` in the full `manifest.json`; use that entry's `absolute_path`, `timestamp_seconds` and `timestamp_formatted`.
+To swap frames, read the tile number printed on the contact sheet and ask for the final set by tile, written `<chunk>:<tile>`:
 
-Read selected full-resolution frames in one parallel Read batch per video. For batch processing, finish one video before reading frames for the next.
+```bash
+python3 "${SKILL_DIR}/scripts/select_frames.py" "$VIDEO_DIR/manifest_lite.json" --tiles 1:4,1:19,2:59
+```
+
+That returns the same fields for exactly those frames, in the order given. If a sheet has no labels (`contact_sheet.labeled` is false in the manifest), count tiles left to right, top to bottom, starting at 1.
+
+Read the selected full-resolution frames in one parallel batch per video. For batch processing, finish one video before reading frames for the next.
 
 ## Step 6: Write the analysis
 
@@ -337,14 +345,14 @@ Rules for the spec:
 - `out`: an absolute path in the folder where the document should be saved: the one the user chose, otherwise `$OUT_DIR`. For one video, use the manifest's `suggested_docx_name` as the file name. For a combined document, build a similar name from the videos (for example the first title slug plus `-and-2-more`) and end it with `-analysis.docx`.
 - `source`: the original URL or local path the user gave (`manifest_lite.source`, or `manifest_lite.url` for URLs). Never a cache or download path.
 - `image_dimensions`: use `manifest_lite.docx_image_dimensions`.
-- Frame paths: from this session's `select_frames.py` output, or from this session's `manifest.json` for frames you swapped in (Step 5). Never from an earlier session's notes.
+- Frame paths: from this session's `select_frames.py` output, including its `--tiles` output for frames you swapped in (Step 5). Never from an earlier session's notes.
 - `meta`: a short line under the title. Do not repeat the source URL there; the builder prints it on its own "Source:" line.
 - `body`: separate paragraphs with a blank line.
 - `time_range`, `timestamp_seconds` and `timestamp_formatted` are recorded for other tools and are not printed in the document. Put the time range in the section heading, and put a timestamp in a caption when the reader should see it.
 - `frame_layout`: `"1up"` (default) or `"2up"`, settable at the top level, per video, or per section.
 - `appendix_contact_sheets` and `appendix_transcript`: include only what the user approved in Step 7. Leave them out otherwise.
 
-`validate_spec_paths.py` is mandatory. If it fails, a path is stale or mistyped: take the paths again from this session's `select_frames.py` output or `manifest.json` and validate again. Confirm the `.docx` exists, then deliver it, along with any extras the user approved.
+`validate_spec_paths.py` is mandatory. If it fails, a path is stale or mistyped: take the paths again from this session's `select_frames.py` output and validate again. Confirm the `.docx` exists, then deliver it, along with any extras the user approved.
 
 ## When something fails
 
