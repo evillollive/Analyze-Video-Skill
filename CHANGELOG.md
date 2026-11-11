@@ -4,6 +4,11 @@ All notable changes to `/analyze-video` are documented here.
 
 ## [Unreleased]
 
+### Fixed
+- SKILL.md described `status.json` twice in the per-video outputs list; the two bullets are now one.
+- SKILL.md's bundled-runtime list now includes `ytdlp.py`, `health_check.py`, `export_oft.py`, and `mcp_server.py`.
+- Removed a compiled `scripts/__pycache__/frames.cpython-310.pyc` that was committed by mistake.
+
 ## [1.10.0] - 2026-11-05
 
 ### Added

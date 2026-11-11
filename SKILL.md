@@ -233,7 +233,6 @@ Per-video outputs include:
 - `manifest.json`: full schema v3 manifest with top-level `transcript_segments`. Segment timestamps are always absolute positions in the source video, including on a focused `--start`/`--end` run.
 - `transcript.txt`: human-readable transcript (`[mm:ss] text` per line), written whenever a transcript exists. Its path is also in `manifest_lite.transcript_path`.
 - `report.md`: human-readable pipeline report.
-- `status.json`: live stage marker (`downloading`, `extracting` chunk i of N, `complete`). Useful for checking progress mid-run.
 - `manifest_partial.json`: a partial manifest written as chunks finish; present only while a run is in flight or after it was interrupted. Removed on success.
 - `chunks/chunk_N/contact_sheet.jpg`: one contact sheet per processed chunk.
 - `chunks/chunk_N/frames/<sig>/frame_NNNN.jpg`: full-resolution selected-frame candidates. The `<sig>` subfolder is keyed to the extraction settings; always use the `absolute_path` from the manifest rather than building this path yourself.
@@ -516,4 +515,4 @@ If cleanup requested, remove per-video working directories and any spec/build sc
 
 The skill does not upload source video, persist cookies, post to platform accounts, or access platform accounts by default. Cookie-based retries must be initiated only after user consent and should use the user's own authorized browser/session.
 
-Bundled runtime: `scripts/process.py`, `captions.py`, `download.py`, `frames.py`, `transcribe.py`, `whisper.py`, `setup.py`, `select_frames.py`, `validate_spec_paths.py`, `lint_spec_quality.py`, `run_guarded_pipeline.py`, and `build-docx.js`.
+Bundled runtime: `scripts/process.py`, `captions.py`, `download.py`, `ytdlp.py`, `frames.py`, `transcribe.py`, `whisper.py`, `setup.py`, `health_check.py`, `select_frames.py`, `validate_spec_paths.py`, `lint_spec_quality.py`, `run_guarded_pipeline.py`, `export_oft.py`, `mcp_server.py`, and `build-docx.js`.
