@@ -17,7 +17,24 @@ user-invocable: true
 
 # analyze-video
 
-Self-contained pipeline that takes one or more video sources, downloads or resolves them locally, extracts frames, uses captions or Whisper for transcripts when available, tiles frames into contact sheets for cheap visual review, selects representative frames, and produces a polished Word document with timestamped analysis. It can also export that analysis as an Open Filmmaker Toolkit project file.
+Self-contained pipeline that takes one or more video sources, downloads or resolves them locally, extracts frames, uses captions or Whisper for transcripts when available, tiles frames into contact sheets for cheap visual review, selects representative frames, and produces a polished Word document with timestamped analysis. It can also download caption files, save a best-quality local copy, and export the analysis as an Open Filmmaker Toolkit project file.
+
+The skill works with any agent that can run shell commands, on macOS, Linux or Windows. Two conventions used below:
+
+- **Ask the user** means use your environment's question tool if it has one, otherwise ask in plain text.
+- **Deliver** means give the user the absolute path of the file, as a clickable file link if your environment supports them.
+
+## Reference files
+
+Read these only when the situation calls for them. They live in `${SKILL_DIR}/references/`.
+
+| File | Read it when |
+|---|---|
+| `downloads.md` | A download fails or comes back degraded, the user wants a best-quality copy, or you need the full caption options |
+| `environments.md` | Commands time out, setup and processing run in different places, a download is blocked only from this machine, tools are installed but not found, or you are on Windows |
+| `docx-spec.md` | You need layouts, appendices, a PDF, standalone files, cleanup, or the `docx` module cannot be found |
+| `pipeline-options.md` | A run was interrupted, or you need output files, manifest fields, caching, parallelism or promo trimming |
+| `oft-export.md` | The user wants an Open Filmmaker Toolkit project file |
 
 ## Safety and privacy boundary
 
@@ -25,20 +42,17 @@ This skill runs `yt-dlp`, `ffmpeg`, and `ffprobe` locally. Source video files, f
 
 Do not try to bypass platform bot detection or access controls. If a site blocks unauthenticated downloads, the safe fallback is explicit user authorization: ask whether the user wants to use their own browser session via `--cookies-from-browser <browser>` or a cookies file via `--cookies <path>`. Do not spoof watch sessions, forge tokens, automate hidden playback to trick a site, or use unrelated hosting/services as an evasion layer.
 
-## Token strategy
+## Choose the mode
 
-Do not read every frame. The pipeline emits per-chunk contact sheets and a lightweight manifest so you can preview the video at low cost:
+- **Analysis** (default): the user wants a written document about one or more videos. Follow Steps 0 to 8.
+- **Captions only**: the user wants subtitle or transcript files and no analysis. Follow "Captions-only mode" and stop.
+- **Download only**: the user wants a local copy of the video and no analysis. Follow "Download-only mode" and stop.
 
-1. Read `manifest_lite.json` first. It omits transcript text AND per-frame arrays but includes chunk metadata, timestamps, contact-sheet paths, `docx_image_dimensions`, `suggested_docx_name`, `transcript_path`, quick-mode flags, and the full manifest path. (`select_frames.py` pulls per-frame paths from the full manifest for you.)
-2. Read contact sheets only when useful. For quick mode or very long videos, call `select_frames.py` directly and preview only the relevant chunks.
-3. Read selected full-resolution frames in one parallel batch per video.
-4. Read the full `manifest.json` only when transcript text is needed for direct quotes, section-writing, or transcript-boundary refinement.
-
-For long videos, `process.py` auto-chunks unfocused videos over 12 minutes into about 10-minute chunks with overlap. If `manifest_lite.preview_cost_warning` is true and the user asked about a narrow moment, prefer re-running with `--start` and `--end` instead of reading every contact sheet.
+In every mode, first resolve the skill directory as shown in Step 0.
 
 ## Captions-only mode
 
-If the user only wants caption or subtitle files (not an analysis), skip the whole report pipeline: no setup preflight, frame questions, `process.py`, or `.docx`. Only `yt-dlp` is needed; if it is missing, `captions.py` prints install guidance (or run `setup.py`).
+Skip the report pipeline: no setup preflight, frame questions, `process.py`, or `.docx`. Only `yt-dlp` is needed; if it is missing, `captions.py` prints install guidance (or run `setup.py`).
 
 ```bash
 python3 "${SKILL_DIR}/scripts/captions.py" \
@@ -47,43 +61,40 @@ python3 "${SKILL_DIR}/scripts/captions.py" \
   [--langs en] [--format srt] [--no-auto] [--list]
 ```
 
-- `--format`: `srt` (default), `vtt` (raw track as served), `txt` (deduped `[mm:ss] text` transcript), a comma list like `srt,txt`, or `all`.
-- `--langs`: `en` (default, covers en/en-US/en-GB/en-orig), comma-separated codes or yt-dlp regexes (`es,fr`, `pt.*`), or `all`. `all` can be large on YouTube when auto-translations are included; combine with `--no-auto` for uploader tracks only.
-- `--no-auto`: manual (uploader) captions only. Without it, auto-generated captions fill in languages with no manual track.
-- `--list`: print available manual and auto languages without downloading. Use it when the user asks what languages exist or when the requested language fails.
-- Files are named `<title> [<id>].<lang>.<ext>`; existing files are never overwritten (a ` (2)` suffix is added).
+Defaults are English and SRT. `--format` also takes `vtt`, `txt`, a comma list, or `all`; `--list` shows the available languages without downloading. Full options and the output format are in `references/downloads.md`.
 
-Stdout is a JSON array with one entry per source: `files` (`lang`, `format`, `path`) on success or `error` on failure. Exit code is non-zero if any source failed; report successful files and explain each error. Access failures follow the same rules as the main pipeline (see Failure modes): offer user-authorized `--cookies-from-browser`/`--cookies` only after a failure. Local video files are not supported in this mode; point the user to any sidecar `.srt`/`.vtt` next to the file instead.
-
-Do not offer cleanup or PDF steps in this mode. Report the file paths and stop.
+Local video files are not supported in this mode; point the user to any sidecar `.srt`/`.vtt` next to the file instead. Do not offer cleanup or PDF steps. Report the file paths and stop.
 
 ## Download-only mode
 
-When the user asks for a local copy without analysis, skip setup of the docx stack, frame extraction, contact sheets, and the report pipeline. Before downloading, ask only for unanswered choices:
+Skip setup of the docx stack, frame extraction, contact sheets, and the report pipeline. Before downloading, ask only for the choices the user has not already made:
 
 1. Deliverable: video file only, or video file plus analysis.
 2. Container: MKV (any compatible source codec), edit-friendly MP4 (H.264 video + AAC audio), or both.
 3. Captions: none, SRT, or SRT plus a timestamped transcript.
 4. Destination folder.
 
-Use the user's chosen destination for final files. Keep yt-dlp temporary fragments outside synced folders (in Cowork, use `"$HOME/dltmp"` as the temp directory). The standalone script requires only yt-dlp, ffprobe, and ffmpeg:
+The script needs only yt-dlp, ffprobe, and ffmpeg:
 
 ```bash
 python3 "${SKILL_DIR}/scripts/download.py" --best \
   --source "<url>" --out-dir "<destination>" \
   --container mkv --audio-lang original --subs none \
-  --temp-dir "$HOME/dltmp"
+  --temp-dir "<a local folder that is not synced by a cloud service>"
 ```
 
-Use `--audio-lang <code>` only when the user requests a specific language. The default `original` selects the track yt-dlp labels original and excludes DRC variants. MP4 selects H.264 + AAC streams without re-encoding video; if those exact compatible streams are unavailable, explain that and stop rather than silently re-encoding. For "both", run the selected container choices separately.
+Rules that always apply:
 
-The script prints the title, channel, duration, and selected streams before downloading. If the best available stream is below 720p, stop and ask whether the user wants to accept it; only after approval retry with `--allow-low-quality`. After downloading, report actual stream codecs, resolution, fps, and video bitrate measured from the downloaded packets, plus the short decode-test result. Do not use yt-dlp's estimated `~` sizes or bitrates to choose a format.
+- Write final files to the destination the user chose. Never assume one.
+- If the best available stream is below 720p, stop and ask whether the user accepts it; only then retry with `--allow-low-quality`.
+- After downloading, report the actual codecs, resolution, fps and video bitrate the script measured, plus the decode-test result.
+- If the user also wants analysis, download first, then run the normal flow against the local file. Do not analyze or build a `.docx` when the user asked for the file only.
 
-If the user also wants analysis, first download the local file, then run the normal analysis flow against that file. Do not analyze or build a `.docx` when the user asked for the file only.
+Audio language, MP4 behavior and failure handling are in `references/downloads.md`.
 
 ## Step 0: Setup preflight
 
-First, resolve the skill directory: the folder this `SKILL.md` lives in. Some agents expose it as an environment variable (for example `CLAUDE_SKILL_DIR` or `COPILOT_SKILL_DIR`). No particular agent is required; if none of these is set, use the folder you loaded this file from:
+Resolve the skill directory: the folder this `SKILL.md` lives in. Some agents expose it as an environment variable (for example `CLAUDE_SKILL_DIR` or `COPILOT_SKILL_DIR`). No particular agent is required; if none of these is set, use the folder you loaded this file from:
 
 ```bash
 SKILL_DIR="${SKILL_DIR:-${CLAUDE_SKILL_DIR:-${COPILOT_SKILL_DIR:-$(cd "$(dirname "$0")" 2>/dev/null && pwd)}}}"
@@ -91,51 +102,37 @@ SKILL_DIR="${SKILL_DIR:-${CLAUDE_SKILL_DIR:-${COPILOT_SKILL_DIR:-$(cd "$(dirname
 #   SKILL_DIR=$(dirname "$(find / -name SKILL.md -path '*analyze-video*' 2>/dev/null | head -1)")
 ```
 
-Use `"$SKILL_DIR/scripts/..."` consistently. Never hardcode `~/.cache/analyze-video/scripts/...`; runnable scripts live under `"$SKILL_DIR/scripts/"`.
+Use `"$SKILL_DIR/scripts/..."` consistently. Never hardcode `~/.cache/analyze-video/scripts/...`.
 
-Execution host contract:
-- `setup.py` and `process.py` must run on the same host environment.
-- In Cowork, `device_bash` is an aarch64 Ubuntu 22.04 VM on the user's Mac, not macOS. Setup follows its Linux path. It has been observed with ffmpeg 4.4.2, Python 3.10, and Node 22; surface yt-dlp's Python 3.10 deprecation warning rather than hiding it.
-- Cowork downloads can reach YouTube without the bot check that blocks cloud containers. Run yt-dlp in Cowork rather than the cloud. Calls are limited to about 180 seconds and background processes are killed when a call returns. For a long transfer, run in the foreground with `timeout -s INT 165`, then rerun the same command to resume yt-dlp's fragments.
-- Keep Cowork fragment/temp files outside synced folders (`--temp-dir "$HOME/dltmp"`); put final files in the user's Dropbox destination, not VM scratch. The user must choose the Dropbox folder; never assume an arbitrary Dropbox path.
-- If preflight/setup ran in a sandbox but processing will run host-side (for example via Desktop Commander), run preflight again on the host before processing:
+Run once per session, on the machine where processing will run:
 
 ```bash
 python3 "${SKILL_DIR}/scripts/setup.py" --check
 ```
 
-- Treat setup state as host-local. Do not assume a sandbox "ready" state applies to the host machine.
-
-Run once per session:
-
-```bash
-python3 "${SKILL_DIR}/scripts/setup.py" --check
-```
-
-Exit-code contract: `0` means local dependencies are ready. Any non-zero exit means "not ready" (the script currently uses `2` for missing dependencies). Treat only `0` as ready; never assume a specific non-zero value. A Whisper API key is optional; without one, videos with native captions still get transcript analysis and captionless videos are processed frames-only.
-
-If preflight exits non-zero, run:
+Exit code `0` means local dependencies are ready. Treat any non-zero exit as "not ready" and run the installer:
 
 ```bash
 python3 "${SKILL_DIR}/scripts/setup.py"
 ```
 
-The installer:
-- macOS with Homebrew: installs missing `ffmpeg`, `yt-dlp`, Node.js/npm dependencies, Deno if it is missing, and the `docx` npm module.
-- Linux: auto-installs the no-sudo dependencies (`yt-dlp` via `pipx`/`pip --user`, and the `docx` npm module into `~/.cache/analyze-video`). For packages that need root (`ffmpeg`, Node.js/npm), it prints exact install commands. If `yt-dlp` lands in a user-local bin that isn't on `PATH`, setup prints the exact `export PATH=...` line; run it before invoking the pipeline.
-- Reports the installed yt-dlp version; `--check` prints one note (and still exits 0) when it is more than 45 days old. `setup.py --update-ytdlp [--nightly]` updates it on request.
-- Installs yt-dlp with its `default` extras and checks for a supported JavaScript runtime (Deno or Node.js). YouTube extraction uses that runtime and requests the EJS challenge scripts with `--remote-components ejs:github`; if no runtime is available, setup warns that YouTube quality may be limited.
-- Windows: prints exact install commands.
-- Scaffolds `~/.config/analyze-video/.env` at mode 0600.
-- Marks setup complete once required local dependencies are ready.
+The installer adds what it can without administrator rights and prints exact install commands for the rest:
 
-If the user wants transcript fallback for captionless videos, ask whether they have a Groq key (preferred) or OpenAI key, then write it with:
+- macOS with Homebrew: installs missing `ffmpeg`, `yt-dlp`, Node.js, Deno and the `docx` npm module.
+- Linux: installs `yt-dlp`, Deno and the `docx` npm module without sudo; prints commands for `ffmpeg` and Node.js.
+- Windows: installs the `docx` npm module; prints commands for the other tools.
+
+If setup prints `export PATH=...` lines, apply them before running the pipeline. If `--check` notes that yt-dlp is more than 45 days old, `setup.py --update-ytdlp` updates it.
+
+A Whisper API key is optional. Without one, videos with native captions still get transcript analysis and captionless videos are processed frames-only. If the user wants transcripts for captionless videos, ask whether they have a Groq key (preferred) or an OpenAI key, then store it:
 
 ```bash
 python3 "${SKILL_DIR}/scripts/setup.py" --set-key groq "<KEY>"
 # or:
 python3 "${SKILL_DIR}/scripts/setup.py" --set-key openai "<KEY>"
 ```
+
+Setup state belongs to the machine it ran on. If setup and processing happen in different places, or commands are cut off by a time limit, read `references/environments.md`.
 
 ## Step 1: Parse the request
 
@@ -148,7 +145,7 @@ Infer focus ranges from the request and pass them with `--start` and `--end`. Do
 
 ## Step 2: Ask the user only when needed
 
-Ask once for the batch:
+Ask the user once for the batch:
 
 1. **Frames per video** if the user did not specify. This is a required question unless the user explicitly says "pick for me" or equivalent. Suggest:
    - Under 2 min: 6 to 8
@@ -164,10 +161,10 @@ If a URL failed because the site requires login/bot verification and the user is
 
 ## Step 3: Process each video
 
-Create one numbered output directory per video under the session outputs directory:
+Create one numbered output directory per video inside the working folder for this job (the folder the user chose, or your environment's output folder):
 
 ```bash
-OUT_DIR="<absolute path to session outputs>"
+OUT_DIR="<absolute path to the working folder>"
 VIDEO_DIR="$OUT_DIR/video_1"
 
 python3 "${SKILL_DIR}/scripts/process.py" \
@@ -175,133 +172,29 @@ python3 "${SKILL_DIR}/scripts/process.py" \
   --out-dir "$VIDEO_DIR"
 ```
 
-Preferred guarded entrypoint (enforces preflight + frame intent + spec gates):
+Add flags as the request calls for them:
 
-```bash
-python3 "${SKILL_DIR}/scripts/run_guarded_pipeline.py" \
-  --source "<url-or-path>" \
-  --out-dir "$VIDEO_DIR" \
-  --frames 20
-```
+- `--start 2:30 --end 3:15`: process only a focus range.
+- `--quick`: a faster, cheaper pass with a smaller frame budget.
+- `--source-url "<original-url>"`: when `--source` is a local file that was downloaded from a URL, so the real title and captions can be recovered.
+- `--force`: ignore cached output and redo everything.
 
-For focused processing:
+`process.py` prints the path to `manifest_lite.json` on stdout. Progress and warnings go to stderr.
 
-```bash
-python3 "${SKILL_DIR}/scripts/process.py" \
-  --source "<url-or-path>" \
-  --out-dir "$VIDEO_DIR" \
-  --start 2:30 --end 3:15
-```
+Process videos one at a time. Do not run several videos in parallel; a single run already uses the machine fully.
 
-For quick mode:
+If a run is interrupted, re-run the exact same command. It resumes instead of starting over. If a download is blocked, explain the specific access problem and read `references/downloads.md` before retrying. Offer the user's own browser cookies only after a failure, and only with their agreement.
 
-```bash
-python3 "${SKILL_DIR}/scripts/process.py" \
-  --source "<url-or-path>" \
-  --out-dir "$VIDEO_DIR" \
-  --quick
-```
+## Step 4: Read the manifest and preview visuals
 
-For user-authorized retry after a login/bot/access block:
+Do not read every frame. The pipeline produces contact sheets and a lightweight manifest so you can preview the video at low cost:
 
-```bash
-python3 "${SKILL_DIR}/scripts/process.py" \
-  --source "<url>" \
-  --out-dir "$VIDEO_DIR" \
-  --cookies-from-browser safari
-```
-
-or:
-
-```bash
-python3 "${SKILL_DIR}/scripts/process.py" \
-  --source "<url>" \
-  --out-dir "$VIDEO_DIR" \
-  --cookies "/path/to/cookies.txt"
-```
-
-If `--source` is a local file downloaded from a URL, also pass `--source-url "<original-url>"` so `process.py` can auto-recover the real title and captions transcript.
-
-Tool-runtime constraint:
-- If the execution shell has a short timeout budget (for example 45 seconds), do not run full-length processing there.
-- For long videos, run `process.py` in a host-side shell tool that can complete long-running commands, then continue analysis from the produced manifests.
-
-Process videos sequentially. Do not parallelize video processing; it can saturate network, CPU, disk, and token budget. (Within a single video, `process.py` already parallelizes frame extraction internally — see below — so running one video at a time still uses the machine fully.) `process.py` prints the path to `manifest_lite.json` on stdout. Progress and warnings go to stderr.
-
-Per-video outputs include:
-- `manifest_lite.json`: lightweight default manifest, schema v3 minus transcript text and per-frame arrays.
-- `manifest.json`: full schema v3 manifest with top-level `transcript_segments`. Segment timestamps are always absolute positions in the source video, including on a focused `--start`/`--end` run.
-- `transcript.txt`: human-readable transcript (`[mm:ss] text` per line), written whenever a transcript exists. Its path is also in `manifest_lite.transcript_path`.
-- `report.md`: human-readable pipeline report.
-- `manifest_partial.json`: a partial manifest written as chunks finish; present only while a run is in flight or after it was interrupted. Removed on success.
-- `chunks/chunk_N/contact_sheet.jpg`: one contact sheet per processed chunk.
-- `chunks/chunk_N/frames/<sig>/frame_NNNN.jpg`: full-resolution selected-frame candidates. The `<sig>` subfolder is keyed to the extraction settings; always use the `absolute_path` from the manifest rather than building this path yourself.
-- `download/video.<ext>`: source video when downloaded with `--no-download-cache` or from a local file. By default a downloaded URL lives in the shared cache (see Resuming), not under the out-dir.
-- `audio.mp3` or `audio_START_END.mp3`: only if Whisper was used.
-- `status.json`: current pipeline stage, updated continuously (downloading, transcript_ready, extracting with `current_chunk`/`chunks_completed`, complete). Read it to see how far an interrupted run got.
-
-### Parallel frame extraction
-
-`process.py` works to a single concurrency budget, auto-picked from the core count and capped at 4. Override it with `--jobs N`; `--jobs 1` forces fully sequential extraction (useful on a heavily loaded or memory-constrained host).
-
-When a video is auto-chunked, the budget is spent running several chunks at once, since frame extraction and contact-sheet tiling are independent per chunk. When there are fewer chunks than the budget allows (including the common single-chunk case for videos under 12 minutes), each chunk spends the spare capacity splitting its own extraction into contiguous sub-ranges that run in parallel. The total number of concurrent ffmpeg processes is the same either way, so the CPU is never oversubscribed.
-
-Output is identical either way. Chunks are always written to the manifest in chronological order, and a split extraction reproduces the single-pass frame set byte for byte: frame `i` sits at `start + i / fps` whether one worker or four produced it. If any sub-range fails or comes up short, the whole range is silently redone in a single pass, so a split can cost time but never correctness.
-
-### Keyframe-only frame sampling
-
-Frame extraction is the pipeline's dominant CPU cost: by default ffmpeg decodes *every* frame of a chunk just so the `fps` filter can keep ~100 of them. For a 600s chunk that is roughly 15,000 decoded frames to produce 100.
-
-`process.py` now measures the source's keyframe interval once per video (an `ffprobe` packet-header read, no decoding, well under a second) and, when it is safe, extracts with `-skip_frame nokey` so only keyframes are decoded. On a 300s 720p test clip this cut frame-extraction CPU from 8.3s to 0.2s while producing the same 20 frames, all visually distinct.
-
-It is only enabled when the gap between sampled frames covers at least two keyframes. That guarantees every output frame lands on its own keyframe rather than the `fps` filter repeating one, and bounds how far a frame can drift from its nominal timestamp at half the sampling interval. The practical effect is that long overview runs (sparse sampling) get the speedup and focused `--start`/`--end` runs (dense sampling) keep a full decode automatically.
-
-Control it with `--keyframe-sampling`:
-- `auto` (default): measure and decide per chunk, as described above.
-- `never`: always decode every frame, matching the previous behavior exactly.
-- `always`: force keyframe-only decoding even where frames may repeat.
-
-If keyframe-only extraction yields nothing (a codec or container that exposes no keyframe flags), the chunk is silently re-extracted with a full decode. The manifest records `keyframe_interval_seconds` for the video and `keyframe_sampled` per chunk.
-
-### Resuming after a timeout
-`process.py` is resumable. Re-running with the same `--source` and `--out-dir` reuses any chunk whose frames are still valid (matched by an extraction signature), so an interrupted long video continues instead of restarting from zero. Each distinct set of extraction settings writes into its own `frames/<sig>/` subfolder, so a re-run never has to delete a previous run's files (which some sandboxes forbid) and stale frames can't pollute the result. Contact sheets are reused on the same terms: a sheet whose frames and tiling settings are unchanged is not re-tiled, so a resumed run skips a full ffmpeg pass per chunk. If a run is killed, check `status.json` to see where it stopped, then just re-run the same command. Pass `--force` to ignore cached output and re-download + re-extract everything.
-
-Downloaded URLs are cached once per URL under `~/.cache/analyze-video/downloads/<url-hash>/` and reused across runs, so a focused `--start`/`--end` rerun (even in a different `--out-dir`) does not re-download the whole video. The full video is always fetched, so timestamps stay correct. Pass `--force` to refresh a cached download, or `--no-download-cache` to keep the source under the out-dir instead.
-
-Downloads are capped to the source width the pipeline can actually use: `max(854, --resolution)` pixels, so a 16:9 video fetches a 480p stream rather than 720p and transfers roughly half to a third of the bytes without changing the extracted frames (which render at `--resolution`, 512 by default) or the document images. The cap is on width rather than height so portrait video still gets a stream wide enough for the frames. Pass `--download-max-width 0` for the best available stream, or a pixel width to set the budget yourself. A cached download recorded under a narrower budget is not reused for a wider request.
-
-The download cache is self-managing: at the end of each run, `process.py` evicts entries older than 14 days and trims the cache back under a 5 GB total (least-recently-used first), never touching the file the current (or a concurrent) run is using. Tune the limits with `ANALYZE_VIDEO_CACHE_MAX_AGE_DAYS` and `ANALYZE_VIDEO_CACHE_MAX_GB` (set either to `0` to disable that limit). To wipe every cached download by hand, run `python3 "${SKILL_DIR}/scripts/setup.py" --clear-cache` (this leaves the `docx` module cache intact). `setup.py --json` reports the current cache size as `download_cache_bytes`.
-
-### Trimming a trailing promo/outro
-
-If a video ends with a repetitive promo or static "watch the full episode" card, `process.py` detects it and records a `trailing_promo` hint in the manifest (plus a note in `report.md`). It does not remove anything by default. To drop that block from frame extraction, re-run with `--trim-static-outro`, or target the real content with `--end`.
-
-## Step 4: Read manifests and preview visuals
-
-After each `process.py` run:
-
-1. Read `manifest_lite.json`. It carries chunk metadata, contact-sheet paths, timestamps, and `transcript_slice` pointers, but NOT per-frame arrays or transcript text (kept out so the file stays well under the Read-tool size limit on long videos).
+1. Read `manifest_lite.json` first. It has chunk metadata, timestamps, contact-sheet paths, `docx_image_dimensions`, `suggested_docx_name`, `transcript_path` and quick-mode flags, but no transcript text or per-frame arrays.
 2. If `quick_mode` is true, skip contact-sheet preview unless the user asked for detailed visual analysis.
-3. Otherwise, read each relevant chunk contact sheet from `manifest_lite.chunks[].contact_sheet.absolute_path`. For very long videos, read only the chunks matching the user focus or visibly useful time ranges.
-4. Read `manifest.json` (the full manifest) when you need `transcript_segments` or per-frame paths.
+3. Otherwise read each relevant contact sheet from `manifest_lite.chunks[].contact_sheet.absolute_path`. For very long videos, read only the chunks that match the user's focus.
+4. Read the full `manifest.json` only when you need transcript text (`manifest.transcript_segments[]`) for quotes, section writing, or refining section boundaries.
 
-Per-frame paths live in the full manifest at:
-
-```text
-manifest.json -> chunks[].frames[].absolute_path
-```
-
-`select_frames.py` reads them for you (it loads the full manifest automatically via the lite file's `manifest_path` pointer), so you rarely need to open `manifest.json` by hand just to pick frames.
-
-Chunk schema field names (lite and full): `index`, `start_seconds`, `end_seconds`, `start_formatted`, `end_formatted`, `duration_seconds`, `frame_count`, `contact_sheet`, `transcript_slice`. (They are `index`/`start_formatted`/`end_formatted`, not `chunk_index`/`start_time_str`.)
-
-Transcript text lives at:
-
-```text
-manifest.transcript_segments[]
-```
-
-Each chunk includes `transcript_slice` with `start_index`, `end_index`, and `segment_count` pointers into the top-level transcript list.
+Videos over 12 minutes are split into chunks of about 10 minutes. If `manifest_lite.preview_cost_warning` is true and the user asked about a narrow moment, prefer re-running with `--start` and `--end` over reading every contact sheet.
 
 ## Step 5: Select frames
 
@@ -343,19 +236,31 @@ ${SKILL_DIR}/templates/caption_guide.md
 
 For combined multi-video docs, add an "Observations Across Videos" section covering shared structure, visual style, themes, and differences.
 
-## Step 7: Build the docx
+## Step 7: Ask the delivery questions
 
-Do not write JavaScript at runtime. Build a JSON spec and pass it to the bundled builder:
+Ask before building. Appendices are off by default, and there is exactly one build, after the answers. Never add the contact-sheet appendix or the transcript appendix on your own initiative.
+
+Ask the user once for the batch. Skip any option that does not apply, and offer the transcript options only when a transcript exists (`transcript_segment_count > 0`):
+
+> "A few delivery options before I build the document:
+> 1. Include the contact sheet(s) as a visual appendix *inside* the document?
+> 2. Include the full transcript as an appendix *inside* the document?
+> 3. Keep standalone copies of the contact sheet(s) and/or the transcript as separate files next to the document?
+> 4. Also want a PDF version?
+> 5. Clean up the remaining working files afterward?
+> 6. Also export the analysis as an Open Filmmaker Toolkit project file?"
+
+Treat no answer as "no" to every option. For each "yes", follow `references/docx-spec.md` (appendices, PDF, standalone files, cleanup) or `references/oft-export.md`.
+
+## Step 8: Build and deliver
+
+Do not write JavaScript at runtime. Write a JSON spec and pass it to the bundled builder:
 
 ```bash
 python3 "${SKILL_DIR}/scripts/validate_spec_paths.py" --spec "$OUT_DIR/spec.json" &&
 python3 "${SKILL_DIR}/scripts/lint_spec_quality.py" --spec "$OUT_DIR/spec.json" &&
 node "${SKILL_DIR}/scripts/build-docx.js" --spec "$OUT_DIR/spec.json"
 ```
-
-`validate_spec_paths.py` is mandatory. It verifies that all spec-referenced frame/contact-sheet/transcript paths are absolute and exist before doc build. `build-docx.js` now enforces the same checks and fails fast if stale or missing paths slip through.
-
-Name the output document after the video and the word "analysis". For a single video, use the manifest's `suggested_docx_name` (already slug-safe and title-based, e.g. `how-to-bake-bread-analysis.docx`) and place it in the out-dir, so `out` is `"$OUT_DIR/<suggested_docx_name>"`. For a combined multi-video doc, build a similar name from the videos analyzed (for example the first video's title slug plus `-and-2-more`) and always end it with `-analysis.docx`.
 
 Spec shape:
 
@@ -408,95 +313,28 @@ Spec shape:
 }
 ```
 
-Always set each video's `source` to the original URL or local path the user gave (use `manifest_lite.source`, or `manifest_lite.url` for URLs). The builder renders it as a readable "Source:" line under the video title so the document records exactly what was analyzed. Do not put cache or download paths here.
+Rules for the spec:
 
-`frame_layout` controls how section frames are arranged: `"1up"` (default) renders one full-width frame per row, while `"2up"` places frames side by side in a borderless two-column table (good for tighter, comparison-style layouts). Set it at the spec top level and optionally override it per video or per section. Captions and required alt text are preserved in both layouts.
+- `out`: for one video, use the manifest's `suggested_docx_name` in the out-dir. For a combined document, build a similar name from the videos (for example the first title slug plus `-and-2-more`) and end it with `-analysis.docx`.
+- `source`: the original URL or local path the user gave (`manifest_lite.source`, or `manifest_lite.url` for URLs). Never a cache or download path.
+- `image_dimensions`: use `manifest_lite.docx_image_dimensions`.
+- Frame paths: always from `select_frames.py` output in this session.
+- `frame_layout`: `"1up"` (default) or `"2up"`, settable at the top level, per video, or per section.
+- `appendix_contact_sheets` and `appendix_transcript`: include only what the user approved in Step 7. Leave them out otherwise.
 
-Use `manifest_lite.docx_image_dimensions` as the per-video default. `build-docx.js` handles page sizing, image embedding, captions, and required alt text. Contact sheets in `appendix_contact_sheets` keep their own aspect ratio automatically (no `width`/`height` needed).
+`validate_spec_paths.py` is mandatory. If it fails, rebuild the spec from current `select_frames.py` output and validate again. Confirm the `.docx` exists, then deliver it, along with any extras the user approved.
 
-`appendix_transcript` adds a full-transcript appendix. Give each entry a `heading` and a `path` pointing at the video's `manifest_lite.transcript_path` (the `transcript.txt` the pipeline writes). The builder reads the file itself, so never paste the transcript text into the spec. Only include this when the user asked for the transcript in the document and a transcript exists (`transcript_segment_count > 0`).
+## When something fails
 
-### Optional: Open Filmmaker Toolkit export
-
-If the user asks for an Open Filmmaker Toolkit export, or approves it in the delivery question, create a standalone `.oft.json` project from the same analysis spec:
-
-```bash
-python3 "${SKILL_DIR}/scripts/export_oft.py" \
-  --spec "$OUT_DIR/spec.json" \
-  --out "$OUT_DIR/analysis.oft.json"
-```
-
-The exporter creates one video asset per analyzed video, puts a readable version of its timestamped analysis in the standard asset `notes` field, and stores structured sections and frame references in an `analysis` field on that asset. It uses the OFT project `format` and `formatVersion` fields, and frame images are referenced by paths relative to the project file rather than embedded. Keep the referenced frame files at those relative paths when moving the project. The OFT schema permits additional asset fields, and Toolkit tools preserve fields they do not edit; this export does not require a Toolkit schema change. Existing output files are never overwritten.
-
-**If `node` reports it can't find `docx` (EACCES / `Cannot find module 'docx'`):** the skill directory is read-only, so `npm install` there fails silently. The builder already tries `DOCX_NODE_MODULES`, `NODE_PATH`, `scripts/node_modules`, and finally installs into `~/.cache/analyze-video/node_modules`. To point it at an existing install instead, run:
-
-```bash
-NODE_PATH=/path/to/dir/containing/node_modules node "${SKILL_DIR}/scripts/build-docx.js" --spec "$OUT_DIR/spec.json"
-```
-
-Do **not** try to `npm install` into `${SKILL_DIR}/scripts`; it may be mounted read-only.
-
-## Step 8: Validate and deliver
-
-**Mandatory gate, do not skip:** appendices are OFF by default. You MUST ask the user the delivery question below and receive an explicit answer *before* you build the `.docx`. Never auto-add the contact-sheet appendix or the transcript appendix on your own initiative. If you build without asking, that's a defect. There is exactly one build, and it happens *after* these answers.
-
-Ask once for the batch using `AskUserQuestion` (skip any option that doesn't apply, and only offer the transcript options when a transcript exists, i.e. `transcript_segment_count > 0`):
-
-> "A few delivery options before I build the document:
-> 1. Include the contact sheet(s) as a visual appendix *inside* the document?
-> 2. Include the full transcript as an appendix *inside* the document?
-> 3. Keep standalone copies of the contact sheet(s) and/or the transcript as separate files next to the document?
-> 4. Also want a PDF version?
-> 5. Clean up the remaining working files afterward?
-> 6. Also export the analysis as an Open Filmmaker Toolkit project file?"
-
-Default every appendix answer to "no" unless the user says yes. If the user gives no answer or declines, build with no appendices.
-
-Then build with only the appendices the user explicitly approved:
-
-- **Contact sheets in the document (only if approved):** add an `appendix_contact_sheets` entry (one per chunk, or one for a single-chunk video), pulling each `contact_sheet.absolute_path` from the manifest's chunks and captioning each with its chunk time range. The builder sizes sheets so about two fit per page; you don't set width/height.
-- **Transcript in the document (only if approved):** add an `appendix_transcript` entry per video, with `path` set to that video's `manifest_lite.transcript_path`.
-
-Build the docx once, after the answers, so only the requested appendices are included.
-
-Run the builder and confirm the `.docx` exists. If path validation fails, rebuild the spec from the current `select_frames.py` output and re-run validation before build-docx. If a docx validator is available, run it; otherwise skip validation silently. Present the document with a `computer://` link.
-
-If the user approved the Open Filmmaker Toolkit export, run `export_oft.py` with the same spec and deliver the resulting `.oft.json` file with a `computer://` link. Do not attempt the export if the user declined it.
-
-If PDF requested:
-
-```bash
-libreoffice --headless --convert-to pdf "$OUT_DIR/<filename>.docx" --outdir "$OUT_DIR/"
-```
-
-**Keeping standalone files:** if the user wants to keep the contact sheet(s) and/or the transcript as separate files, copy them next to the final document *before* any cleanup, using clear, collision-safe names:
-
-- Transcript: copy each video's `transcript_path` to `<out-dir>/<video-slug>-transcript.txt`.
-- Contact sheets: copy each `contact_sheet.absolute_path` to `<out-dir>/contact_sheets/<video-slug>-chunk-N.jpg`.
-
-Report the kept file paths to the user.
-
-If cleanup requested, remove per-video working directories and any spec/build scratch files, but keep the `.docx`, the PDF, and any standalone files you just preserved above. Note that a downloaded URL's source video lives in the shared cache (`~/.cache/analyze-video/downloads/<url-hash>/`), not under the out-dir, so removing the out-dir won't delete it; that cache is intentionally reused across runs and is auto-pruned by age and size (see Resuming). Use `--no-download-cache` if you need the source kept inside the out-dir for self-contained cleanup, or `setup.py --clear-cache` to wipe the whole download cache now.
-
-## Failure modes
-
-- **Setup preflight failed**: run installer. Missing Whisper keys are optional; required local dependencies are not.
-- **Setup/process host mismatch**: if setup was run in one environment (for example Linux sandbox) and processing will run in another (for example Mac host), re-run `python3 "${SKILL_DIR}/scripts/setup.py" --check` on the actual execution host before `process.py`.
-- **Runner timeout on long videos**: if the current shell has a short timeout budget, run `process.py` in a host-side shell tool that supports long-running commands, then resume from generated manifests.
-- **Interrupted download**: re-run the exact same command. A download killed partway through resumes from the bytes already on disk rather than starting over, so a timed-out or dropped transfer does not re-fetch the whole video. Use `--force` only when the partial data should be discarded.
-- **Download blocked by login, age gate, bot check, members-only, or private access**: explain the specific access issue. Public YouTube attempts use JS-enabled `default,web_safari,tv` clients first, then try `android,ios,web` and yt-dlp's defaults. A detected SABR-only or unexpectedly capped 360p result is retried with another client; if still degraded, stop and explain instead of silently accepting it. Every attempt uses `--ignore-no-formats-error` so gated media formats do not prevent subtitle writes. If access still fails and the user can view the video and authorizes it, retry with `--cookies-from-browser <browser>` or `--cookies <file>`. Otherwise ask for a local file. `--cookies-from-browser` only works when yt-dlp runs on the same OS as the browser.
-- **Rate limited**: wait before retrying. User-authorized browser cookies may help if the content is accessible in their browser.
-- **Geo restricted**: ask for a local file or another source the user can access from this environment.
-- **No transcript**: proceed frames-only and note it in the docx. If the source is a YouTube URL but the video was processed from a separately downloaded local file (so the caption pass never ran), retrofit the transcript without re-downloading: `python3 "${SKILL_DIR}/scripts/process.py" --captions-only --source <url> --out-dir <video-dir>`. This fetches auto-subs with `--ignore-no-formats-error`, writes `transcript.txt`, and patches any existing `manifest(_lite).json` transcript fields.
-- **Whisper backend failed**: when both keys exist and `--whisper` was not pinned, `process.py` tries Groq then OpenAI. If both fail, proceed frames-only.
-- **Whisper audio too large**: rerun with a focused `--start`/`--end` range or use a source with native captions.
-- **Long-video preview warning**: prefer focused reruns or quick mode rather than reading every contact sheet.
-- **yt-dlp "No supported JavaScript runtime" warning**: YouTube's android/ios clients may now be SABR-limited and return only 360p. Run `setup.py` to install/check Deno or use the installed Node.js runtime, then retry. Do not deliver a detected degraded stream without asking first.
-- **yt-dlp can't find Node / n-challenge fails**: prefer a pipx/pip-installed `yt-dlp` over a frozen standalone binary. The standalone binary cannot reliably locate a system Node.js for subprocess-based extraction even with `PATH` exported, whereas the pip-installed version uses the system interpreter. `setup.py` installs the pip version.
-- **yt-dlp out of date**: downloads, caption fetches, and best-copy format checks update yt-dlp automatically (latest stable, then nightly) and retry once when the failure looks like a yt-dlp bug: broken signature/n-challenge extraction, "Requested format is not available", a SABR warning, or a 360p-only result. Access problems (login, bot check, private, members-only, geo, 429) never trigger an update. If `setup.py --check` prints a staleness note, or the user turned automatic updates off with `ANALYZE_VIDEO_NO_YTDLP_UPDATE=1`, run `python3 "${SKILL_DIR}/scripts/setup.py" --update-ytdlp` (add `--nightly` if stable is still broken) and retry. To check YouTube without downloading, run `python3 "${SKILL_DIR}/scripts/health_check.py"` on the download host.
-- **Every download route failed**: say so plainly and offer the fallback: the user downloads the video any way they like and gives you the local file path, then run the normal flow on that file (add `--source-url` so captions and the title can still be recovered). Direct media links (`.mp4`, `.webm`, `.mov`, `.m3u8`, `.mpd`, etc.) are fetched with ffmpeg automatically when yt-dlp is missing or fails, so this only comes up for page URLs.
-- **yt-dlp installed but not on PATH (Linux)**: apply the exact `export PATH=...` line from setup in the same shell invocation that runs `process.py`, or run by absolute tool path.
-- **Spec has stale/missing frame paths**: re-run `select_frames.py` in the current session and re-generate `spec.json`; do not reuse prior-session frame paths.
+- **Setup preflight failed**: run the installer. Whisper keys are optional; the local dependencies are not.
+- **Anything about downloading** (blocked, rate limited, geo restricted, low quality, yt-dlp errors or updates): `references/downloads.md`.
+- **Timeouts, setup done on a different machine, tools not found, Windows**: `references/environments.md`.
+- **No transcript**: proceed frames-only and say so in the document. If the video came from a URL but was processed from a separately downloaded local file, add the transcript without re-downloading: `python3 "${SKILL_DIR}/scripts/process.py" --captions-only --source <url> --out-dir <video-dir>`.
+- **Whisper backend failed**: when both keys exist, `process.py` tries Groq then OpenAI. If both fail, proceed frames-only.
+- **Whisper audio too large**: re-run with a focused `--start`/`--end` range, or use a source with native captions.
+- **Long-video preview warning**: prefer a focused re-run or quick mode over reading every contact sheet.
+- **Spec has stale or missing frame paths**: re-run `select_frames.py` in the current session and regenerate `spec.json`.
+- **`docx` module not found**: `references/docx-spec.md`.
 
 ## Security notes
 

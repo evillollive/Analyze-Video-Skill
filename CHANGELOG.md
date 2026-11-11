@@ -11,6 +11,10 @@ All notable changes to `/analyze-video` are documented here.
 - **The GitHub Copilot Word canvas review step.** It only worked inside Copilot. The README's Copilot CLI section went with it.
 
 ### Changed
+- **SKILL.md is split into a short core plus reference files.** The core dropped from about 39 KB to about 19 KB and now covers only the common path: choosing a mode, setup, the questions to ask, processing, previewing, writing, and building the document. Detail moved, mostly word for word, into `references/`: `downloads.md`, `environments.md`, `docx-spec.md`, `pipeline-options.md` and `oft-export.md`. An agent reads those only when the situation calls for them.
+- **The instructions no longer assume one agent, machine or storage service.** Mentions of a specific desktop workspace, a specific cloud folder, agent-specific question tools and file-link formats are replaced with neutral wording ("ask the user", "deliver the file path", "the folder the user chose"). Situations that only arise in some environments (per-command time limits, sandboxes, datacenter networks, synced folders, Windows) are described generically in `references/environments.md`.
+- **`process.py` is the one documented entry point.** `run_guarded_pipeline.py` stays in the repo but is no longer presented as an alternative in SKILL.md.
+- The delivery questions are now Step 7 and the single document build is Step 8, so the order on the page matches the order of work.
 - **Step 0 no longer assumes a particular agent.** The skill folder resolves from `SKILL_DIR` if already set, then `CLAUDE_SKILL_DIR`, then `COPILOT_SKILL_DIR`, then the folder `SKILL.md` lives in. The README describes the skill as agent-neutral.
 
 ### Fixed
