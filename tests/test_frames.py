@@ -564,3 +564,95 @@ class TestContactSheetWithoutGlob:
         make_contact_sheet(frames_dir, out_path, frame_count=4)
         assert len(cmds) == 2 and "concat" in cmds[1]
         assert out_path.read_bytes() == b"sheet"
+
+
+class TestContactSheetLabels:
+    """Tiles carry their number and time when ffmpeg can draw text."""
+
+    def _seed(self, tmp_path, monkeypatch):
+        frames_dir = tmp_path / "frames" / "fr_abc123"
+        _seed_frames(frames_dir, 4)
+        monkeypatch.setattr(frames_mod.shutil, "which", lambda name: "/usr/bin/ffmpeg")
+        monkeypatch.setattr(frames_mod, "_IS_WINDOWS", False)
+        return frames_dir, tmp_path / "contact_sheet.jpg"
+
+    def test_label_filter_numbers_tiles_and_prints_time(self):
+        vf = frames_mod._label_filter(200, 595.0, 3.09)
+        assert "drawtext=fontfile=DejaVuSansMono-Bold.ttf" in vf
+        assert r"%{eif\:n+1\:d}" in vf
+        assert "595.000+n*3.090000" in vf
+        # number only when the timing is unknown
+        assert "floor(" not in frames_mod._label_filter(200, None, None)
+
+    def test_bundled_font_and_license_exist(self):
+        assert (frames_mod.FONT_DIR / frames_mod.LABEL_FONT).is_file()
+        assert (frames_mod.FONT_DIR / "LICENSE-DejaVu.txt").is_file()
+
+    def test_labeled_run_draws_text_from_the_font_folder(self, tmp_path, monkeypatch):
+        frames_dir, out_path = self._seed(tmp_path, monkeypatch)
+        calls = []
+
+        def fake_run(cmd, **kw):
+            calls.append((cmd, kw))
+            Path(cmd[-1]).write_bytes(b"sheet")
+            return _FakeResult()
+
+        monkeypatch.setattr(frames_mod.subprocess, "run", fake_run)
+        make_contact_sheet(frames_dir, out_path, frame_count=4, start_seconds=0.0, interval_seconds=2.0)
+        assert len(calls) == 1
+        cmd, kw = calls[0]
+        assert "drawtext" in cmd[cmd.index("-vf") + 1]
+        assert kw.get("cwd") == str(frames_mod.FONT_DIR)
+        assert Path(cmd[-1]).is_absolute()
+        assert frames_mod.contact_sheet_is_labeled(out_path)
+
+    def test_falls_back_to_a_plain_sheet_when_text_cannot_be_drawn(self, tmp_path, monkeypatch):
+        frames_dir, out_path = self._seed(tmp_path, monkeypatch)
+        calls = []
+
+        def fake_run(cmd, **kw):
+            calls.append(cmd)
+            if "drawtext" in cmd[cmd.index("-vf") + 1]:
+                result = _FakeResult()
+                result.returncode = 1
+                result.stderr = "No such filter: 'drawtext'"
+                return result
+            Path(cmd[-1]).write_bytes(b"sheet")
+            return _FakeResult()
+
+        monkeypatch.setattr(frames_mod.subprocess, "run", fake_run)
+        make_contact_sheet(frames_dir, out_path, frame_count=4, start_seconds=0.0, interval_seconds=2.0)
+        assert len(calls) == 2
+        assert out_path.read_bytes() == b"sheet"
+        assert not frames_mod.contact_sheet_is_labeled(out_path)
+
+    def test_labels_off_builds_a_plain_sheet(self, tmp_path, monkeypatch):
+        frames_dir, out_path = self._seed(tmp_path, monkeypatch)
+        calls = []
+
+        def fake_run(cmd, **kw):
+            calls.append(cmd)
+            Path(cmd[-1]).write_bytes(b"sheet")
+            return _FakeResult()
+
+        monkeypatch.setattr(frames_mod.subprocess, "run", fake_run)
+        make_contact_sheet(frames_dir, out_path, frame_count=4, labels=False)
+        assert len(calls) == 1 and "drawtext" not in calls[0][calls[0].index("-vf") + 1]
+        assert not frames_mod.contact_sheet_is_labeled(out_path)
+
+    def test_labeled_sheet_is_reused_on_rerun(self, tmp_path, monkeypatch):
+        frames_dir, out_path = self._seed(tmp_path, monkeypatch)
+        ran = {"count": 0}
+
+        def fake_run(cmd, **kw):
+            ran["count"] += 1
+            Path(cmd[-1]).write_bytes(b"sheet")
+            return _FakeResult()
+
+        monkeypatch.setattr(frames_mod.subprocess, "run", fake_run)
+        for _ in range(2):
+            make_contact_sheet(frames_dir, out_path, frame_count=4, start_seconds=0.0, interval_seconds=2.0)
+        assert ran["count"] == 1
+        # A different time grid is a different sheet.
+        make_contact_sheet(frames_dir, out_path, frame_count=4, start_seconds=10.0, interval_seconds=2.0)
+        assert ran["count"] == 2

@@ -25,3 +25,6 @@ examples/      export-ignore
 # Build config itself
 .gitignore      export-ignore
 .gitattributes  export-ignore
+
+# Bundled font for contact-sheet labels
+*.ttf binary

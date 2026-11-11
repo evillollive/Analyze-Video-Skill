@@ -680,6 +680,7 @@ def _sheet_signature(
     cols: int,
     tile_width: int,
     quality: int,
+    labels: dict | None = None,
 ) -> dict:
     """Fingerprint the inputs that determine a contact sheet's pixels.
 
@@ -693,6 +694,7 @@ def _sheet_signature(
         "cols": cols,
         "tile_width": tile_width,
         "quality": quality,
+        "labels": labels,
     }
 
 
@@ -717,6 +719,43 @@ def _concat_list(frames: list[Path]) -> str:
     return "\n".join(lines) + "\n"
 
 
+FONT_DIR = Path(__file__).resolve().parent / "fonts"
+LABEL_FONT = "DejaVuSansMono-Bold.ttf"
+
+
+def _label_filter(tile_width: int, start_seconds: float | None, interval_seconds: float | None) -> str:
+    """ffmpeg drawtext filter that prints "<tile number>  <m:ss>" on each tile.
+
+    The tile number is the frame's 1-based position in the chunk, which is also
+    its ``index`` in the manifest. The time is ``start + n * interval``, the same
+    grid the manifest records. Everything is computed from ffmpeg's frame
+    counter ``n``, so it does not depend on how the frames are fed in.
+
+    The font is named without a path: the caller runs ffmpeg from the font's
+    folder, which avoids escaping drive letters and spaces inside a filter.
+    """
+    number = r"%{eif\:n+1\:d}"
+    text = number
+    if start_seconds is not None and interval_seconds:
+        t = f"({start_seconds:.3f}+n*{interval_seconds:.6f})"
+        minutes = rf"%{{eif\:floor({t}/60)\:d}}"
+        seconds = rf"%{{eif\:mod(floor({t})\,60)\:d\:2}}"
+        text = rf"{number}  {minutes}\:{seconds}"
+    size = max(9, round(tile_width / 12))
+    return (
+        f"drawtext=fontfile={LABEL_FONT}:text='{text}':fontsize={size}:fontcolor=white"
+        f":box=1:boxcolor=black@0.65:boxborderw=3:x=3:y=3"
+    )
+
+
+def contact_sheet_is_labeled(out_path: Path) -> bool:
+    """True when the sheet at ``out_path`` was built with tile labels."""
+    try:
+        return bool(json.loads(_sheet_sig_path(out_path).read_text()).get("labeled"))
+    except (OSError, json.JSONDecodeError, AttributeError):
+        return False
+
+
 def make_contact_sheet(
     frames_dir: Path,
     out_path: Path,
@@ -725,13 +764,18 @@ def make_contact_sheet(
     quality: int = 5,
     frame_count: int | None = None,
     force: bool = False,
+    labels: bool = True,
+    start_seconds: float | None = None,
+    interval_seconds: float | None = None,
 ) -> Path:
     """Tile every frame_*.jpg in frames_dir into a single contact sheet.
 
     Output is row-major in chronological order (top-left = first frame, then
-    left-to-right, top-to-bottom). The skill's manifest tells the model which
-    timestamp each tile corresponds to. No text overlay (keeps ffmpeg simple
-    and avoids font dependencies).
+    left-to-right, top-to-bottom). With ``labels`` on, each tile carries its
+    tile number (the frame's ``index`` in the manifest) and, when
+    ``start_seconds`` and ``interval_seconds`` are given, its time in the
+    video. Labels need an ffmpeg that can draw text; if it cannot, the sheet is
+    built without them and :func:`contact_sheet_is_labeled` reports False.
 
     Pass ``frame_count`` when the caller already knows it (it comes back from
     ``extract``) to skip re-listing the directory.
@@ -750,13 +794,18 @@ def make_contact_sheet(
     if not frame_count:
         raise SystemExit(f"No frames found in {frames_dir} to tile")
 
-    signature = _sheet_signature(frames_dir, frame_count, cols, tile_width, quality)
+    label_request = (
+        {"start": start_seconds, "interval": interval_seconds} if labels else None
+    )
+    signature = _sheet_signature(frames_dir, frame_count, cols, tile_width, quality, label_request)
     sig_path = _sheet_sig_path(out_path)
     if not force and out_path.exists():
         try:
-            if out_path.stat().st_size > 0 and json.loads(sig_path.read_text()) == signature:
+            stored = json.loads(sig_path.read_text())
+            stored_inputs = {k: v for k, v in stored.items() if k != "labeled"}
+            if out_path.stat().st_size > 0 and stored_inputs == signature:
                 return out_path
-        except (OSError, json.JSONDecodeError):
+        except (OSError, json.JSONDecodeError, AttributeError):
             pass
 
     ffmpeg = _require_tool("ffmpeg")
@@ -770,39 +819,55 @@ def make_contact_sheet(
     except OSError:
         pass
 
-    tile_args = [
-        "-vf",
-        f"scale={tile_width}:-2,tile={cols}x{rows}:padding=4:margin=4:color=0x111111",
-        "-frames:v", "1",
-        "-q:v", str(quality),
-        str(out_path),
-    ]
+    # Absolute paths throughout: the labelled pass runs ffmpeg from the font folder.
+    frames_dir = Path(frames_dir).resolve()
+    out_abs = Path(out_path).resolve()
     base = [ffmpeg, "-hide_banner", "-loglevel", "error", "-y"]
-    glob_cmd = base + ["-pattern_type", "glob", "-i", str(frames_dir / "frame_*.jpg")] + tile_args
-    # ffmpeg builds for Windows are compiled without glob support, so there the
-    # frames are passed as an explicit list instead. The same list path is the
-    # fallback anywhere else a build turns out to lack globbing.
-    result = None
-    if not _IS_WINDOWS:
-        result = subprocess.run(glob_cmd, capture_output=True, text=True)
-    if result is None or (result.returncode != 0 and _GLOB_UNSUPPORTED in (result.stderr or "")):
-        list_path = out_path.with_name(out_path.name + ".frames.txt")
-        try:
-            list_path.write_text(_concat_list(_list_frames(frames_dir)), encoding="utf-8")
-            list_cmd = base + ["-f", "concat", "-safe", "0", "-i", str(list_path)] + tile_args
-            result = subprocess.run(list_cmd, capture_output=True, text=True)
-        finally:
+
+    def run_tile(extra_filter: str | None, cwd: Path | None):
+        chain = [f"scale={tile_width}:-2"]
+        if extra_filter:
+            chain.append(extra_filter)
+        chain.append(f"tile={cols}x{rows}:padding=4:margin=4:color=0x111111")
+        tile_args = ["-vf", ",".join(chain), "-frames:v", "1", "-q:v", str(quality), str(out_abs)]
+        kwargs = {"capture_output": True, "text": True}
+        if cwd is not None:
+            kwargs["cwd"] = str(cwd)
+        glob_cmd = base + ["-pattern_type", "glob", "-i", str(frames_dir / "frame_*.jpg")] + tile_args
+        # ffmpeg builds for Windows are compiled without glob support, so there the
+        # frames are passed as an explicit list instead. The same list path is the
+        # fallback anywhere else a build turns out to lack globbing.
+        res = None
+        if not _IS_WINDOWS:
+            res = subprocess.run(glob_cmd, **kwargs)
+        if res is None or (res.returncode != 0 and _GLOB_UNSUPPORTED in (res.stderr or "")):
+            list_path = out_abs.with_name(out_abs.name + ".frames.txt")
             try:
-                list_path.unlink()
-            except OSError:
-                pass
+                list_path.write_text(_concat_list(_list_frames(frames_dir)), encoding="utf-8")
+                list_cmd = base + ["-f", "concat", "-safe", "0", "-i", str(list_path)] + tile_args
+                res = subprocess.run(list_cmd, **kwargs)
+            finally:
+                try:
+                    list_path.unlink()
+                except OSError:
+                    pass
+        return res
+
+    labeled = False
+    result = None
+    if labels and (FONT_DIR / LABEL_FONT).is_file():
+        result = run_tile(_label_filter(tile_width, start_seconds, interval_seconds), FONT_DIR)
+        labeled = result.returncode == 0 and out_abs.exists() and out_abs.stat().st_size > 0
+    if not labeled:
+        # No labels asked for, no font, or this ffmpeg cannot draw text: plain sheet.
+        result = run_tile(None, None)
     if result.returncode != 0:
         raise SystemExit(f"contact sheet tile failed: {result.stderr.strip()}")
     if not out_path.exists() or out_path.stat().st_size == 0:
         raise SystemExit("contact sheet produced no output")
     # Record the inputs so an identical later run can reuse this sheet.
     try:
-        sig_path.write_text(json.dumps(signature))
+        sig_path.write_text(json.dumps({**signature, "labeled": labeled}))
     except OSError:
         pass
     return out_path

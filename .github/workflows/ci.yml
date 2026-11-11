@@ -92,12 +92,18 @@ jobs:
             -c:v libx264 -pix_fmt yuv420p -c:a aac -shortest sample.mp4
           python "$SKILL/scripts/process.py" --source sample.mp4 --out-dir out --no-whisper
           test -f out/manifest_lite.json
-          python "$SKILL/scripts/select_frames.py" out/manifest_lite.json 3 > out/selected.json
+          python "$SKILL/scripts/select_frames.py" out/manifest_lite.json 3 > out/selected.json 2> out/select.err
+          # Frame comparison must really run here, not fall back to even spacing.
+          if grep -q "even spacing" out/select.err; then cat out/select.err; exit 1; fi
+          python "$SKILL/scripts/select_frames.py" out/manifest_lite.json --tiles 1:1,1:2 > out/tiles.json
           python - <<'PY'
           import json, os
           d = json.load(open("out/manifest_lite.json"))
           sel = json.load(open("out/selected.json"))
           assert len(sel) == 3, sel
+          assert all(f.get("tile") for f in sel), sel
+          # The bundled font must work with this platform's ffmpeg.
+          assert d["chunks"][0]["contact_sheet"]["labeled"] is True, d["chunks"][0]["contact_sheet"]
           spec = {
               "out": os.path.abspath("out/analysis.docx"),
               "title": "CI cross-platform analysis",
@@ -191,6 +197,7 @@ jobs:
           import json
           d = json.load(open("out/manifest_lite.json"))
           sheet = d["chunks"][0]["contact_sheet"]["absolute_path"]
+          assert d["chunks"][0]["contact_sheet"]["labeled"] is True, d["chunks"][0]["contact_sheet"]
           spec = {
               "out": "/tmp/work/out/analysis.docx",
               "title": "CI Integration Analysis",

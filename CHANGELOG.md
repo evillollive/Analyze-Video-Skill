@@ -4,6 +4,13 @@ All notable changes to `/analyze-video` are documented here.
 
 ## [Unreleased]
 
+### Added
+- **Numbered contact sheets.** Every tile now shows its tile number and its time in the video, so a frame can be named by reading it off the sheet. The labels use a bundled copy of DejaVu Sans Mono Bold (`scripts/fonts/`, with its license). If the installed ffmpeg cannot draw text, the sheet is built without labels as before, and the manifest's `contact_sheet.labeled` says which.
+- **Pick frames by tile.** `select_frames.py --tiles 1:4,2:59` returns the path and timestamps for exactly those tiles, so swapping a frame no longer means reading the full manifest by hand. Each pick in the helper's output now carries a `tile` field.
+
+### Changed
+- **Frame picks no longer repeat the same shot.** `select_frames.py` still spreads its picks across the video, but swaps out any pick that looks nearly identical to one already chosen, and skips near-blank frames. On a 15-minute talk filmed mostly from one camera, 20 picks went from 17 near-identical podium shots to 7, with the cutaways and wide shots in their place; on a 10-minute short film, 12 picks went from 3 credits frames to 1. Frames are compared as tiny thumbnails made by ffmpeg, in well under a second, with no new dependencies. `--even` gives the previous even spacing, which is also the automatic fallback when frames cannot be compared.
+
 ## [1.11.0] - 2026-11-10
 
 The skill now runs on Windows as well as macOS and Linux, its instructions are split into a short core plus reference files, and nothing in them assumes a particular agent, machine or storage service.

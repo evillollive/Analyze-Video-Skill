@@ -25,6 +25,8 @@ manifest.json -> chunks[].frames[].absolute_path
 
 `select_frames.py` reads them for you (it loads the full manifest automatically via the lite file's `manifest_path` pointer), so you rarely need to open `manifest.json` by hand just to pick frames.
 
+Each chunk's `contact_sheet` has `absolute_path`, `cols`, `rows` and `labeled`. When `labeled` is true, every tile shows its tile number and its time in the video; the tile number is that frame's `index`. `labeled` is false when the installed ffmpeg cannot draw text, and the sheet is then plain.
+
 Chunk schema field names (lite and full): `index`, `start_seconds`, `end_seconds`, `start_formatted`, `end_formatted`, `duration_seconds`, `frame_count`, `contact_sheet`, `transcript_slice`. (They are `index`/`start_formatted`/`end_formatted`, not `chunk_index`/`start_time_str`.)
 
 Transcript text lives at:
@@ -34,6 +36,12 @@ manifest.transcript_segments[]
 ```
 
 Each chunk includes `transcript_slice` with `start_index`, `end_index`, and `segment_count` pointers into the top-level transcript list.
+
+## How frames are picked
+
+`select_frames.py` cuts the timeline into as many equal slots as frames were asked for. From each slot it takes the frame that looks least like the frames already picked. A slot with nothing new-looking gives its pick to the most different-looking frame anywhere in the video. Near-blank frames (black, white, mid-fade) are skipped. If the video runs out of new-looking frames, the remaining picks fill the largest gaps in time, so the count asked for is always returned.
+
+Frames are compared as 16 by 16 pixel thumbnails made by ffmpeg, which takes well under a second for 200 frames and needs no extra software. If ffmpeg is missing or fails, the helper says so on stderr and falls back to even spacing. `--even` asks for even spacing directly. `--tiles 1:4,2:59` returns exactly the named frames.
 
 ## Resuming after a timeout
 `process.py` is resumable. Re-running with the same `--source` and `--out-dir` reuses any chunk whose frames are still valid (matched by an extraction signature), so an interrupted long video continues instead of restarting from zero. Each distinct set of extraction settings writes into its own `frames/<sig>/` subfolder, so a re-run never has to delete a previous run's files (which some sandboxes forbid) and stale frames can't pollute the result. Contact sheets are reused on the same terms: a sheet whose frames and tiling settings are unchanged is not re-tiled, so a resumed run skips a full ffmpeg pass per chunk. If a run is killed, check `status.json` to see where it stopped, then just re-run the same command. Pass `--force` to ignore cached output and re-download + re-extract everything.

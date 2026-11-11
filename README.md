@@ -200,7 +200,8 @@ Analyze-Video-Skill/
 │   ├── build-docx.js            # Word document renderer
 │   ├── export_oft.py            # Open Filmmaker Toolkit project exporter
 │   ├── mcp_server.py            # Optional MCP server (prepare, captions, validate, get_image)
-│   ├── select_frames.py         # Frame selection helper
+│   ├── select_frames.py         # Picks frames: even coverage without look-alikes, or by tile number
+│   ├── fonts/                   # Font for contact-sheet tile labels (DejaVu, with its license)
 │   ├── validate_spec_paths.py   # Fails fast on stale/missing asset paths
 │   ├── lint_spec_quality.py     # Spec structure/content quality guard
 │   ├── run_guarded_pipeline.py  # Orchestrates setup, process, selection, and build gates
