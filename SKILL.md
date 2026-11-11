@@ -94,13 +94,18 @@ Audio language, MP4 behavior and failure handling are in `references/downloads.m
 
 ## Step 0: Setup preflight
 
-Resolve the skill directory: the folder this `SKILL.md` lives in. Some agents expose it as an environment variable (for example `CLAUDE_SKILL_DIR` or `COPILOT_SKILL_DIR`). No particular agent is required; if none of these is set, use the folder you loaded this file from:
+Set `SKILL_DIR` to the absolute path of the folder this `SKILL.md` lives in. Some agents expose it as an environment variable (for example `CLAUDE_SKILL_DIR` or `COPILOT_SKILL_DIR`). No particular agent is required: if none is set, fill in the path you loaded this file from. Then check it, because a wrong value makes every later command fail with "file not found":
 
 ```bash
-SKILL_DIR="${SKILL_DIR:-${CLAUDE_SKILL_DIR:-${COPILOT_SKILL_DIR:-$(cd "$(dirname "$0")" 2>/dev/null && pwd)}}}"
-# If you don't have $0 (e.g. pasting commands), locate it once:
+SKILL_DIR="${SKILL_DIR:-${CLAUDE_SKILL_DIR:-${COPILOT_SKILL_DIR:-}}}"
+# If that is empty, set it yourself:
+#   SKILL_DIR="/absolute/path/to/analyze-video"
+# or locate it once:
 #   SKILL_DIR=$(dirname "$(find / -name SKILL.md -path '*analyze-video*' 2>/dev/null | head -1)")
+test -f "$SKILL_DIR/scripts/process.py" && echo "skill dir ok" || echo "SKILL_DIR is wrong: '$SKILL_DIR'"
 ```
+
+Shells that start fresh on every command do not remember the variable; set it again at the start of each command.
 
 Use `"$SKILL_DIR/scripts/..."` consistently. Never hardcode `~/.cache/analyze-video/scripts/...`.
 
@@ -152,10 +157,12 @@ Ask the user once for the batch:
    - 2 to 5 min: 8 to 12
    - 5 to 15 min: 12 to 20
    - Over 15 min: 16 to 25, or a focused range
-   If the user explicitly delegates frame-count choice, default to 20 for videos over 15 minutes and state that assumption.
+   If the user delegates the choice, use the middle of the range for the video's length (20 for videos over 15 minutes) and say which number you used.
+   If you do not know the video's length yet, you may ask this after Step 3, when `manifest_lite.json` gives the duration. The count is not needed until Step 5.
 2. **Output format** only for 2+ videos:
    - One combined `.docx` (default)
    - Separate `.docx` per video
+3. **Where to save the document**, if the user has not said and your environment has no standard place for deliverables.
 
 If a URL failed because the site requires login/bot verification and the user is authorized to view it, ask whether they want to retry with their own browser cookies. Do not ask for cookies proactively before a failure.
 
@@ -181,6 +188,8 @@ Add flags as the request calls for them:
 
 `process.py` prints the path to `manifest_lite.json` on stdout. Progress and warnings go to stderr.
 
+A video downloaded from a URL is kept in a shared cache (`~/.cache/analyze-video/downloads/`), not in the out-dir, so later runs do not download it again. Add `--no-download-cache` if the user wants the video file kept with the other working files.
+
 Process videos one at a time. Do not run several videos in parallel; a single run already uses the machine fully.
 
 If a run is interrupted, re-run the exact same command. It resumes instead of starting over. If a download is blocked, explain the specific access problem and read `references/downloads.md` before retrying. Offer the user's own browser cookies only after a failure, and only with their agreement.
@@ -194,7 +203,7 @@ Do not read every frame. The pipeline produces contact sheets and a lightweight 
 3. Otherwise read each relevant contact sheet from `manifest_lite.chunks[].contact_sheet.absolute_path`. For very long videos, read only the chunks that match the user's focus.
 4. Read the full `manifest.json` only when you need transcript text (`manifest.transcript_segments[]`) for quotes, section writing, or refining section boundaries.
 
-Videos over 12 minutes are split into chunks of about 10 minutes. If `manifest_lite.preview_cost_warning` is true and the user asked about a narrow moment, prefer re-running with `--start` and `--end` over reading every contact sheet.
+Videos over 12 minutes are split into chunks of about 10 minutes that overlap by a few seconds, so the last tiles of one sheet and the first tiles of the next can show the same moment. Each chunk has its own contact sheet and its own frame spacing. If `manifest_lite.preview_cost_warning` is true and the user asked about a narrow moment, prefer re-running with `--start` and `--end` over reading every contact sheet.
 
 ## Step 5: Select frames
 
@@ -228,6 +237,13 @@ For each section:
 - Describe what is visible: layout, people, on-screen text, expressions, UI, camera focus, motion, and visual transitions.
 - Connect transcript evidence when available using timestamps from `manifest.transcript_segments`.
 - Note what is significant or surprising.
+
+Quoting from captions needs care. `manifest_lite.transcript_source` says where the transcript came from, but not whether a person or a machine wrote it. Machine captions often have no punctuation, misrecognized words, and sound markers such as `[Applause]` in the middle of a sentence, and consecutive segments can repeat the same words.
+
+- Quote only words that appear together, in order, in the transcript. Do not join text across a sound marker or silently drop one.
+- When a phrase appears in two segments, use the timestamp of the first.
+- If a word looks misrecognized, paraphrase instead of quoting it.
+- Add punctuation and capitals for readability, but do not change words.
 
 Be concrete and observational. Avoid vague summaries such as "the presenter explains the feature" when the visual evidence supports a richer description.
 
@@ -277,7 +293,7 @@ Spec shape:
     {
       "title": "Video title",
       "source": "https://youtu.be/abc123",
-      "meta": "Uploader · Duration · Source URL",
+      "meta": "Uploader · Duration",
       "image_dimensions": { "width": 480, "height": 270 },
       "frame_layout": "2up",
       "sections": [
@@ -318,14 +334,17 @@ Spec shape:
 
 Rules for the spec:
 
-- `out`: for one video, use the manifest's `suggested_docx_name` in the out-dir. For a combined document, build a similar name from the videos (for example the first title slug plus `-and-2-more`) and end it with `-analysis.docx`.
+- `out`: an absolute path in the folder where the document should be saved: the one the user chose, otherwise `$OUT_DIR`. For one video, use the manifest's `suggested_docx_name` as the file name. For a combined document, build a similar name from the videos (for example the first title slug plus `-and-2-more`) and end it with `-analysis.docx`.
 - `source`: the original URL or local path the user gave (`manifest_lite.source`, or `manifest_lite.url` for URLs). Never a cache or download path.
 - `image_dimensions`: use `manifest_lite.docx_image_dimensions`.
-- Frame paths: always from `select_frames.py` output in this session.
+- Frame paths: from this session's `select_frames.py` output, or from this session's `manifest.json` for frames you swapped in (Step 5). Never from an earlier session's notes.
+- `meta`: a short line under the title. Do not repeat the source URL there; the builder prints it on its own "Source:" line.
+- `body`: separate paragraphs with a blank line.
+- `time_range`, `timestamp_seconds` and `timestamp_formatted` are recorded for other tools and are not printed in the document. Put the time range in the section heading, and put a timestamp in a caption when the reader should see it.
 - `frame_layout`: `"1up"` (default) or `"2up"`, settable at the top level, per video, or per section.
 - `appendix_contact_sheets` and `appendix_transcript`: include only what the user approved in Step 7. Leave them out otherwise.
 
-`validate_spec_paths.py` is mandatory. If it fails, rebuild the spec from current `select_frames.py` output and validate again. Confirm the `.docx` exists, then deliver it, along with any extras the user approved.
+`validate_spec_paths.py` is mandatory. If it fails, a path is stale or mistyped: take the paths again from this session's `select_frames.py` output or `manifest.json` and validate again. Confirm the `.docx` exists, then deliver it, along with any extras the user approved.
 
 ## When something fails
 

@@ -19,6 +19,8 @@ All notable changes to `/analyze-video` are documented here.
 - **Step 0 no longer assumes a particular agent.** The skill folder resolves from `SKILL_DIR` if already set, then `CLAUDE_SKILL_DIR`, then `COPILOT_SKILL_DIR`, then the folder `SKILL.md` lives in. The README describes the skill as agent-neutral.
 
 ### Fixed
+- **Step 0's skill-folder snippet could silently point at the wrong folder.** In a shell where no agent variable is set, it resolved to the current directory with no error. It now leaves the value empty for the agent to fill in and checks that the folder contains the scripts.
+- **Instruction gaps found by an independent cold run.** SKILL.md no longer contradicts itself about where frame paths may come from; it explains how to quote machine captions safely, where the downloaded video is kept, that chunks overlap, which spec fields are not printed, and where the document should be saved. The frame-count question may now wait until the duration is known. `references/downloads.md` explains how to tell a low-resolution source from a degraded download and which yt-dlp warnings are safe.
 - **Sections no longer break apart across pages in the Word document.** A heading stays with its text, the text stays with its first frames, an image stays with its caption, and a side-by-side pair of frames never splits across pages.
 - **Suggested document names end on a whole word.** Long titles were cut mid-word (`...-short-fi-analysis.docx`); the name now backs up to the previous word.
 - SKILL.md now says how to swap in a different frame from the contact sheet, and not to spend more than one frame on end credits.
