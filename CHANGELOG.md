@@ -4,6 +4,9 @@ All notable changes to `/analyze-video` are documented here.
 
 ## [Unreleased]
 
+### Removed
+- **GitHub Copilot is no longer a supported target.** The Copilot-only Word canvas review step, the `COPILOT_SKILL_DIR` lookup in Step 0, and the README's Copilot CLI section are gone. The skill directory still resolves from `CLAUDE_SKILL_DIR` and then from the folder `SKILL.md` lives in, so nothing changes under Claude Code or Codex.
+
 ### Fixed
 - SKILL.md described `status.json` twice in the per-video outputs list; the two bullets are now one.
 - SKILL.md's bundled-runtime list now includes `ytdlp.py`, `health_check.py`, `export_oft.py`, and `mcp_server.py`.
