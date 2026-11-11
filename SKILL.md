@@ -212,6 +212,9 @@ The output is a JSON list of selected frames with `chunk_index`, `frame_index`, 
 - Shift toward visible scene transitions.
 - Include opening and closing frames if visually distinct.
 - Prefer frames that show concrete UI/text/action over near-duplicates.
+- Do not spend more than one frame on end credits or a static end card unless the user asked about them.
+
+To swap in a different frame, count tiles on the chunk's contact sheet left to right, top to bottom, starting at 1. Tile N is `chunks[].frames[N-1]` in the full `manifest.json`; use that entry's `absolute_path`, `timestamp_seconds` and `timestamp_formatted`.
 
 Read selected full-resolution frames in one parallel Read batch per video. For batch processing, finish one video before reading frames for the next.
 

@@ -19,6 +19,9 @@ All notable changes to `/analyze-video` are documented here.
 - **Step 0 no longer assumes a particular agent.** The skill folder resolves from `SKILL_DIR` if already set, then `CLAUDE_SKILL_DIR`, then `COPILOT_SKILL_DIR`, then the folder `SKILL.md` lives in. The README describes the skill as agent-neutral.
 
 ### Fixed
+- **Sections no longer break apart across pages in the Word document.** A heading stays with its text, the text stays with its first frames, an image stays with its caption, and a side-by-side pair of frames never splits across pages.
+- **Suggested document names end on a whole word.** Long titles were cut mid-word (`...-short-fi-analysis.docx`); the name now backs up to the previous word.
+- SKILL.md now says how to swap in a different frame from the contact sheet, and not to spend more than one frame on end credits.
 - **Setup no longer crashes on Windows.** `setup.py` and `build-docx.js` ran `npm` by its bare name, which Windows cannot launch (it is `npm.cmd` there), so installing the Word document module failed with `FileNotFoundError`. Both now launch it in a way that works on Windows.
 - **Contact sheets now build on Windows.** ffmpeg builds for Windows have no glob support, so tiling failed with "globbing is not supported". Frames are passed to ffmpeg as an explicit list there, and as a fallback on any other build without globbing. The resulting sheet is byte-identical.
 - Setup no longer prints a `chmod 600` warning for the `.env` file on Windows, where it does not apply.
