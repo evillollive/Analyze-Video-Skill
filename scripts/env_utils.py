@@ -13,6 +13,9 @@ import sysconfig
 from pathlib import Path
 
 
+# A module flag rather than inline os.name checks, so tests can flip it.
+_IS_WINDOWS = os.name == "nt"
+
 CONFIG_DIR = Path.home() / ".config" / "analyze-video"
 CONFIG_FILE = CONFIG_DIR / ".env"
 
@@ -34,7 +37,7 @@ def _user_bin_dirs() -> list[Path]:
         pass
     dirs.append(Path.home() / ".local" / "bin")
     dirs.append(Path.home() / "bin")
-    if os.name == "nt":
+    if _IS_WINDOWS:
         dirs.extend(_windows_tool_dirs())
     seen: set[Path] = set()
     ordered: list[Path] = []
@@ -93,7 +96,7 @@ def _windows_winget_package_tool(name: str) -> str | None:
 
 def _candidate_names(name: str) -> list[str]:
     """File names to try for a tool: on Windows, executables carry an extension."""
-    if os.name != "nt" or Path(name).suffix:
+    if not _IS_WINDOWS or Path(name).suffix:
         return [name]
     return [name + ext for ext in (".exe", ".cmd", ".bat")] + [name]
 
@@ -119,7 +122,7 @@ def resolve_tool(name: str) -> str | None:
                     return str(cand)
             except OSError:
                 continue
-    if os.name == "nt":
+    if _IS_WINDOWS:
         return _windows_winget_package_tool(name)
     return None
 

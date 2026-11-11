@@ -106,23 +106,16 @@ class TestWindowsToolLookup:
         exe.write_text("x")
         exe.chmod(0o755)
         monkeypatch.setenv("PATH", "")
-        monkeypatch.setattr(env_utils.os, "name", "nt")
+        monkeypatch.setattr(env_utils, "_IS_WINDOWS", True)
         monkeypatch.setattr(env_utils, "_user_bin_dirs", lambda: [tooldir])
         monkeypatch.setattr(env_utils, "_windows_winget_package_tool", lambda name: None)
         monkeypatch.setattr(env_utils.shutil, "which", lambda name: None)
-        try:
-            found = resolve_tool("ffmpeg")
-        finally:
-            monkeypatch.undo()
-        assert found == str(exe)
+        assert resolve_tool("ffmpeg") == str(exe)
 
     def test_candidate_names_add_windows_extensions(self, monkeypatch):
-        monkeypatch.setattr(env_utils.os, "name", "nt")
-        try:
-            names = env_utils._candidate_names("npm")
-            keeps_suffix = env_utils._candidate_names("npm.cmd")
-        finally:
-            monkeypatch.undo()
+        monkeypatch.setattr(env_utils, "_IS_WINDOWS", True)
+        names = env_utils._candidate_names("npm")
+        keeps_suffix = env_utils._candidate_names("npm.cmd")
         assert names[:3] == ["npm.exe", "npm.cmd", "npm.bat"]
         assert keeps_suffix == ["npm.cmd"]
 
@@ -134,6 +127,6 @@ class TestWindowsToolLookup:
         assert env_utils._windows_winget_package_tool("ffprobe") == str(pkg / "ffprobe.exe")
         assert env_utils._windows_winget_package_tool("nope") is None
 
-    def test_posix_names_are_unchanged(self):
-        if env_utils.os.name != "nt":
-            assert env_utils._candidate_names("ffmpeg") == ["ffmpeg"]
+    def test_posix_names_are_unchanged(self, monkeypatch):
+        monkeypatch.setattr(env_utils, "_IS_WINDOWS", False)
+        assert env_utils._candidate_names("ffmpeg") == ["ffmpeg"]

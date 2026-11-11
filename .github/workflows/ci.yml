@@ -81,10 +81,10 @@ jobs:
           set -euo pipefail
           SKILL="$PWD"
           WORK="$(python -c 'import tempfile; print(tempfile.mkdtemp().replace(chr(92), "/"))')"
+          FFMPEG="$(python -c "import sys; sys.path.insert(0, 'scripts'); from env_utils import resolve_tool; print(resolve_tool('ffmpeg'))")"
           cd "$WORK"
           # Use the tool finder rather than PATH: a tool setup.py just installed
           # is not on this shell's PATH yet.
-          FFMPEG="$(python -c "import sys; sys.path.insert(0, r'$SKILL/scripts'); from env_utils import resolve_tool; print(resolve_tool('ffmpeg'))")"
           echo "ffmpeg resolved to: $FFMPEG"
           "$FFMPEG" -hide_banner -loglevel error \
             -f lavfi -i testsrc=size=320x240:rate=10:duration=4 \
