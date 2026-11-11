@@ -4,6 +4,10 @@ All notable changes to `/analyze-video` are documented here.
 
 ## [Unreleased]
 
+## [1.12.0] - 2026-11-11
+
+Better frames and analysis with a purpose: contact sheets are numbered, frame picks stop repeating the same shot, and the skill can write a filmmaker breakdown, a content summary or a reference review.
+
 ### Added
 - **Analysis lenses.** The skill can now write for a specific purpose: a **filmmaker breakdown** (structure by beats, coverage, composition, light, editing pace, graphics, with "How it was built" and "What to borrow" sections), a **content summary** (what the video says and shows, with key points and open questions), or a **reference review** (audience, message, proof, brand presence, and an assessment kept apart from observation). `references/lenses.md` holds the guidance, including the limits every lens must state: frames are samples, motion is inferred, and sound was not heard. The lens is inferred from the request, and asked about only when unclear.
 - **Frame times in the document.** Each frame's time is printed in front of its caption, so a reader can find the moment in the video. `"show_timestamps": false` in the spec turns it off.
