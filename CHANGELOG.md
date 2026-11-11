@@ -5,11 +5,18 @@ All notable changes to `/analyze-video` are documented here.
 ## [Unreleased]
 
 ### Added
+- **Analysis lenses.** The skill can now write for a specific purpose: a **filmmaker breakdown** (structure by beats, coverage, composition, light, editing pace, graphics, with "How it was built" and "What to borrow" sections), a **content summary** (what the video says and shows, with key points and open questions), or a **reference review** (audience, message, proof, brand presence, and an assessment kept apart from observation). `references/lenses.md` holds the guidance, including the limits every lens must state: frames are samples, motion is inferred, and sound was not heard. The lens is inferred from the request, and asked about only when unclear.
+- **Frame times in the document.** Each frame's time is printed in front of its caption, so a reader can find the moment in the video. `"show_timestamps": false` in the spec turns it off.
 - **Numbered contact sheets.** Every tile now shows its tile number and its time in the video, so a frame can be named by reading it off the sheet. The labels are small images the skill draws itself and ffmpeg overlays, so they need no font and work with ffmpeg builds that cannot draw text (Homebrew's, for one). If labelling ever fails, the sheet is built without labels as before, and the manifest's `contact_sheet.labeled` says which.
 - **Pick frames by tile.** `select_frames.py --tiles 1:4,2:59` returns the path and timestamps for exactly those tiles, so swapping a frame no longer means reading the full manifest by hand. Each pick in the helper's output now carries a `tile` field.
 
 ### Changed
+- **Analysis downloads take the best-looking stream at their resolution.** Within the width budget, yt-dlp's default ranking put codec family above bitrate and chose the smallest AV1 stream (48 kbps on one 240p source), which gave soft, blocky frames. The pipeline now ranks by resolution, then bitrate. Downloads are somewhat larger; the resolution cap is unchanged.
 - **Frame picks no longer repeat the same shot.** `select_frames.py` still spreads its picks across the video, but swaps out any pick that looks nearly identical to one already chosen, and skips near-blank frames. On a 15-minute talk filmed mostly from one camera, 20 picks went from 17 near-identical podium shots to 7, with the cutaways and wide shots in their place; on a 10-minute short film, 12 picks went from 3 credits frames to 1. Frames are compared as tiny thumbnails made by ffmpeg, in well under a second, with no new dependencies. `--even` gives the previous even spacing, which is also the automatic fallback when frames cannot be compared.
+
+### Fixed
+- **Caption transcripts no longer repeat every phrase.** YouTube's rolling auto-captions repeat the previous line at the top of each new cue. Only whole-cue repeats were removed, so `transcript.txt` and the manifest held most phrases twice. The parser now keeps only the lines that are new in each cue.
+- **Words after a blank caption row were dropped.** A cue whose first row was a single space was read as empty, losing the words on its second row.
 
 ## [1.11.0] - 2026-11-10
 

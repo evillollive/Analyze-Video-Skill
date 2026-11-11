@@ -216,11 +216,44 @@ function imgPara(filePath, dim, alt, keepWithCaption) {
   });
 }
 
-function cap(text) {
-  return new Paragraph({
-    spacing: { before: 60, after: 280 },
-    children: [new TextRun({ text, italics: true, size: 18, color: '777777', font: 'Arial' })],
-  });
+// "00:19" -> "0:19", "01:02:05" -> "1:02:05"; anything unexpected is returned as is.
+function tidyTime(value) {
+  const text = String(value || '').trim();
+  if (!/^\d{1,2}(:\d{2}){1,2}$/.test(text)) return text;
+  return text.replace(/^0(\d)/, '$1');
+}
+
+function secondsToTime(seconds) {
+  if (typeof seconds !== 'number' || !isFinite(seconds) || seconds < 0) return '';
+  const whole = Math.floor(seconds);
+  const h = Math.floor(whole / 3600);
+  const m = Math.floor((whole % 3600) / 60);
+  const s = whole % 60;
+  const ss = String(s).padStart(2, '0');
+  return h ? `${h}:${String(m).padStart(2, '0')}:${ss}` : `${m}:${ss}`;
+}
+
+// The time a frame was taken, for printing beside its caption ('' if unknown).
+function frameTime(frame) {
+  if (!frame) return '';
+  if (frame.timestamp_formatted) return tidyTime(frame.timestamp_formatted);
+  return secondsToTime(frame.timestamp_seconds);
+}
+
+// Caption paragraph. `time`, when given, is printed first in upright bold so a
+// reader can find the frame in the video; it is skipped if the caption already
+// starts with it.
+function cap(text, time) {
+  const runs = [];
+  const caption = String(text || '');
+  if (time && !caption.startsWith(time)) {
+    runs.push(new TextRun({ text: time, bold: true, size: 18, color: '555555', font: 'Arial' }));
+    if (caption) runs.push(new TextRun({ text: '  ', size: 18, font: 'Arial' }));
+  }
+  if (caption) {
+    runs.push(new TextRun({ text: caption, italics: true, size: 18, color: '777777', font: 'Arial' }));
+  }
+  return new Paragraph({ spacing: { before: 60, after: 280 }, children: runs });
 }
 
 // ----------------------------------------------------------------------------
@@ -244,7 +277,7 @@ function noCellBorders() {
   return { top: none, bottom: none, left: none, right: none };
 }
 
-function frameCell(frame, videoDim) {
+function frameCell(frame, videoDim, showTimes) {
   if (!frame || !frame.path) {
     // Filler cell to balance an odd final pair (keeps the table rectangular).
     return new TableCell({
@@ -259,7 +292,8 @@ function frameCell(frame, videoDim) {
   // No keep-with-next inside a table cell: the row already cannot split, and
   // chaining cells would glue every row of the table onto one page.
   const children = [imgPara(frame.path, scaledForTwoUp(baseDim), frame.caption || 'video frame', false)];
-  if (frame.caption) children.push(cap(frame.caption));
+  const time = showTimes ? frameTime(frame) : '';
+  if (frame.caption || time) children.push(cap(frame.caption, time));
   return new TableCell({
     children,
     width: { size: 50, type: WidthType.PERCENTAGE },
@@ -270,14 +304,14 @@ function frameCell(frame, videoDim) {
 
 // Render frames two-per-row in a borderless table. Returns an array with a
 // single Table element (or empty if there are no frames).
-function framesTwoUp(frames, videoDim) {
+function framesTwoUp(frames, videoDim, showTimes) {
   const valid = frames.filter(f => f && f.path);
   if (valid.length === 0) return [];
   const rows = [];
   for (let i = 0; i < valid.length; i += 2) {
     rows.push(new TableRow({
       cantSplit: true,                 // a pair of frames never breaks across pages
-      children: [frameCell(valid[i], videoDim), frameCell(valid[i + 1], videoDim)],
+      children: [frameCell(valid[i], videoDim, showTimes), frameCell(valid[i + 1], videoDim, showTimes)],
     }));
   }
   return [new Table({
@@ -453,6 +487,8 @@ function buildChildren(spec) {
   // Frame layout: "1up" (default, one frame per row) or "2up" (side-by-side
   // pairs). Set at the spec level and overridable per video or per section.
   const globalLayout = spec.frame_layout === '2up' ? '2up' : '1up';
+  // Each frame's time is printed beside its caption unless the spec turns it off.
+  const showTimes = spec.show_timestamps !== false;
   const children = [title(spec.title)];
   if (spec.subtitle) children.push(meta(spec.subtitle));
 
@@ -479,7 +515,7 @@ function buildChildren(spec) {
         : videoLayout;
 
       if (layout === '2up') {
-        children.push(...framesTwoUp(frames, videoDim));
+        children.push(...framesTwoUp(frames, videoDim, showTimes));
         continue;
       }
       for (const frame of frames) {
@@ -487,8 +523,9 @@ function buildChildren(spec) {
         const dim = (frame.width && frame.height)
           ? { width: frame.width, height: frame.height }
           : videoDim;
-        children.push(imgPara(frame.path, dim, frame.caption || 'video frame', Boolean(frame.caption)));
-        if (frame.caption) children.push(cap(frame.caption));
+        const time = showTimes ? frameTime(frame) : '';
+        children.push(imgPara(frame.path, dim, frame.caption || 'video frame', Boolean(frame.caption || time)));
+        if (frame.caption || time) children.push(cap(frame.caption, time));
       }
     }
   }

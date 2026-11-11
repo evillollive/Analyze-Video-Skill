@@ -61,6 +61,10 @@ Use `manifest_lite.docx_image_dimensions` as the per-video default. `build-docx.
 
 `appendix_transcript` adds a full-transcript appendix. Give each entry a `heading` and a `path` pointing at the video's `manifest_lite.transcript_path` (the `transcript.txt` the pipeline writes). The builder reads the file itself, so never paste the transcript text into the spec. Only include this when the user asked for the transcript in the document and a transcript exists (`transcript_segment_count > 0`).
 
+## Frame times
+
+When a frame entry has `timestamp_formatted` (or `timestamp_seconds`), the builder prints that time in bold in front of the caption, as `0:19`, so a reader can find the frame in the video. A frame without a caption still gets its time. Set `"show_timestamps": false` at the top level of the spec to leave times off.
+
 ## Appendices
 
 Appendices are off by default. Add one only when the user approved it in the delivery question.

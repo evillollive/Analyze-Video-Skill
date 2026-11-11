@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Parse a WebVTT subtitle file into a clean, timestamped transcript.
 
-YouTube auto-subs emit rolling-duplicate cues (each line appears 2-3 times as it
-scrolls). We dedupe consecutive identical cues and merge their time ranges.
+YouTube auto-subs emit rolling cues: each new cue repeats the previous cue's
+last line above its new words, and a short "hold" cue repeats it again. We keep
+only the lines that are new in each cue, then merge consecutive identical cues.
 """
 from __future__ import annotations
 
@@ -27,6 +28,7 @@ def parse_vtt(path: str) -> list[dict]:
     lines = text.splitlines()
 
     segments: list[dict] = []
+    prev_lines: list[str] = []
     i = 0
     while i < len(lines):
         match = TS_RE.match(lines[i])
@@ -39,18 +41,42 @@ def parse_vtt(path: str) -> list[dict]:
         i += 1
 
         cue_lines: list[str] = []
-        while i < len(lines) and lines[i].strip():
+        # A cue ends at an empty line. A line holding only a space is part of
+        # the cue (rolling captions use one as a blank first row), so it must
+        # not end the cue early and hide the words on the next line.
+        while i < len(lines) and lines[i] != "" and not TS_RE.match(lines[i]):
             cleaned = TAG_RE.sub("", lines[i]).strip()
             if cleaned:
                 cue_lines.append(cleaned)
             i += 1
 
-        cue_text = " ".join(cue_lines).strip()
-        if cue_text:
-            segments.append({"start": round(start, 2), "end": round(end, 2), "text": cue_text})
-        i += 1
+        if i < len(lines) and lines[i] == "":
+            i += 1
+        if not cue_lines:
+            continue
+        # Rolling captions repeat the previous cue's last line(s) at the top of
+        # each new cue while the text scrolls. Keep only the lines that are new.
+        carried = _carried_over(prev_lines, cue_lines)
+        new_lines = cue_lines[carried:]
+        prev_lines = cue_lines
+        if not new_lines:
+            # Nothing new: the cue only holds earlier text on screen a bit longer.
+            if segments:
+                segments[-1]["end"] = max(segments[-1]["end"], round(end, 2))
+            continue
+        segments.append(
+            {"start": round(start, 2), "end": round(end, 2), "text": " ".join(new_lines).strip()}
+        )
 
     return _dedupe(segments)
+
+
+def _carried_over(previous: list[str], current: list[str]) -> int:
+    """How many leading lines of ``current`` repeat the tail of ``previous``."""
+    for count in range(min(len(previous), len(current)), 0, -1):
+        if current[:count] == previous[-count:]:
+            return count
+    return 0
 
 
 def _dedupe(segments: list[dict]) -> list[dict]:

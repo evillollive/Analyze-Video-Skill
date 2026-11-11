@@ -414,6 +414,15 @@ def _write_source_marker(
         pass
 
 
+# How yt-dlp ranks the formats that pass the width budget for analysis runs:
+# plain HTTP(S) streams first (HLS estimates are unreliable and merge badly),
+# then the highest resolution within the budget, then the highest bitrate.
+# Without the explicit "res,br", yt-dlp ranks codec family above bitrate and
+# picks the smallest AV1 stream, whose frames look soft and blocky when the
+# source is low resolution.
+ANALYSIS_FORMAT_SORT = "proto:https,res,br"
+
+
 def format_selector(max_width: int | None) -> str:
     """Build the yt-dlp ``-f`` expression for a source-width budget.
 
@@ -462,7 +471,7 @@ def _build_ytdlp_cmd(
         ytdlp,
         "-N", "8",
         "-f", selector or format_selector(max_width),
-        "-S", "proto:https",
+        "-S", ANALYSIS_FORMAT_SORT,
         "--merge-output-format", "mp4",
         "--ignore-no-formats-error",
         "--write-info-json",

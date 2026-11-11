@@ -178,7 +178,8 @@ Analyze-Video-Skill/
 │   ├── environments.md          # Time limits, sandboxes, synced folders, Windows
 │   ├── docx-spec.md             # Full document spec, appendices, PDF, cleanup
 │   ├── pipeline-options.md      # Outputs, manifest fields, resuming, caching
-│   └── oft-export.md            # Open Filmmaker Toolkit export
+│   ├── oft-export.md            # Open Filmmaker Toolkit export
+│   └── lenses.md                # Filmmaker breakdown, content summary, reference review
 ├── CHANGELOG.md                 # What changed and when
 ├── LICENSE                      # AGPL-3.0, always open source
 ├── commands/
