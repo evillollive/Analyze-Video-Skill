@@ -29,7 +29,7 @@ needs_node_docx = pytest.mark.skipif(
 )
 
 
-def _build(tmp_path, layout):
+def _build(tmp_path, layout, appendices=False):
     frame = tmp_path / "frame_0001.jpg"
     frame.write_bytes(TINY_JPEG)
     out = tmp_path / "out.docx"
@@ -50,6 +50,15 @@ def _build(tmp_path, layout):
             }],
         }],
     }
+    if appendices:
+        transcript = tmp_path / "transcript.txt"
+        transcript.write_text("[00:01] hello\n")
+        spec["appendix_contact_sheets"] = [
+            {"path": str(frame), "heading": "Chunk 1", "caption": "Overview.", "alt": "grid"},
+            {"path": str(frame), "heading": "Chunk 2"},
+        ]
+        spec["appendix_transcript"] = [{"heading": "v", "path": str(transcript)}]
+        spec["observations"] = "Shared structure."
     spec_path = tmp_path / "spec.json"
     spec_path.write_text(json.dumps(spec))
     subprocess.run(
@@ -73,3 +82,11 @@ def test_two_up_rows_do_not_split_across_pages(tmp_path):
     xml = _build(tmp_path, "2up")
     assert "<w:cantSplit/>" in xml
     assert xml.count("<w:keepNext/>") >= 4
+
+
+@needs_node_docx
+def test_every_spec_feature_builds(tmp_path):
+    """Appendices, observations and both layouts go through the builder without error."""
+    xml = _build(tmp_path, "2up", appendices=True)
+    assert "Contact Sheet Appendix" in xml
+    assert "hello" in xml

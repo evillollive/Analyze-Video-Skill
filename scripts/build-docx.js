@@ -310,7 +310,7 @@ function jpegSize(buf) {
 // layout). Letter/A4 printable height is ~9in; capping each image block near
 // ~4in (plus its heading/caption) lets two stack per page instead of one image
 // ballooning to a full page each. Aspect ratio is always preserved.
-function contactSheetPara(filePath, alt, explicitDim) {
+function contactSheetPara(filePath, alt, explicitDim, keepWithCaption) {
   const MAX_W = 520;
   const MAX_H = 400;
   if (!fs.existsSync(filePath)) {
@@ -513,7 +513,7 @@ function buildChildren(spec) {
         ? { width: sheet.width, height: sheet.height }
         : null;
       const alt = sheet.alt || sheet.caption || 'contact sheet: grid of video frames';
-      children.push(contactSheetPara(sheet.path, alt, dim));
+      children.push(contactSheetPara(sheet.path, alt, dim, Boolean(sheet.caption)));
       if (sheet.caption) children.push(cap(sheet.caption));
     }
   }
