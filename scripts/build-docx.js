@@ -256,7 +256,9 @@ function frameCell(frame, videoDim) {
   const baseDim = (frame.width && frame.height)
     ? { width: frame.width, height: frame.height }
     : videoDim;
-  const children = [imgPara(frame.path, scaledForTwoUp(baseDim), frame.caption || 'video frame', Boolean(frame.caption))];
+  // No keep-with-next inside a table cell: the row already cannot split, and
+  // chaining cells would glue every row of the table onto one page.
+  const children = [imgPara(frame.path, scaledForTwoUp(baseDim), frame.caption || 'video frame', false)];
   if (frame.caption) children.push(cap(frame.caption));
   return new TableCell({
     children,

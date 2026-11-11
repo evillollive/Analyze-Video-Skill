@@ -81,7 +81,10 @@ def test_one_up_keeps_heading_text_frames_and_captions_together(tmp_path):
 def test_two_up_rows_do_not_split_across_pages(tmp_path):
     xml = _build(tmp_path, "2up")
     assert "<w:cantSplit/>" in xml
-    assert xml.count("<w:keepNext/>") >= 4
+    # Only the heading and the last body paragraph chain forward. Images inside
+    # cells must not, or every row of the table is glued onto one page and long
+    # sections leave pages mostly empty.
+    assert xml.count("<w:keepNext/>") == 2
 
 
 @needs_node_docx
