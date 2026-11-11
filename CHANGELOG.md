@@ -4,6 +4,9 @@ All notable changes to `/analyze-video` are documented here.
 
 ## [Unreleased]
 
+### Added
+- **CI now runs on macOS and Windows.** A new job runs the test suite, `setup.py`, and a full local-file pipeline through the Word document build on real macOS and Windows machines, so setup and path handling are checked outside Linux.
+
 ### Removed
 - **GitHub Copilot is no longer a supported target.** The Copilot-only Word canvas review step, the `COPILOT_SKILL_DIR` lookup in Step 0, and the README's Copilot CLI section are gone. The skill directory still resolves from `CLAUDE_SKILL_DIR` and then from the folder `SKILL.md` lives in, so nothing changes under Claude Code or Codex.
 
