@@ -172,7 +172,13 @@ python3 scripts/run_guarded_pipeline.py --help
 
 ```text
 Analyze-Video-Skill/
-├── SKILL.md                     # How Claude uses this skill
+├── SKILL.md                     # Core instructions an agent follows
+├── references/                  # Detail the agent reads only when needed
+│   ├── downloads.md             # Best-copy mode, caption options, download failures
+│   ├── environments.md          # Time limits, sandboxes, synced folders, Windows
+│   ├── docx-spec.md             # Full document spec, appendices, PDF, cleanup
+│   ├── pipeline-options.md      # Outputs, manifest fields, resuming, caching
+│   └── oft-export.md            # Open Filmmaker Toolkit export
 ├── CHANGELOG.md                 # What changed and when
 ├── LICENSE                      # AGPL-3.0, always open source
 ├── commands/
