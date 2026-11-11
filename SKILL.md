@@ -83,10 +83,10 @@ If the user also wants analysis, first download the local file, then run the nor
 
 ## Step 0: Setup preflight
 
-First, resolve the skill directory. Claude sets `CLAUDE_SKILL_DIR`, but some sandboxes don't. If it is not set, fall back to the directory this `SKILL.md` lives in:
+First, resolve the skill directory: the folder this `SKILL.md` lives in. Some agents expose it as an environment variable (for example `CLAUDE_SKILL_DIR` or `COPILOT_SKILL_DIR`). No particular agent is required; if none of these is set, use the folder you loaded this file from:
 
 ```bash
-SKILL_DIR="${CLAUDE_SKILL_DIR:-$(cd "$(dirname "$0")" 2>/dev/null && pwd)}"
+SKILL_DIR="${SKILL_DIR:-${CLAUDE_SKILL_DIR:-${COPILOT_SKILL_DIR:-$(cd "$(dirname "$0")" 2>/dev/null && pwd)}}}"
 # If you don't have $0 (e.g. pasting commands), locate it once:
 #   SKILL_DIR=$(dirname "$(find / -name SKILL.md -path '*analyze-video*' 2>/dev/null | head -1)")
 ```
