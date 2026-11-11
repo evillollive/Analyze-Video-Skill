@@ -29,7 +29,7 @@ needs_node_docx = pytest.mark.skipif(
 )
 
 
-def _build(tmp_path, layout, appendices=False):
+def _build(tmp_path, layout, appendices=False, extra=None):
     frame = tmp_path / "frame_0001.jpg"
     frame.write_bytes(TINY_JPEG)
     out = tmp_path / "out.docx"
@@ -44,8 +44,10 @@ def _build(tmp_path, layout, appendices=False):
                 "heading": "Opening (0:00 to 0:10)",
                 "body": "First paragraph.\n\nSecond paragraph.",
                 "frames": [
-                    {"path": str(frame), "caption": "Caption one.", "alt": "a"},
-                    {"path": str(frame), "caption": "Caption two.", "alt": "b"},
+                    {"path": str(frame), "caption": "Caption one.", "alt": "a",
+                     "timestamp_seconds": 19.04, "timestamp_formatted": "00:19"},
+                    {"path": str(frame), "caption": "Caption two.", "alt": "b",
+                     "timestamp_seconds": 3725.0},
                 ],
             }],
         }],
@@ -59,6 +61,8 @@ def _build(tmp_path, layout, appendices=False):
         ]
         spec["appendix_transcript"] = [{"heading": "v", "path": str(transcript)}]
         spec["observations"] = "Shared structure."
+    if extra:
+        spec.update(extra)
     spec_path = tmp_path / "spec.json"
     spec_path.write_text(json.dumps(spec))
     subprocess.run(
@@ -93,3 +97,19 @@ def test_every_spec_feature_builds(tmp_path):
     xml = _build(tmp_path, "2up", appendices=True)
     assert "Contact Sheet Appendix" in xml
     assert "hello" in xml
+
+
+@needs_node_docx
+@pytest.mark.parametrize("layout", ["1up", "2up"])
+def test_frame_times_are_printed_beside_captions(tmp_path, layout):
+    xml = _build(tmp_path, layout)
+    assert ">0:19<" in xml          # "00:19" tidied
+    assert ">1:02:05<" in xml       # derived from seconds when no formatted time is given
+    assert "Caption one." in xml
+
+
+@needs_node_docx
+def test_frame_times_can_be_turned_off(tmp_path):
+    xml = _build(tmp_path, "1up", extra={"show_timestamps": False})
+    assert ">0:19<" not in xml and ">1:02:05<" not in xml
+    assert "Caption one." in xml

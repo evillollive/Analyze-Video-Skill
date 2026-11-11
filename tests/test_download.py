@@ -204,6 +204,14 @@ class TestBuildYtdlpCmd:
         )
         assert "--extractor-args" not in cmd
 
+    def test_ranks_bitrate_above_codec_family(self):
+        """At the capped resolution, take the best-looking stream, not the smallest."""
+        cmd = _build_ytdlp_cmd(
+            "yt-dlp", "u", "/o/video.%(ext)s",
+            cookie_path=None, cookies_from_browser=None, player_client=None,
+        )
+        assert cmd[cmd.index("-S") + 1] == "proto:https,res,br"
+
     def test_cookies_appended(self):
         cmd = _build_ytdlp_cmd(
             "yt-dlp", "u", "/o/video.%(ext)s",

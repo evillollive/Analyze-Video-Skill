@@ -222,3 +222,66 @@ class TestSegmentIndex:
         idx = SegmentIndex.build(segs)
         assert idx.range_indices(3, 5) == (0, 0, 1)
         assert idx.range_indices(6, 8) == (None, None, 0)
+
+
+# <SP> marks the single-space rows these captions really contain.
+ROLLING_VTT = """WEBVTT
+Kind: captions
+Language: en
+
+00:00:07.520 --> 00:00:08.950 align:start position:0%
+[Music]
+this<00:00:07.720><c> program</c><00:00:08.160><c> is</c><00:00:08.280><c> brought</c>
+
+00:00:08.950 --> 00:00:08.960 align:start position:0%
+this program is brought
+<SP>
+
+00:00:08.960 --> 00:00:11.870 align:start position:0%
+this program is brought
+to<00:00:09.519><c> you</c><00:00:10.480><c> by</c>
+
+00:00:11.870 --> 00:00:11.880 align:start position:0%
+to you by
+<SP>
+
+00:00:20.519 --> 00:00:26.070 align:start position:0%
+<SP>
+thank
+
+00:00:26.080 --> 00:00:29.070 align:start position:0%
+<SP>
+you<00:00:27.080><c> all</c>
+""".replace("<SP>", " ")
+
+
+class TestRollingCaptions:
+    """YouTube auto-captions scroll: each cue repeats the previous cue's last line."""
+
+    def _parse(self, tmp_path):
+        from transcribe import parse_vtt
+        path = tmp_path / "rolling.vtt"
+        path.write_text(ROLLING_VTT, encoding="utf-8")
+        return parse_vtt(str(path))
+
+    def test_each_phrase_appears_once(self, tmp_path):
+        texts = [s["text"] for s in self._parse(tmp_path)]
+        assert texts == ["[Music] this program is brought", "to you by", "thank", "you all"]
+
+    def test_hold_cues_extend_the_previous_segment(self, tmp_path):
+        segs = self._parse(tmp_path)
+        assert segs[0]["start"] == 7.52 and segs[0]["end"] == 8.96
+        assert segs[1]["end"] == 11.88
+
+    def test_words_after_a_whitespace_only_line_are_kept(self, tmp_path):
+        """A cue whose first row is a single space must not lose its second row."""
+        assert "thank" in [s["text"] for s in self._parse(tmp_path)]
+
+    def test_cue_without_a_blank_line_before_the_next_timing_line(self, tmp_path):
+        from transcribe import parse_vtt
+        path = tmp_path / "tight.vtt"
+        path.write_text(
+            "WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nfirst\n00:00:02.000 --> 00:00:03.000\nsecond\n",
+            encoding="utf-8",
+        )
+        assert [s["text"] for s in parse_vtt(str(path))] == ["first", "second"]

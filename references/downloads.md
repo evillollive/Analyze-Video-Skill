@@ -52,7 +52,7 @@ yt-dlp -F "<url>"
 
 If the list tops out at the resolution you got, the result is the source's limit: say so in the document's `meta` line and carry on. If the list shows higher resolutions than you got, treat it as a degraded download and follow the failures below.
 
-Analysis downloads are deliberately capped near 480p, because frames are rendered about 512 pixels wide. Pass `--download-max-width 0` to `process.py` only when the user needs larger frames.
+Analysis downloads are deliberately capped near 480p, because frames are rendered about 512 pixels wide. Within that cap the pipeline takes the highest-bitrate stream, since a low-bitrate stream gives soft, blocky frames. Pass `--download-max-width 0` to `process.py` only when the user needs larger frames.
 
 ## Warnings that are safe to pass along
 

@@ -35,6 +35,7 @@ Read these only when the situation calls for them. They live in `${SKILL_DIR}/re
 | `docx-spec.md` | You need layouts, appendices, a PDF, standalone files, cleanup, or the `docx` module cannot be found |
 | `pipeline-options.md` | A run was interrupted, or you need output files, manifest fields, caching, parallelism or promo trimming |
 | `oft-export.md` | The user wants an Open Filmmaker Toolkit project file |
+| `lenses.md` | The analysis has a purpose beyond a general write-up: a filmmaker breakdown, a content summary, or a review of a reference or competitor video |
 
 ## Safety and privacy boundary
 
@@ -163,6 +164,7 @@ Ask the user once for the batch:
    - One combined `.docx` (default)
    - Separate `.docx` per video
 3. **Where to save the document**, if the user has not said and your environment has no standard place for deliverables.
+4. **Kind of analysis**, only if the request leaves it unclear and the answer would change the document: a general write-up, a filmmaker breakdown (how it was made), a content summary (what it says), or a reference review (what a competitor or example video is doing). Infer it from the request when you can.
 
 If a URL failed because the site requires login/bot verification and the user is authorized to view it, ask whether they want to retry with their own browser cookies. Do not ask for cookies proactively before a failure.
 
@@ -237,6 +239,8 @@ Read the selected full-resolution frames in one parallel batch per video. For ba
 
 ## Step 6: Write the analysis
 
+Decide what kind of analysis this is. If the user wants to know how the video was made, what it says, or how a reference or competitor video works, read `references/lenses.md` and follow that lens: it changes what to look for, how to organize the sections, and which frames to prefer. Otherwise write a general analysis as described here.
+
 Write time-based sections with descriptive headings, for example:
 - "Opening setup (0:00 to 0:18)"
 - "Live demo walkthrough (2:30 to 3:15)"
@@ -246,10 +250,10 @@ For each section:
 - Connect transcript evidence when available using timestamps from `manifest.transcript_segments`.
 - Note what is significant or surprising.
 
-Quoting from captions needs care. `manifest_lite.transcript_source` says where the transcript came from, but not whether a person or a machine wrote it. Machine captions often have no punctuation, misrecognized words, and sound markers such as `[Applause]` in the middle of a sentence, and consecutive segments can repeat the same words.
+Quoting from captions needs care. `manifest_lite.transcript_source` says where the transcript came from, but not whether a person or a machine wrote it. Machine captions often have no punctuation, misrecognized words, and sound markers such as `[Applause]` in the middle of a sentence.
 
 - Quote only words that appear together, in order, in the transcript. Do not join text across a sound marker or silently drop one.
-- When a phrase appears in two segments, use the timestamp of the first.
+- Use the timestamp of the segment where the quoted words begin.
 - If a word looks misrecognized, paraphrase instead of quoting it.
 - Add punctuation and capitals for readability, but do not change words.
 
@@ -348,7 +352,8 @@ Rules for the spec:
 - Frame paths: from this session's `select_frames.py` output, including its `--tiles` output for frames you swapped in (Step 5). Never from an earlier session's notes.
 - `meta`: a short line under the title. Do not repeat the source URL there; the builder prints it on its own "Source:" line.
 - `body`: separate paragraphs with a blank line.
-- `time_range`, `timestamp_seconds` and `timestamp_formatted` are recorded for other tools and are not printed in the document. Put the time range in the section heading, and put a timestamp in a caption when the reader should see it.
+- Frame times: keep `timestamp_seconds` and `timestamp_formatted` on each frame, copied from `select_frames.py`. The builder prints the time in front of the caption, so do not write it into the caption yourself. Set `"show_timestamps": false` at the top level to leave times off.
+- `time_range` is recorded for other tools and is not printed. Put the time range in the section heading.
 - `frame_layout`: `"1up"` (default) or `"2up"`, settable at the top level, per video, or per section.
 - `appendix_contact_sheets` and `appendix_transcript`: include only what the user approved in Step 7. Leave them out otherwise.
 
