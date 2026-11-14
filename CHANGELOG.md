@@ -13,6 +13,7 @@ All notable changes to `/analyze-video` are documented here.
 ### Fixed
 - **Best-copy failed on single-track videos.** With the default `--audio-lang original`, the download required a track labeled "original", but YouTube adds that label only when a video has several audio tracks, and many other sites never add it. Single-track videos stopped with "No original audio stream satisfies the requested ... codec requirements". When no track is labeled original, the one non-DRC track is now used; on multi-track videos the labeled original still wins. The DRC filter also no longer drops formats that have no track note at all.
 - **Best copy ignored `--temp-dir`.** The output template was an absolute path, which makes yt-dlp ignore `--paths`, so partial downloads and merge files were written straight into the destination folder (yt-dlp warned "--paths is ignored"). Partial files now stay in the temp folder and only the finished file is moved into the destination, which matters when the destination is a synced folder such as Dropbox.
+- **Best copy could deliver the wrong container.** When a source offers only one combined video-and-audio file (common on old YouTube videos), yt-dlp skipped the merge step, so a request for MKV could arrive as an .mp4. The file is now remuxed into the requested container, without re-encoding.
 
 ## [1.12.0] - 2026-11-11
 

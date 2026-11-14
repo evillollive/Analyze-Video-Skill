@@ -313,6 +313,7 @@ class TestBestCopyFormats:
         def run(cmd, capture_output=True, text=True):
             assert cmd[cmd.index("-f") + 1] == "137+251-20"
             assert cmd[cmd.index("--merge-output-format") + 1] == "mkv"
+            assert cmd[cmd.index("--remux-video") + 1] == "mkv"
             final.write_bytes(b"video")
             return _subprocess.CompletedProcess(cmd, 0, str(final) + "\n", "")
 
@@ -457,6 +458,7 @@ class TestBestCopySingleTrackAndAudioOnly:
         cmd = commands[0]
         assert cmd[cmd.index("-f") + 1] == "251"
         assert "-x" not in cmd and "--merge-output-format" not in cmd
+        assert "--remux-video" not in cmd
 
     def test_mp3_converts_only_when_asked(self, tmp_path, monkeypatch):
         final = tmp_path / "Song [x].mp3"

@@ -1463,7 +1463,10 @@ def download_best_copy(
     if container == "mp3":
         download_cmd += ["-x", "--audio-format", "mp3", "--audio-quality", "0"]
     elif not audio_only:
-        download_cmd += ["--merge-output-format", container]
+        # --merge-output-format only applies when two streams are merged. A
+        # source with one combined file (old YouTube videos) would otherwise
+        # arrive in its own container, so remux it; no re-encode either way.
+        download_cmd += ["--merge-output-format", container, "--remux-video", container]
     download_cmd += [
         "-P", str(out_dir),
         "-P", f"temp:{temp_dir}",
