@@ -768,7 +768,9 @@ def _label_text(tile: int, seconds: float | None) -> str:
     """"59 12:57": the tile number, then the time when it is known."""
     if seconds is None:
         return str(tile)
-    whole = max(0, int(seconds))
+    # Round like format_time(), so a tile's label matches the time printed for
+    # that frame in the document (5.8 s is 0:06 in both, not 0:05 here).
+    whole = max(0, int(round(seconds)))
     hours, minutes, secs = whole // 3600, (whole % 3600) // 60, whole % 60
     clock = f"{hours}:{minutes:02d}:{secs:02d}" if hours else f"{minutes}:{secs:02d}"
     return f"{tile} {clock}"

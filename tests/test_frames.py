@@ -580,6 +580,8 @@ class TestContactSheetLabels:
     def test_label_text(self):
         assert frames_mod._label_text(59, 777.4) == "59 12:57"
         assert frames_mod._label_text(1, 0.0) == "1 0:00"
+        # Rounded like format_time(), so the sheet and the document agree.
+        assert frames_mod._label_text(3, 5.8) == "3 0:06"
         assert frames_mod._label_text(3, 3725.0) == "3 1:02:05"
         assert frames_mod._label_text(7, None) == "7"
 
