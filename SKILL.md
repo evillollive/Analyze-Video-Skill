@@ -3,11 +3,11 @@ name: analyze-video
 description: >-
   Analyze video URLs and local files into timestamped Word reports and
   Open Filmmaker Toolkit project files. Also handle caption downloads and
-  best-quality local video copies. Triggers include
+  best-quality local video or audio copies. Triggers include
   "analyze this video", "make a report from this video", "download the captions",
   "get the subtitles", "export this analysis as an Open Filmmaker Toolkit project",
-  "download this video", "get me a local copy", "best quality copy", and
-  "save this YouTube video".
+  "download this video", "get me a local copy", "best quality copy",
+  "save this YouTube video", "just the audio", and "rip the audio".
 allowed-tools: Bash, Read, Write, AskUserQuestion
 homepage: https://github.com/evillollive/Analyze-Video-Skill
 repository: https://github.com/evillollive/Analyze-Video-Skill
@@ -47,7 +47,7 @@ Do not try to bypass platform bot detection or access controls. If a site blocks
 
 - **Analysis** (default): the user wants a written document about one or more videos. Follow Steps 0 to 8.
 - **Captions only**: the user wants subtitle or transcript files and no analysis. Follow "Captions-only mode" and stop.
-- **Download only**: the user wants a local copy of the video and no analysis. Follow "Download-only mode" and stop.
+- **Download only**: the user wants a local copy of the video, or only its audio, and no analysis. Follow "Download-only mode" and stop.
 
 In every mode, first resolve the skill directory as shown in Step 0.
 
@@ -71,7 +71,7 @@ Local video files are not supported in this mode; point the user to any sidecar 
 Skip setup of the docx stack, frame extraction, contact sheets, and the report pipeline. Before downloading, ask only for the choices the user has not already made:
 
 1. Deliverable: video file only, or video file plus analysis.
-2. Container: MKV (any compatible source codec), edit-friendly MP4 (H.264 video + AAC audio), or both.
+2. Container: MKV (any compatible source codec), edit-friendly MP4 (H.264 video + AAC audio), or both. If the user wants only the audio, use `--container audio` (the original audio track, no re-encode); use `--container mp3` only when they ask for mp3, since converting loses quality.
 3. Captions: none, SRT, or SRT plus a timestamped transcript.
 4. Destination folder.
 
@@ -87,8 +87,8 @@ python3 "${SKILL_DIR}/scripts/download.py" --best \
 Rules that always apply:
 
 - Write final files to the destination the user chose. Never assume one.
-- If the best available stream is below 720p, stop and ask whether the user accepts it; only then retry with `--allow-low-quality`.
-- After downloading, report the actual codecs, resolution, fps and video bitrate the script measured, plus the decode-test result.
+- If the best available stream is below 720p, stop and ask whether the user accepts it; only then retry with `--allow-low-quality`. This check does not apply to audio-only downloads.
+- After downloading, report the actual codecs, resolution, fps and video bitrate the script measured, plus the decode-test result. For audio-only, report the audio codec, bitrate, sample rate and channels instead.
 - If the user also wants analysis, download first, then run the normal flow against the local file. Do not analyze or build a `.docx` when the user asked for the file only.
 
 Audio language, MP4 behavior and failure handling are in `references/downloads.md`.

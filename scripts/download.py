@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -1039,35 +1040,54 @@ def download(
     return resolve_local(source)
 
 
+AUDIO_ONLY_CONTAINERS = {"audio", "mp3"}
+BEST_CONTAINERS = {"mkv", "mp4", *AUDIO_ONLY_CONTAINERS}
+# "?" keeps formats that have no format_note at all (single-track videos and
+# most non-YouTube sites); without it yt-dlp drops them from the selection.
+_NOT_DRC = "[format_note!*=?DRC]"
+
+
+def _audio_filters(audio_lang: str) -> list[str]:
+    """Audio filters in order of preference.
+
+    YouTube labels a track "original" only when a video has several audio
+    tracks. A single-track video, or a site that doesn't label tracks, has no
+    "original" label, so for the default request fall back to any non-DRC track.
+    The fallback only runs when no labeled original track exists, because
+    yt-dlp tries "/"-separated alternatives in order.
+    """
+    if audio_lang == "original":
+        return [f"[format_note*=original]{_NOT_DRC}", _NOT_DRC]
+    return [f"[language^={audio_lang}]{_NOT_DRC}"]
+
+
 def _best_format_selector(container: str, audio_lang: str) -> str:
-    audio_filter = (
-        "[format_note*=original]"
-        if audio_lang == "original"
-        else f"[language^={audio_lang}]"
-    )
-    audio_filter += "[format_note!*=DRC]"
-    if container == "mp4":
-        return (
-            f"bv*[vcodec^=avc1]+ba{audio_filter}[acodec^=mp4a]"
-            f"/b[vcodec^=avc1][acodec^=mp4a]{audio_filter}"
-        )
-    return f"bv*+ba{audio_filter}/b{audio_filter}"
+    parts = []
+    for audio_filter in _audio_filters(audio_lang):
+        if container in AUDIO_ONLY_CONTAINERS:
+            parts.append(f"ba{audio_filter}")
+        elif container == "mp4":
+            parts += [
+                f"bv*[vcodec^=avc1]+ba{audio_filter}[acodec^=mp4a]",
+                f"b[vcodec^=avc1][acodec^=mp4a]{audio_filter}",
+            ]
+        else:
+            parts += [f"bv*+ba{audio_filter}", f"b{audio_filter}"]
+    return "/".join(parts)
 
 
 def _best_dash_selector(container: str, audio_lang: str) -> str:
-    audio_filter = (
-        "[format_note*=original]"
-        if audio_lang == "original"
-        else f"[language^={audio_lang}]"
-    )
-    audio_filter = f"[protocol^=http]{audio_filter}[format_note!*=DRC]"
-    if container == "mp4":
-        return (
-            "bv*[protocol^=http][vcodec^=avc1]+ba"
-            f"{audio_filter}[acodec^=mp4a]"
-            f"/b[protocol^=http][vcodec^=avc1][acodec^=mp4a]{audio_filter}"
-        )
-    return f"bv*[protocol^=http]+ba{audio_filter}/b[protocol^=http]{audio_filter}"
+    parts = []
+    for audio_filter in _audio_filters(audio_lang):
+        audio_filter = f"[protocol^=http]{audio_filter}"
+        if container == "mp4":
+            parts += [
+                f"bv*[protocol^=http][vcodec^=avc1]+ba{audio_filter}[acodec^=mp4a]",
+                f"b[protocol^=http][vcodec^=avc1][acodec^=mp4a]{audio_filter}",
+            ]
+        else:
+            parts += [f"bv*[protocol^=http]+ba{audio_filter}", f"b[protocol^=http]{audio_filter}"]
+    return "/".join(parts)
 
 
 def _format_parts(info: dict) -> tuple[dict, dict | None, list[dict]]:
@@ -1083,13 +1103,30 @@ def _format_parts(info: dict) -> tuple[dict, dict | None, list[dict]]:
     return video or {}, audio, formats
 
 
-def _audio_matches(audio: dict | None, audio_lang: str, container: str) -> bool:
+def _has_labeled_original(info: dict | None) -> bool:
+    """True when the site labels at least one audio track as the original."""
+    return any(
+        "original" in str(fmt.get("format_note") or "").lower()
+        for fmt in (info or {}).get("formats") or []
+        if fmt.get("acodec") not in (None, "none")
+    )
+
+
+def _audio_matches(
+    audio: dict | None,
+    audio_lang: str,
+    container: str,
+    *,
+    labeled_original: bool = True,
+) -> bool:
     if not audio or "drc" in str(audio.get("format_note") or "").lower():
         return False
     if container == "mp4" and not str(audio.get("acodec") or "").startswith("mp4a"):
         return False
     if audio_lang == "original":
-        return "original" in str(audio.get("format_note") or "").lower()
+        # With no labeled original track (single-track video), the one track
+        # there is counts as the original.
+        return not labeled_original or "original" in str(audio.get("format_note") or "").lower()
     return str(audio.get("language") or "").lower().startswith(audio_lang.lower())
 
 
@@ -1117,6 +1154,8 @@ def _format_summary(fmt: dict, *, kind: str) -> str:
             f"language={fmt.get('language') or '?'}",
             f"track={fmt.get('format_note') or '?'}",
         ]
+        if fmt.get("abr"):
+            fields.append(f"bitrate={fmt.get('abr')}k")
     return ", ".join(fields)
 
 
@@ -1227,6 +1266,58 @@ def _probe_copy(path: Path) -> dict:
     }
 
 
+def _probe_audio_copy(path: Path) -> dict:
+    """Verify an audio-only download: real codec, bitrate and a short decode test."""
+    ffprobe = _resolve_tool("ffprobe")
+    ffmpeg = _resolve_tool("ffmpeg")
+    if not ffprobe or not ffmpeg:
+        raise SystemExit("ffprobe and ffmpeg are required to verify the downloaded copy")
+    result = subprocess.run(
+        [ffprobe, "-v", "error", "-show_streams", "-show_format", "-of", "json", str(path)],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    if result.returncode:
+        raise SystemExit(f"ffprobe could not read the downloaded file: {result.stderr.strip()[:300]}")
+    try:
+        metadata = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"ffprobe returned invalid metadata: {exc}") from exc
+    fmt = metadata.get("format") or {}
+    audio = next((s for s in metadata.get("streams", []) if s.get("codec_type") == "audio"), None)
+    if not audio:
+        raise SystemExit("The downloaded file has no audio stream")
+    duration = float(fmt.get("duration") or audio.get("duration") or 0)
+    if not duration:
+        raise SystemExit("ffprobe could not determine the downloaded audio's duration")
+    bitrate = audio.get("bit_rate") or fmt.get("bit_rate")
+    if not bitrate:
+        bitrate = round(path.stat().st_size * 8 / duration)
+    midpoint = max(0, duration / 2)
+    decode = subprocess.run(
+        [
+            ffmpeg, "-v", "error", "-ss", f"{midpoint:.3f}", "-i", str(path),
+            "-t", "2", "-map", "0:a:0", "-f", "null", "-",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    if decode.returncode:
+        raise SystemExit(f"Short decode test failed: {decode.stderr.strip()[:300]}")
+    return {
+        "path": str(path),
+        "size_bytes": path.stat().st_size,
+        "duration_seconds": round(duration, 3),
+        "audio_codec": audio.get("codec_name"),
+        "audio_bitrate_bps": int(bitrate),
+        "sample_rate_hz": int(audio["sample_rate"]) if audio.get("sample_rate") else None,
+        "channels": audio.get("channels"),
+        "decode_test": "passed (2 seconds at the midpoint)",
+    }
+
+
 def download_best_copy(
     url: str,
     out_dir: Path,
@@ -1241,8 +1332,9 @@ def download_best_copy(
 ) -> dict:
     if not is_url(url):
         raise SystemExit("--best requires an HTTP(S) URL")
-    if container not in {"mkv", "mp4"}:
-        raise SystemExit("--container must be mkv or mp4")
+    if container not in BEST_CONTAINERS:
+        raise SystemExit("--container must be mkv, mp4, audio, or mp3")
+    audio_only = container in AUDIO_ONLY_CONTAINERS
     if subs not in {"none", "srt", "srt+transcript"}:
         raise SystemExit("--subs must be none, srt, or srt+transcript")
     if not audio_lang or audio_lang.strip() != audio_lang:
@@ -1257,7 +1349,7 @@ def download_best_copy(
     if cookie_path and not cookie_path.exists():
         raise SystemExit(f"Cookie file not found: {cookie_path}")
     ytdlp = yt.require()
-    if is_youtube(url) and not yt.runtime_args():
+    if is_youtube(url) and not yt.runtime_args() and not audio_only:
         print(
             "[download] WARNING: no Deno or Node.js runtime found; YouTube may expose "
             "only low-resolution formats",
@@ -1284,7 +1376,15 @@ def download_best_copy(
                 state["error"] = (result.stderr or result.stdout or "").strip()
                 continue
             video, audio, formats = _format_parts(info)
-            if not video or not audio or not _audio_matches(audio, audio_lang, container):
+            if audio_only and not audio and info.get("vcodec") == "none":
+                # Direct audio links report no codec until downloaded; the
+                # ffprobe check afterwards confirms there is a real audio stream.
+                audio = info
+            matches = _audio_matches(
+                audio, audio_lang, container,
+                labeled_original=_has_labeled_original(info),
+            )
+            if (not video and not audio_only) or not audio or not matches:
                 state["error"] = (
                     f"No {audio_lang} audio stream satisfies the requested "
                     f"{container.upper()} codec requirements"
@@ -1292,7 +1392,7 @@ def download_best_copy(
                 continue
             height = max((fmt.get("height") or 0 for fmt in formats), default=0)
             state.update(info=info, client=client, video=video, audio=audio)
-            if height >= 720 or allow_low_quality:
+            if audio_only or height >= 720 or allow_low_quality:
                 break
             print(
                 f"[download] available best stream is only {height or 'unknown'}p; "
@@ -1329,28 +1429,46 @@ def download_best_copy(
                 "before accepting a lower-quality copy; pass --allow-low-quality only after approval."
             )
         raise SystemExit(
-            "yt-dlp could not select a compatible video and original-audio format."
+            "yt-dlp could not select a compatible "
+            + ("original-audio" if audio_only else "video and original-audio")
+            + " format."
             + (f" {last_error[:300]}" if last_error else "")
             + f" {yt.LOCAL_FILE_FALLBACK}"
         )
 
-    print(
+    summary = (
         f"[download] title: {selected_info.get('title') or 'Unknown'}\n"
         f"[download] channel: {selected_info.get('channel') or selected_info.get('uploader') or 'Unknown'}\n"
         f"[download] duration: {selected_info.get('duration_string') or selected_info.get('duration') or 'Unknown'}\n"
-        f"[download] video: {_format_summary(selected_video, kind='video')}\n"
-        f"[download] audio: {_format_summary(selected_audio or {}, kind='audio')}",
-        file=sys.stderr,
     )
+    if not audio_only:
+        summary += f"[download] video: {_format_summary(selected_video, kind='video')}\n"
+    summary += f"[download] audio: {_format_summary(selected_audio or {}, kind='audio')}"
+    if container == "mp3":
+        summary += "\n[download] converting to mp3 (lossy re-encode, as requested)"
+    print(summary, file=sys.stderr)
     requested_formats = selected_info.get("requested_formats") or [selected_info]
     format_ids = "+".join(str(fmt["format_id"]) for fmt in requested_formats if fmt.get("format_id"))
     if not format_ids:
         raise SystemExit("yt-dlp did not identify the selected format IDs")
-    template = str(out_dir / "%(title)s [%(id)s].%(ext)s")
+    # A relative template plus -P home/temp makes yt-dlp write partial files
+    # and run merges in temp_dir, then move only the finished file into
+    # out_dir. An absolute template makes yt-dlp ignore -P entirely, so
+    # partial files would land in out_dir (a problem for synced folders).
+    template = "%(title)s [%(id)s].%(ext)s"
     download_cmd = [
         yt.find() or ytdlp, "--no-playlist", "--no-progress", "--no-overwrites",
         "-f", format_ids, "-S", "res,fps,proto:https,br,codec:h264",
-        "--merge-output-format", container,
+    ]
+    if container == "mp3":
+        download_cmd += ["-x", "--audio-format", "mp3", "--audio-quality", "0"]
+    elif not audio_only:
+        # --merge-output-format only applies when two streams are merged. A
+        # source with one combined file (old YouTube videos) would otherwise
+        # arrive in its own container, so remux it; no re-encode either way.
+        download_cmd += ["--merge-output-format", container, "--remux-video", container]
+    download_cmd += [
+        "-P", str(out_dir),
         "-P", f"temp:{temp_dir}",
         "-o", template,
         "--print", "after_move:filepath",
@@ -1358,13 +1476,36 @@ def download_best_copy(
     download_cmd += yt.runtime_args()
     download_cmd += yt.client_args(selected_client)
     download_cmd += yt.auth_args(cookie_path, cookies_from_browser)
-    download_cmd.append(url)
-    result = yt.run(download_cmd)
-    yt.echo(result, stdout=False)
+
+    # Ask the site once: hand the details from the format check straight to the
+    # download instead of extracting the page again. Saved stream links expire
+    # after a few hours and can be refused, so a failure falls back to the URL.
+    info_json = temp_dir / f".best-info-{os.getpid()}.json"
+    try:
+        info_json.write_text(json.dumps(selected_info), encoding="utf-8")
+    except OSError:
+        info_json = None
+    try:
+        result = None
+        if info_json is not None:
+            result = yt.run([*download_cmd, "--load-info-json", str(info_json)])
+            yt.echo(result, stdout=False)
+            if result.returncode and "conversion failed!" not in yt.output_of(result).lower():
+                print(
+                    "[download] reusing the saved video details failed; asking the site again",
+                    file=sys.stderr,
+                )
+                result = None
+        if result is None:
+            result = yt.run([*download_cmd, url])
+            yt.echo(result, stdout=False)
+    finally:
+        if info_json is not None:
+            info_json.unlink(missing_ok=True)
     if result.returncode and "conversion failed!" in yt.output_of(result).lower():
         print("[download] merge failed; retrying with HTTP(S)-only formats", file=sys.stderr)
         download_cmd[download_cmd.index("-f") + 1] = _best_dash_selector(container, audio_lang)
-        result = yt.run(download_cmd)
+        result = yt.run([*download_cmd, url])
         yt.echo(result, stdout=False)
     if result.returncode:
         raise SystemExit(f"yt-dlp failed (exit {result.returncode}): {(result.stderr or '').strip()[-600:]}")
@@ -1375,8 +1516,11 @@ def download_best_copy(
     )
     if video_path is None:
         raise SystemExit("yt-dlp reported success but did not return the downloaded file path")
-    verified = _probe_copy(video_path)
-    if (verified.get("height") or 0) < 720 and not allow_low_quality:
+    if audio_only:
+        verified = _probe_audio_copy(video_path)
+    else:
+        verified = _probe_copy(video_path)
+    if not audio_only and (verified.get("height") or 0) < 720 and not allow_low_quality:
         raise SystemExit(
             f"The downloaded file is only {verified.get('height') or 'unknown'}p. Ask before accepting "
             "this quality; pass --allow-low-quality only after approval."
@@ -1397,7 +1541,7 @@ def download_best_copy(
         "title": selected_info.get("title"),
         "channel": selected_info.get("channel") or selected_info.get("uploader"),
         "duration_seconds": selected_info.get("duration"),
-        "video": verified,
+        ("audio" if audio_only else "video"): verified,
         "ytdlp_version": yt.version_from_info(selected_info),
         "js_runtime": yt.js_runtime_name(),
     }
@@ -1413,7 +1557,11 @@ def main(argv: list[str] | None = None) -> int:
         parser.add_argument("--best", action="store_true", required=True)
         parser.add_argument("--source", required=True, help="Video URL")
         parser.add_argument("--out-dir", required=True, help="Final destination directory")
-        parser.add_argument("--container", choices=("mkv", "mp4"), default="mkv")
+        parser.add_argument(
+            "--container", choices=("mkv", "mp4", "audio", "mp3"), default="mkv",
+            help="mkv or mp4 for video; audio for the original audio track with no "
+            "re-encode; mp3 to convert the audio (lossy)",
+        )
         parser.add_argument("--audio-lang", default="original", help="original or a language code")
         parser.add_argument("--subs", choices=("none", "srt", "srt+transcript"), default="none")
         parser.add_argument("--allow-low-quality", action="store_true")

@@ -4,7 +4,11 @@ Read this when a download fails or comes back degraded, when the user wants a be
 
 ## Best-copy download details
 
-Use `--audio-lang <code>` only when the user requests a specific language. The default `original` selects the track yt-dlp labels original and excludes DRC variants. MP4 selects H.264 + AAC streams without re-encoding video; if those exact compatible streams are unavailable, explain that and stop rather than silently re-encoding. For "both", run the selected container choices separately.
+Use `--audio-lang <code>` only when the user requests a specific language. The default `original` selects the track yt-dlp labels original and excludes DRC variants. YouTube labels a track "original" only when a video has several audio tracks; for a single-track video (most videos), or a site that doesn't label tracks, the one non-DRC track is used.
+
+For audio only, `--container audio` saves the original audio track as served (usually m4a or opus) without re-encoding; `--container mp3` converts it to mp3 and loses some quality, so use it only when the user asks for mp3. Audio-only downloads skip the 720p check and report the measured audio codec, bitrate, sample rate and channels plus a short decode test.
+
+The format check and the download use one request to the site: the details from the check are saved and handed to the download. If the saved stream links are refused (they expire after a few hours), the script says so and asks the site again. MP4 selects H.264 + AAC streams without re-encoding video; if those exact compatible streams are unavailable, explain that and stop rather than silently re-encoding. For "both", run the selected container choices separately.
 
 The script prints the title, channel, duration, and selected streams before downloading. If the best available stream is below 720p, stop and ask whether the user wants to accept it; only after approval retry with `--allow-low-quality`. After downloading, report actual stream codecs, resolution, fps, and video bitrate measured from the downloaded packets, plus the short decode-test result. Do not use yt-dlp's estimated `~` sizes or bitrates to choose a format.
 
