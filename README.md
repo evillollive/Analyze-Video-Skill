@@ -59,7 +59,7 @@ Formats: `srt` (default), `vtt`, `txt` (clean timestamped transcript), or `all`.
 
 ## Just want a high-quality local copy?
 
-Ask for a download-only run to skip frames, contact sheets, and the Word report. Choose a destination, MKV (any supported source codecs) or edit-friendly MP4 (H.264 + AAC streams only), and optional captions:
+Ask for a download-only run to skip frames, contact sheets, and the Word report. Choose a destination, MKV (any supported source codecs), edit-friendly MP4 (H.264 + AAC streams only), or audio only, and optional captions:
 
 ```bash
 python3 scripts/download.py --best \
@@ -69,6 +69,8 @@ python3 scripts/download.py --best \
 ```
 
 The command reports the selected streams before downloading, verifies the final codecs/resolution/fps and measured video bitrate with ffprobe, and runs a short decode test. It asks for explicit approval before downloading a result below 720p. MP4 never re-encodes video; if compatible H.264/AAC streams are unavailable, the command stops with an explanation.
+
+For audio only, use `--container audio` to save the original audio track as served (usually m4a or opus) with no re-encode, or `--container mp3` to convert to mp3 (lossy). Audio-only downloads report the measured codec, bitrate, sample rate and channels, and skip the 720p check.
 
 ## The clever bits
 

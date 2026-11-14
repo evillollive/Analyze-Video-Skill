@@ -4,6 +4,15 @@ All notable changes to `/analyze-video` are documented here.
 
 ## [Unreleased]
 
+### Added
+- **Audio-only best-copy downloads.** `download.py --best --container audio` saves the original audio track as served (usually m4a or opus) with no re-encode, for music and voiceover references. `--container mp3` converts to mp3 when asked. Audio-only downloads skip the 720p check and report the measured audio codec, bitrate, sample rate and channels, plus a short decode test.
+
+### Changed
+- **Best-copy downloads ask the site once.** The format check's details are saved and handed to the download with `--load-info-json`, instead of extracting the page a second time. It starts faster and makes one fewer request, which means fewer bot checks. If the saved stream links are refused (they expire after a few hours), the download falls back to a fresh request.
+
+### Fixed
+- **Best-copy failed on single-track videos.** With the default `--audio-lang original`, the download required a track labeled "original", but YouTube adds that label only when a video has several audio tracks, and many other sites never add it. Single-track videos stopped with "No original audio stream satisfies the requested ... codec requirements". When no track is labeled original, the one non-DRC track is now used; on multi-track videos the labeled original still wins. The DRC filter also no longer drops formats that have no track note at all.
+
 ## [1.12.0] - 2026-11-11
 
 Better frames and analysis with a purpose: contact sheets are numbered, frame picks stop repeating the same shot, and the skill can write a filmmaker breakdown, a content summary or a reference review.

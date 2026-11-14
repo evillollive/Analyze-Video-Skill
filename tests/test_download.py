@@ -1,6 +1,7 @@
 """Tests for download.py failure classification and local resolution."""
 import json
 import sys
+import pytest
 from pathlib import Path
 
 SCRIPTS_DIR = str(Path(__file__).resolve().parent.parent / "scripts")
@@ -250,7 +251,7 @@ class TestBestCopyFormats:
     def test_mkv_prefers_original_audio_and_skips_drc(self):
         selector = _best_format_selector("mkv", "original")
         assert "ba[format_note*=original]" in selector
-        assert "[format_note!*=DRC]" in selector
+        assert "[format_note!*=?DRC]" in selector
 
     def test_mp4_requires_h264_and_aac_without_video_reencoding(self):
         selector = _best_format_selector("mp4", "original")
@@ -345,6 +346,192 @@ class TestBestCopyFormats:
             assert False, "expected SystemExit"
         except SystemExit as exc:
             assert "below 720p" in str(exc)
+
+
+class TestBestCopySingleTrackAndAudioOnly:
+    """Single-track videos have no "original" label; audio-only skips video checks."""
+
+    def _patch_tools(self, monkeypatch):
+        monkeypatch.setattr("download._resolve_tool", lambda name: "yt-dlp")
+        monkeypatch.setattr("ytdlp._resolve_tool", lambda name: "yt-dlp")
+        monkeypatch.setattr("ytdlp.runtime_args", lambda: [])
+
+    def test_selector_falls_back_to_unlabeled_tracks_for_original(self):
+        selector = _best_format_selector("mkv", "original")
+        branches = selector.split("/")
+        assert branches[0] == "bv*+ba[format_note*=original][format_note!*=?DRC]"
+        assert "bv*+ba[format_note!*=?DRC]" in branches[2:]
+
+    def test_specific_language_has_no_unlabeled_fallback(self):
+        selector = _best_format_selector("mkv", "es")
+        assert all("[language^=es]" in branch for branch in selector.split("/"))
+
+    def test_unlabeled_drc_filter_keeps_formats_without_a_note(self):
+        yt_dlp = pytest.importorskip("yt_dlp")
+        ydl = yt_dlp.YoutubeDL({"quiet": True})
+        formats = [
+            {"format_id": "labeled", "vcodec": "none", "acodec": "opus", "ext": "webm",
+             "abr": 100, "format_note": "medium"},
+            {"format_id": "plain", "vcodec": "none", "acodec": "opus", "ext": "webm", "abr": 300},
+            {"format_id": "drc", "vcodec": "none", "acodec": "opus", "ext": "webm",
+             "abr": 400, "format_note": "medium, DRC"},
+        ]
+        select = ydl.build_format_selector(_best_format_selector("audio", "original"))
+        picked = list(select({"formats": formats, "has_merged_format": False,
+                              "incomplete_formats": False}))
+        assert [f["format_id"] for f in picked] == ["plain"]
+
+    def test_labeled_original_still_wins_over_fallback(self):
+        yt_dlp = pytest.importorskip("yt_dlp")
+        ydl = yt_dlp.YoutubeDL({"quiet": True})
+        formats = [
+            {"format_id": "orig", "vcodec": "none", "acodec": "opus", "ext": "webm",
+             "abr": 100, "format_note": "English original (default), medium"},
+            {"format_id": "dub", "vcodec": "none", "acodec": "opus", "ext": "webm",
+             "abr": 300, "format_note": "Spanish, medium"},
+        ]
+        select = ydl.build_format_selector(_best_format_selector("audio", "original"))
+        picked = list(select({"formats": formats, "has_merged_format": False,
+                              "incomplete_formats": False}))
+        assert [f["format_id"] for f in picked] == ["orig"]
+
+    def test_audio_match_accepts_single_unlabeled_track(self):
+        track = {"format_note": "medium", "acodec": "opus"}
+        assert _audio_matches(track, "original", "mkv", labeled_original=False)
+        assert not _audio_matches(track, "original", "mkv", labeled_original=True)
+        assert not _audio_matches(
+            {"format_note": "medium, DRC", "acodec": "opus"}, "original", "mkv",
+            labeled_original=False,
+        )
+
+    def test_single_track_video_downloads_without_original_label(self, tmp_path, monkeypatch):
+        final = tmp_path / "Clip [x].mkv"
+        audio = {"format_id": "251", "vcodec": "none", "acodec": "opus", "format_note": "medium"}
+        video = {"format_id": "137", "vcodec": "avc1", "acodec": "none", "height": 1080}
+        info = {"title": "Clip", "formats": [video, audio], "requested_formats": [video, audio]}
+        self._patch_tools(monkeypatch)
+        monkeypatch.setattr("download._inspect_best_format", lambda *a, **k: (
+            info, _subprocess.CompletedProcess([], 0, "", "")
+        ))
+        monkeypatch.setattr("download._probe_copy", lambda path: {"path": str(path), "height": 1080})
+
+        def run(cmd, capture_output=True, text=True):
+            final.write_bytes(b"v")
+            return _subprocess.CompletedProcess(cmd, 0, f"{final}\n", "")
+
+        monkeypatch.setattr("download.subprocess.run", run)
+        result = download_best_copy("https://example.com/v", tmp_path, temp_dir=tmp_path / "s")
+        assert result["video"]["path"] == str(final)
+
+    def _audio_info(self):
+        audio = {"format_id": "251", "vcodec": "none", "acodec": "opus", "ext": "webm",
+                 "format_note": "medium", "abr": 130}
+        return {"title": "Song", "formats": [audio], **audio}
+
+    def test_audio_only_keeps_original_codec_and_skips_video_checks(self, tmp_path, monkeypatch):
+        final = tmp_path / "Song [x].webm"
+        self._patch_tools(monkeypatch)
+        monkeypatch.setattr("download._inspect_best_format", lambda *a, **k: (
+            self._audio_info(), _subprocess.CompletedProcess([], 0, "", "")
+        ))
+        monkeypatch.setattr(
+            "download._probe_copy",
+            lambda path: (_ for _ in ()).throw(AssertionError("video probe must not run")),
+        )
+        monkeypatch.setattr(
+            "download._probe_audio_copy", lambda path: {"path": str(path), "audio_codec": "opus"}
+        )
+        commands = []
+
+        def run(cmd, capture_output=True, text=True):
+            commands.append(cmd)
+            final.write_bytes(b"a")
+            return _subprocess.CompletedProcess(cmd, 0, f"{final}\n", "")
+
+        monkeypatch.setattr("download.subprocess.run", run)
+        result = download_best_copy(
+            "https://example.com/v", tmp_path, container="audio", temp_dir=tmp_path / "s"
+        )
+        assert result["audio"]["audio_codec"] == "opus"
+        assert "video" not in result
+        cmd = commands[0]
+        assert cmd[cmd.index("-f") + 1] == "251"
+        assert "-x" not in cmd and "--merge-output-format" not in cmd
+
+    def test_mp3_converts_only_when_asked(self, tmp_path, monkeypatch):
+        final = tmp_path / "Song [x].mp3"
+        self._patch_tools(monkeypatch)
+        monkeypatch.setattr("download._inspect_best_format", lambda *a, **k: (
+            self._audio_info(), _subprocess.CompletedProcess([], 0, "", "")
+        ))
+        monkeypatch.setattr("download._probe_audio_copy", lambda path: {"path": str(path)})
+        commands = []
+
+        def run(cmd, capture_output=True, text=True):
+            commands.append(cmd)
+            final.write_bytes(b"a")
+            return _subprocess.CompletedProcess(cmd, 0, f"{final}\n", "")
+
+        monkeypatch.setattr("download.subprocess.run", run)
+        download_best_copy("https://example.com/v", tmp_path, container="mp3", temp_dir=tmp_path / "s")
+        cmd = commands[0]
+        assert cmd[cmd.index("--audio-format") + 1] == "mp3"
+        assert "-x" in cmd
+
+
+class TestBestCopyAsksOnce:
+    def _setup(self, tmp_path, monkeypatch):
+        info = {
+            "title": "Movie",
+            "formats": [],
+            "requested_formats": [
+                {"format_id": "137", "vcodec": "avc1", "acodec": "none", "height": 1080},
+                {"format_id": "251", "vcodec": "none", "acodec": "opus",
+                 "format_note": "original (default)"},
+            ],
+        }
+        monkeypatch.setattr("download._resolve_tool", lambda name: "yt-dlp")
+        monkeypatch.setattr("ytdlp._resolve_tool", lambda name: "yt-dlp")
+        monkeypatch.setattr("ytdlp.runtime_args", lambda: [])
+        monkeypatch.setattr("download._inspect_best_format", lambda *a, **k: (
+            info, _subprocess.CompletedProcess([], 0, "", "")
+        ))
+        monkeypatch.setattr("download._probe_copy", lambda path: {"path": str(path), "height": 1080})
+        return tmp_path / "Movie [abc].mkv"
+
+    def test_download_reuses_saved_details_instead_of_the_url(self, tmp_path, monkeypatch):
+        final = self._setup(tmp_path, monkeypatch)
+        commands = []
+
+        def run(cmd, capture_output=True, text=True):
+            commands.append(cmd)
+            saved = Path(cmd[cmd.index("--load-info-json") + 1])
+            assert json.loads(saved.read_text())["title"] == "Movie"
+            final.write_bytes(b"v")
+            return _subprocess.CompletedProcess(cmd, 0, f"{final}\n", "")
+
+        monkeypatch.setattr("download.subprocess.run", run)
+        download_best_copy("https://example.com/v", tmp_path, temp_dir=tmp_path / "s")
+        assert len(commands) == 1
+        assert "https://example.com/v" not in commands[0]
+        assert not list((tmp_path / "s").glob(".best-info-*.json")), "saved details are cleaned up"
+
+    def test_falls_back_to_the_url_when_saved_details_fail(self, tmp_path, monkeypatch):
+        final = self._setup(tmp_path, monkeypatch)
+        commands = []
+
+        def run(cmd, capture_output=True, text=True):
+            commands.append(cmd)
+            if "--load-info-json" in cmd:
+                return _subprocess.CompletedProcess(cmd, 1, "", "ERROR: HTTP Error 403: Forbidden")
+            final.write_bytes(b"v")
+            return _subprocess.CompletedProcess(cmd, 0, f"{final}\n", "")
+
+        monkeypatch.setattr("download.subprocess.run", run)
+        result = download_best_copy("https://example.com/v", tmp_path, temp_dir=tmp_path / "s")
+        assert len(commands) == 2
+        assert commands[1][-1] == "https://example.com/v"
+        assert result["video"]["path"] == str(final)
 
 
 class TestSourceMarkerWidthGating:
