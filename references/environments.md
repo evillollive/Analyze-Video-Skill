@@ -32,9 +32,21 @@ Some agent shells stop a command after a fixed time (limits from 45 seconds to a
 
 YouTube and some other sites bot-check or rate-limit (HTTP 429) requests from datacenter IP addresses, including public videos that play fine in the user's browser.
 
-- If you can run commands on the user's own computer, run downloads there.
+- If you can run commands on the user's own computer (including a VM running there, which uses the user's home network), run downloads there.
 - Otherwise ask the user to download the video and give you the local file path, then pass `--source-url "<original-url>"` so the title and captions can still be recovered.
 - Do not try to get around the block. See the safety boundary in `SKILL.md`.
+
+## Shells that cut commands off or kill background jobs
+
+Some agent shells stop each command after a few minutes and kill anything it started, including jobs sent to the background with `&`, `nohup` or `setsid`. A later command may not even see processes from an earlier one, so `ps` or `pgrep` cannot confirm a download is still running.
+
+- Run downloads in the foreground, under a time limit a little shorter than the shell's (for example `timeout 165` for a three-minute limit), and re-run the same command until it finishes. Partial files in the temp folder resume; finished stream files are not downloaded again.
+- For a batch, run the videos one at a time in a loop that skips any whose finished file already exists, and re-run the loop.
+- The merge step for a long video can take a minute on its own. If a run is cut off while merging, re-running redoes only the merge.
+
+## Small sandbox disks
+
+A sandbox or VM often has a small disk of its own (10 GB is common) shared with other work, while the user's folders are mounted from a much bigger drive. Long videos at high quality are 1 to 3 GB each, and the temp folder holds about twice that while merging. Check free space with `df -h` and put `--temp-dir` on the big drive, in a folder that is not synced by a cloud service. Best copy also checks this itself before downloading.
 
 ## Folders synced by a cloud service
 

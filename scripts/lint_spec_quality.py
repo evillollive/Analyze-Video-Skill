@@ -32,18 +32,26 @@ def lint_spec(spec: dict) -> tuple[list[str], list[str]]:
         if not sections:
             errors.append(f"videos[{vi}] has no sections")
             continue
+        if not any((section.get("frames") or []) for section in sections):
+            errors.append(f"videos[{vi}] has no frames in any section")
         for si, section in enumerate(sections):
             heading = str(section.get("heading") or "")
             body = str(section.get("body") or "").strip()
             frames = section.get("frames") or []
+            # Summary and closing sections (a lens's "Key points", "What to
+            # borrow", "Assessment") cover the whole video and carry no frames.
+            text_only = section.get("text_only") is True
             if not heading:
                 errors.append(f"videos[{vi}].sections[{si}] missing heading")
-            elif TIMECODE_RE.search(heading) is None:
+            elif not text_only and TIMECODE_RE.search(heading) is None:
                 warnings.append(f"videos[{vi}].sections[{si}] heading has no timestamp")
             if len(body) < 40:
                 warnings.append(f"videos[{vi}].sections[{si}] body is very short")
-            if not frames:
-                errors.append(f"videos[{vi}].sections[{si}] has no frames")
+            if not frames and not text_only:
+                errors.append(
+                    f"videos[{vi}].sections[{si}] has no frames "
+                    '(set "text_only": true for a summary or closing section)'
+                )
             for fi, frame in enumerate(frames):
                 caption = str((frame or {}).get("caption") or "").strip()
                 if len(caption) < 8:

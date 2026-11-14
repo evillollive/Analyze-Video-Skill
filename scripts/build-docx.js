@@ -195,14 +195,14 @@ function body(text, opts) {
   }));
 }
 
-function imgPara(filePath, dim, alt, keepWithCaption) {
+function imgPara(filePath, dim, alt, keepWithCaption, spaceBefore) {
   const w = (dim && typeof dim.width === 'number' && dim.width > 0) ? dim.width : 480;
   const h = (dim && typeof dim.height === 'number' && dim.height > 0) ? dim.height : 270;
   const transformation = { width: w, height: h };
   if (!fs.existsSync(filePath)) throw new Error(`missing frame: ${filePath}`);
   return new Paragraph({
     keepNext: Boolean(keepWithCaption),  // an image and its caption stay together
-    spacing: { before: 220, after: 0 },
+    spacing: { before: spaceBefore === undefined ? 220 : spaceBefore, after: 0 },
     children: [new ImageRun({
       type: 'jpg',                                       // REQUIRED for jpg
       data: fs.readFileSync(filePath),
@@ -243,7 +243,7 @@ function frameTime(frame) {
 // Caption paragraph. `time`, when given, is printed first in upright bold so a
 // reader can find the frame in the video; it is skipped if the caption already
 // starts with it.
-function cap(text, time) {
+function cap(text, time, spaceAfter) {
   const runs = [];
   const caption = String(text || '');
   if (time && !caption.startsWith(time)) {
@@ -253,7 +253,7 @@ function cap(text, time) {
   if (caption) {
     runs.push(new TextRun({ text: caption, italics: true, size: 18, color: '777777', font: 'Arial' }));
   }
-  return new Paragraph({ spacing: { before: 60, after: 280 }, children: runs });
+  return new Paragraph({ spacing: { before: 60, after: spaceAfter === undefined ? 280 : spaceAfter }, children: runs });
 }
 
 // ----------------------------------------------------------------------------
@@ -291,14 +291,14 @@ function frameCell(frame, videoDim, showTimes) {
     : videoDim;
   // No keep-with-next inside a table cell: the row already cannot split, and
   // chaining cells would glue every row of the table onto one page.
-  const children = [imgPara(frame.path, scaledForTwoUp(baseDim), frame.caption || 'video frame', false)];
+  const children = [imgPara(frame.path, scaledForTwoUp(baseDim), frame.caption || 'video frame', false, 0)];
   const time = showTimes ? frameTime(frame) : '';
-  if (frame.caption || time) children.push(cap(frame.caption, time));
+  if (frame.caption || time) children.push(cap(frame.caption, time, 0));
   return new TableCell({
     children,
     width: { size: 50, type: WidthType.PERCENTAGE },
     borders: noCellBorders(),
-    margins: { top: 40, bottom: 120, left: 40, right: 40 },
+    margins: { top: 60, bottom: 160, left: 40, right: 40 },
   });
 }
 
@@ -314,11 +314,14 @@ function framesTwoUp(frames, videoDim, showTimes) {
       children: [frameCell(valid[i], videoDim, showTimes), frameCell(valid[i + 1], videoDim, showTimes)],
     }));
   }
-  return [new Table({
-    width: { size: 100, type: WidthType.PERCENTAGE },
-    borders: TableBorders.NONE,
-    rows,
-  })];
+  // The first row is its own table, so the section text can be kept with it.
+  // A paragraph set to keep with a table is kept with the whole table, which
+  // pushed entire sections to the next page and left pages half empty.
+  const table = r => new Table({ width: { size: 100, type: WidthType.PERCENTAGE }, borders: TableBorders.NONE, rows: r });
+  // An empty 1-point paragraph between them stops Word and LibreOffice from
+  // merging the two tables back into one.
+  const spacer = new Paragraph({ spacing: { before: 0, after: 0, line: 20, lineRule: 'exact' }, children: [new TextRun({ text: '', size: 2 })] });
+  return rows.length > 1 ? [table(rows.slice(0, 1)), spacer, table(rows.slice(1))] : [table(rows)];
 }
 
 // Read intrinsic JPEG dimensions from SOF markers so contact-sheet grids keep

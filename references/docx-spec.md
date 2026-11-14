@@ -55,6 +55,8 @@ Reference for `build-docx.js`. The core instructions carry a minimal spec; read 
 
 Always set each video's `source` to the original URL or local path the user gave (use `manifest_lite.source`, or `manifest_lite.url` for URLs). The builder renders it as a readable "Source:" line under the video title so the document records exactly what was analyzed. Do not put cache or download paths here.
 
+A section with no frames (an overview, summary or closing section) must set `"text_only": true`; `lint_spec_quality.py` rejects any other section without frames, and any video with no frames at all. Text-only headings need no time range. See `lenses.md`.
+
 `frame_layout` controls how section frames are arranged: `"1up"` (default) renders one full-width frame per row, while `"2up"` places frames side by side in a borderless two-column table (good for tighter, comparison-style layouts). Set it at the spec top level and optionally override it per video or per section. Captions and required alt text are preserved in both layouts.
 
 Use `manifest_lite.docx_image_dimensions` as the per-video default. `build-docx.js` handles page sizing, image embedding, captions, and required alt text. Contact sheets in `appendix_contact_sheets` keep their own aspect ratio automatically (no `width`/`height` needed).

@@ -15,9 +15,13 @@ Infer the lens from the request. Ask only when it is unclear and the choice woul
 
 Name the lens in the document's `subtitle` (for example "Filmmaker breakdown"), so a reader knows what kind of document it is.
 
+Sections that cover the whole video and carry no frames (an opening overview or summary, "How it was built", "What to borrow", "Key points", "Open questions", "Assessment") need `"text_only": true` in the spec, or the spec check stops the build. Every video still needs frames somewhere. Write a list as one short paragraph per item (separate them with a blank line in `body`), each ending with the time it points at, for example "(0:23)".
+
+Lenses usually need more frames than the Step 2 suggestion, because every setup, graphic treatment or proof point wants one: a 3-minute film took about 15 for a filmmaker breakdown, 7 for a content summary and 8 for a reference review. Say so when you ask for the frame count.
+
 ## Limits that apply to every lens
 
-Say these plainly in the document where they matter. Do not write around them.
+Say these plainly in the document where they matter. Do not write around them. A short paragraph in the opening overview or summary section is the natural place.
 
 - **Frames are samples.** Tiles on a contact sheet are seconds apart. A cut, a move or a short shot between two tiles is invisible. Shot counts taken from tiles are a minimum.
 - **Motion is inferred.** A push-in, pan or handheld feel can only be read from how framing changes across neighboring tiles. Say "appears to" when the evidence is two stills.
@@ -32,7 +36,7 @@ The default, described in Step 6 of `SKILL.md`: time-based sections, what is vis
 
 For a reader who makes video and wants to see the construction.
 
-**Organize by beats, not by equal time slices.** Find where the piece turns: the hook, the setup, each change of subject or mood, the payoff, the close. Give each beat a section, with its time range in the heading, and say how long it runs. End with two extra sections:
+**Organize by beats, not by equal time slices.** Open with a short overview (text only): the format, who carries it, the running time, the number of beats, and the shot count. Then find where the piece turns: the hook, the setup, each change of subject or mood, the payoff, the close. Give each beat a section, with its time range in the heading, and say how long it runs. End with two extra sections:
 
 - **How it was built:** the techniques that recur across the piece.
 - **What to borrow:** three to six concrete, reusable choices, each pointing at a frame.
@@ -43,7 +47,7 @@ For a reader who makes video and wants to see the construction.
 - **Coverage:** the kinds of shot and how they alternate. Interview or presenter setups (one camera or more, framing side, eyeline, background), b-roll over speech, inserts and details, screen recordings, archival, animation.
 - **Composition and camera:** shot size, headroom, depth, how wide or long the lens looks, focus, angle, and any movement that neighboring tiles support.
 - **Light and color:** where the light comes from, contrast, palette, and any shift in look between beats.
-- **Editing:** pace, counted as distinct shots visible per minute on the contact sheet and stated as a minimum. Patterns such as intercutting two threads, cutaways covering speech, or a montage. Visible transitions.
+- **Editing:** pace, counted as distinct shots visible per minute on the contact sheet and stated as a minimum (count each tile that starts a new shot; a graphic that animates across several tiles is one). The share of shots that are not the main interview or presenter, which says how hard the piece leans on cutaways. Patterns such as intercutting two threads, cutaways covering speech, or a montage. Visible transitions.
 - **Graphics and text:** titles, lower thirds, captions, callouts, logo placement, type and color, and when each appears.
 - **Voice:** who carries the story (interview, narrator, presenter, text on screen), taken from the transcript, and what is shown while they speak.
 
@@ -53,7 +57,7 @@ For a reader who makes video and wants to see the construction.
 
 For a reader who wants what the video says without watching it.
 
-**Open with a summary paragraph** of three to five sentences, before the first section. Then organize by topic, in the order the video takes them, with time ranges in the headings. End with:
+**Open with a summary** of three to five sentences, as a first section headed "Summary" (text only). Then organize by topic, in the order the video takes them, with time ranges in the headings. End with:
 
 - **Key points:** the handful of things worth remembering.
 - **Open questions:** claims made without support, and anything the video leaves unclear. Leave this out if there are none.
@@ -82,7 +86,9 @@ For a reader studying someone else's video to inform their own work.
 
 **Look for:** the opening promise, the format and length chosen for the platform, pacing, how product or service is shown, and the last thing the viewer sees.
 
-**Keep observation and judgment apart.** Parts 1 to 3 report what is on screen and in the transcript. Part 4 gives opinions and labels them as such. Do not guess at budget, crew, or what the makers intended beyond what the video shows.
+These four parts are not time ranges, so their headings have no times: put the time of each moment in the body and the frame captions instead. Count brand mentions from the transcript (for example, how many times the product is named) rather than estimating.
+
+**Keep observation and judgment apart.** Parts 1 to 3 report what is on screen and in the transcript. Part 4 gives opinions and labels them as such, for example with "(opinion)" in its heading. Do not guess at budget, crew, or what the makers intended beyond what the video shows.
 
 **Frames:** the opening, each brand moment, each proof point, and the call to action.
 

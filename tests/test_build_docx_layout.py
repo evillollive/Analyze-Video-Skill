@@ -113,3 +113,23 @@ def test_frame_times_can_be_turned_off(tmp_path):
     xml = _build(tmp_path, "1up", extra={"show_timestamps": False})
     assert ">0:19<" not in xml and ">1:02:05<" not in xml
     assert "Caption one." in xml
+
+
+@needs_node_docx
+def test_two_up_text_is_kept_with_the_first_row_only(tmp_path):
+    """A paragraph kept with a table is kept with the whole table, so a long
+    section jumped to the next page and left the page before half empty. The
+    first row is now its own table, split from the rest by an empty paragraph
+    (adjacent tables otherwise merge back into one)."""
+    frame = tmp_path / "frame_0001.jpg"
+    frame.write_bytes(TINY_JPEG)
+    frames = [{"path": str(frame), "caption": f"Caption {i}.", "alt": "a"} for i in range(6)]
+    video = {"title": "v", "source": "https://example.com/v", "sections": [
+        {"heading": "Beat (0:00 to 0:10)", "body": "Some text.", "frames": frames}]}
+    xml = _build(tmp_path, "2up", extra={"videos": [video]})
+    assert xml.count("<w:tbl>") == 2
+    first_end = xml.index("</w:tbl>")
+    second_start = xml.index("<w:tbl>", first_end)
+    assert "<w:p>" in xml[first_end:second_start] or "<w:p " in xml[first_end:second_start]
+    assert xml[:first_end].count("<w:tr>") == 1
+    assert xml[second_start:].count("<w:tr>") == 2
