@@ -4,6 +4,10 @@ All notable changes to `/analyze-video` are documented here.
 
 ## [Unreleased]
 
+## [1.14.0] - 2026-11-14
+
+Best-quality copies now take YouTube's higher-bitrate Premium streams, check free space first and keep the user's cookies file safe. The skill can remember its usual answers, make captions for local video files, and build the analysis-lens documents again, with fuller pages.
+
 ### Added
 - **YouTube Premium streams in best copy.** YouTube makes a higher-bitrate "Premium" encode of many videos. It is often offered over HLS to anyone, with no account, and a Premium account's cookies add HTTPS versions. yt-dlp's sort ranks HTTPS above HLS and then by bitrate, so best copy took a regular H.264 stream instead: on a real 40-minute video, 1.55 Mbps H.264 instead of 1.83 Mbps Premium VP9, with no cookies needed. Best copy now uses a Premium stream whenever one exists at the best resolution and frame rate, preferring HTTPS over HLS, then VP9 over AV1, then bitrate, and prints which one it chose. A Premium stream at a lower resolution never replaces a higher-resolution one. The result JSON has `premium_stream`.
 - **Free-space check before a best-copy download.** The download is estimated and the temp folder must have about twice that free (separate streams plus the merged file). Before, a small disk filled part way through with "No space left on device".
