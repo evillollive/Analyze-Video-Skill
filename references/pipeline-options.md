@@ -1,6 +1,27 @@
 # Pipeline options and outputs
 
-Reference for `process.py`. Read this when a run was interrupted, when you need a field or file the core instructions do not cover, or when tuning speed.
+Reference for `process.py`. Read this when a run was interrupted, when you need a field or file the core instructions do not cover, when tuning speed, or when saving or using the user's saved defaults.
+
+## Saved defaults
+
+`scripts/defaults.py` stores the user's usual answers in `~/.config/analyze-video/defaults.json`, so a regular user confirms them once instead of answering every question again.
+
+- `defaults.py --show` prints the saved answers as JSON with a one-line `summary`. Add `--duration <seconds>` once the video's length is known to get `frames_for_duration`, the saved frame count for that length (null if that length band has none).
+- If anything is saved, read the summary back and ask once, for example: "Use your usual settings (14 frames for a 5 to 15 minute video, PDF yes, no appendices, save to ~/Reports)?" If the user says yes, skip the questions it covers and ask only the rest. If they change something for this run, use the change without saving it, unless they ask to.
+- With nothing saved, ask the questions as usual. After the run, offer once to save the answers they gave, and only save what they agree to.
+- `defaults.py --set key=value ...` saves; `--unset key` forgets one answer; `--clear` forgets all; `--keys` lists every key.
+
+| Key | Values | Replaces the question about |
+|---|---|---|
+| `frames.under_2`, `frames.2_to_5`, `frames.5_to_15`, `frames.over_15` | 1 to 60 | Frames per video, by video length in minutes |
+| `output_format` | `combined`, `separate` | One document or one per video, for several videos |
+| `save_folder` | absolute folder | Where the document goes |
+| `appendix_contact_sheets`, `appendix_transcript`, `standalone_files`, `pdf`, `cleanup`, `oft_export` | `true`, `false` | The Step 7 delivery options |
+| `download.container` | `mkv`, `mp4`, `both`, `audio`, `mp3` | Download-only: the file format |
+| `download.subs` | `none`, `srt`, `srt+transcript` | Download-only: captions |
+| `download_folder` | absolute folder | Download-only: the destination |
+
+A saved folder must still exist; if it doesn't, ask. Saved defaults never cover the kind of analysis, focus ranges, cookies, or accepting a copy below 720p: those are asked each time.
 
 ## Per-video outputs
 

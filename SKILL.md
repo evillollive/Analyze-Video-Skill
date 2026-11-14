@@ -17,7 +17,7 @@ user-invocable: true
 
 # analyze-video
 
-Self-contained pipeline that takes one or more video sources, downloads or resolves them locally, extracts frames, uses captions or Whisper for transcripts when available, tiles frames into contact sheets for cheap visual review, selects representative frames, and produces a polished Word document with timestamped analysis. It can also download caption files, save a best-quality local copy, and export the analysis as an Open Filmmaker Toolkit project file.
+Self-contained pipeline: it gets one or more videos locally, extracts frames, uses captions or Whisper for a transcript, tiles frames into contact sheets for cheap review, and builds a Word document with timestamped analysis. It can also download caption files, save a best-quality local copy, and export the analysis as an Open Filmmaker Toolkit project file.
 
 The skill works with any agent that can run shell commands, on macOS, Linux or Windows. Two conventions used below:
 
@@ -68,7 +68,7 @@ Defaults are English and SRT. `--format` also takes `vtt`, `txt`, a comma list, 
 
 ## Download-only mode
 
-Skip setup of the docx stack, frame extraction, contact sheets, and the report pipeline. Before downloading, ask only for the choices the user has not already made:
+Skip setup of the docx stack, frame extraction, contact sheets, and the report pipeline. Check saved defaults as in Step 2 (`download.container`, `download.subs`, `download_folder`). Before downloading, ask only for the choices the user has not already made:
 
 1. Deliverable: video file only, or video file plus analysis.
 2. Container: MKV (any compatible source codec), edit-friendly MP4 (H.264 video + AAC audio), or both. If the user wants only the audio, use `--container audio` (the original audio track, no re-encode); use `--container mp3` only when they ask for mp3, since converting loses quality.
@@ -154,6 +154,8 @@ Infer focus ranges from the request and pass them with `--start` and `--end`. Do
 
 ## Step 2: Ask the user only when needed
 
+First run `python3 "${SKILL_DIR}/scripts/defaults.py" --show`. If it has saved answers, read its `summary` back and ask once whether to use them; then ask only what they don't cover (here and in Step 7). With none, ask as below and offer once at the end to save the answers. Details: `pipeline-options.md`.
+
 Ask the user once for the batch:
 
 1. **Frames per video** if the user did not specify. This is a required question unless the user explicitly says "pick for me" or equivalent. Suggest:
@@ -208,7 +210,7 @@ Do not read every frame. The pipeline produces contact sheets and a lightweight 
 3. Otherwise read each relevant contact sheet from `manifest_lite.chunks[].contact_sheet.absolute_path`. Each tile is labeled with its tile number and its time in the video. For very long videos, read only the chunks that match the user's focus.
 4. Read the full `manifest.json` only when you need transcript text (`manifest.transcript_segments[]`) for quotes, section writing, or refining section boundaries.
 
-Videos over 12 minutes are split into chunks of about 10 minutes that overlap by a few seconds, so the last tiles of one sheet and the first tiles of the next can show the same moment. Each chunk has its own contact sheet and its own frame spacing. If `manifest_lite.preview_cost_warning` is true and the user asked about a narrow moment, prefer re-running with `--start` and `--end` over reading every contact sheet.
+Videos over 12 minutes are split into chunks of about 10 minutes, each with its own contact sheet and frame spacing; chunks overlap by a few seconds, so neighboring sheets can repeat a moment. If `manifest_lite.preview_cost_warning` is true and the user asked about a narrow moment, prefer re-running with `--start` and `--end` over reading every contact sheet.
 
 ## Step 5: Select frames
 
@@ -218,7 +220,7 @@ Start from the helper's picks:
 python3 "${SKILL_DIR}/scripts/select_frames.py" "$VIDEO_DIR/manifest_lite.json" <N>
 ```
 
-It spreads the picks across the video and swaps out any frame that looks nearly identical to one already picked, so a talk filmed from one camera gives a few shots of the speaker plus the cutaways, not the same shot twenty times. It also avoids near-blank frames. Add `--even` only if the user wants strictly even spacing.
+It spreads the picks across the video, swaps out frames nearly identical to one already picked (so a one-camera talk gives the speaker plus the cutaways), and avoids near-blank frames. Add `--even` only if the user wants strictly even spacing.
 
 The output is a JSON list with `chunk_index`, `frame_index`, `tile`, `absolute_path` and timestamps. Always run it in the current session; do not reuse frame paths from earlier notes or summaries.
 
@@ -272,7 +274,7 @@ For combined multi-video docs, add an "Observations Across Videos" section cover
 
 ## Step 7: Ask the delivery questions
 
-Ask before building. Appendices are off by default, and there is exactly one build, after the answers. Never add the contact-sheet appendix or the transcript appendix on your own initiative.
+Ask before building, unless accepted saved defaults cover these. Appendices are off by default, and there is exactly one build, after the answers. Never add the contact-sheet appendix or the transcript appendix on your own initiative.
 
 Ask the user once for the batch. Skip any option that does not apply, and offer the transcript options only when a transcript exists (`transcript_segment_count > 0`):
 
@@ -378,4 +380,4 @@ Rules for the spec:
 
 The skill does not upload source video, persist cookies, post to platform accounts, or access platform accounts by default. Cookie-based retries must be initiated only after user consent and should use the user's own authorized browser/session.
 
-Bundled runtime: `scripts/process.py`, `captions.py`, `download.py`, `ytdlp.py`, `frames.py`, `transcribe.py`, `whisper.py`, `setup.py`, `health_check.py`, `select_frames.py`, `validate_spec_paths.py`, `lint_spec_quality.py`, `run_guarded_pipeline.py`, `export_oft.py`, `mcp_server.py`, and `build-docx.js`.
+Bundled runtime: the scripts in `scripts/` (Python, plus `build-docx.js`).

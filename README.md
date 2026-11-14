@@ -15,7 +15,8 @@
 - **Video to report:** drop in a URL or local file and get a structured Word document.
 - **Screenshots included:** reports embed selected frames with descriptive captions, one per row or two-up side by side.
 - **Timestamped analysis:** transcript evidence and visuals are organized by time range.
-- **Best-quality copies:** save a verified local copy as MKV or edit-friendly MP4, or just the original audio track, with no re-encoding.
+- **Best-quality copies:** save a verified local copy as MKV or edit-friendly MP4, or just the original audio track, with no re-encoding. Picks YouTube's higher-bitrate Premium stream when one is offered, and checks free space first.
+- **Saved defaults:** remember your usual answers (frame counts, save folder, PDF, appendices, download format) and confirm them in one question.
 - **Open Filmmaker Toolkit export:** optionally package timestamped analysis and frame references as an `.oft.json` project.
 - **Token efficient:** contact sheets let the AI scan the whole video before reading only the important frames.
 - **Long-video ready:** runs can resume, reuse extracted frames, reuse cached downloads, and emit progress files.
@@ -54,6 +55,7 @@ Ask "download the captions for <url>" and the skill skips the report entirely. O
 python3 scripts/captions.py --source "<url>" --out-dir ~/Downloads             # English SRT
 python3 scripts/captions.py --source "<url>" --langs es,fr --format srt,txt    # pick languages and formats
 python3 scripts/captions.py --source "<url>" --list                            # see available languages
+python3 scripts/captions.py --source clip.mp4 --format srt,txt                 # local file: its .srt/.vtt, else Whisper
 ```
 
 Formats: `srt` (default), `vtt`, `txt` (clean timestamped transcript), or `all`. Add `--no-auto` for uploader captions only. Files are named `<title> [<id>].<lang>.<ext>`.
@@ -192,7 +194,8 @@ Analyze-Video-Skill/
 ├── hooks/                       # Silent plugin hooks
 ├── scripts/
 │   ├── process.py               # Main pipeline entry point
-│   ├── captions.py              # Standalone caption/subtitle downloader (SRT/VTT/TXT)
+│   ├── captions.py              # Standalone caption/subtitle downloader (SRT/VTT/TXT), URLs or local files
+│   ├── defaults.py              # Saved answers to the skill's questions
 │   ├── download.py              # Download logic, format choice, failure classification
 │   ├── ytdlp.py                 # The one place that talks to yt-dlp; update-and-retry policy
 │   ├── health_check.py          # Checks YouTube still offers full quality (no download)
