@@ -174,3 +174,10 @@ class TestBestCopyEndToEnd:
         assert "blocked the download (bot check)" in str(exc.value)
         assert "own computer" in str(exc.value)
         assert "audio stream" not in str(exc.value)
+
+
+def test_leftover_cookie_copies_from_killed_runs_are_cleared(tmp_path):
+    from download import _private_cookie_copy
+    (tmp_path / ".cookies-123.txt").write_text("old sign-in")
+    assert _private_cookie_copy(None, tmp_path) is None
+    assert not list(tmp_path.glob(".cookies-*"))

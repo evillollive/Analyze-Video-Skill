@@ -1221,6 +1221,10 @@ def _private_cookie_copy(cookie_path: Path | None, temp_dir: Path) -> Path | Non
     a full disk can leave it empty. Working from a private copy keeps the
     user's own file untouched. The copy is deleted after the download.
     """
+    # A run that was killed outright can't clean up after itself, and the copy
+    # holds the user's sign-in, so clear any left behind by earlier runs.
+    for stale in temp_dir.glob(".cookies-*.txt"):
+        stale.unlink(missing_ok=True)
     if cookie_path is None:
         return None
     copy = temp_dir / f".cookies-{os.getpid()}.txt"

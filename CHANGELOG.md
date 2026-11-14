@@ -11,7 +11,7 @@ All notable changes to `/analyze-video` are documented here.
 - **Docs: exporting a cookies file** when yt-dlp can't read the browser (VMs, containers, macOS keychain), and **running in shells that cut commands off** or kill background jobs, and **small sandbox disks**.
 
 ### Fixed
-- **The user's cookies file could be emptied.** yt-dlp rewrites the cookies file it is given when it exits, and a crash or a full disk left it at zero bytes. Best copy now hands yt-dlp a private copy and deletes the copy afterward.
+- **The user's cookies file could be emptied.** yt-dlp rewrites the cookies file it is given when it exits, and a crash or a full disk left it at zero bytes. Best copy now hands yt-dlp a private copy and deletes the copy afterward; a copy left by a run that was killed is cleared at the start of the next run.
 - **A bot check was reported as an audio problem.** When YouTube blocked the request, yt-dlp returned only storyboard images and best copy said "No original audio stream satisfies the requested MKV codec requirements". It now says the site asked for a bot check, that this happens most from cloud networks, and suggests running on the user's own computer, cookies, or a local file. "Sign in to confirm you're not a bot" is now classified as a bot check rather than a login requirement.
 
 ## [1.13.0] - 2026-11-13
