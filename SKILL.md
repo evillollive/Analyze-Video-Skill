@@ -89,6 +89,9 @@ Rules that always apply:
 - Write final files to the destination the user chose. Never assume one.
 - If the best available stream is below 720p, stop and ask whether the user accepts it; only then retry with `--allow-low-quality`. This check does not apply to audio-only downloads.
 - After downloading, report the actual codecs, resolution, fps and video bitrate the script measured, plus the decode-test result. For audio-only, report the audio codec, bitrate, sample rate and channels instead.
+- Say whether a Premium stream was used (`premium_stream`) and pass along `playback_note`: no re-encode is needed to keep or play the file, and which players open it.
+- After a run with an exported cookies file, remind the user it gives access to their account and offer to delete it.
+- Stopped for disk space: re-run with `--temp-dir` on a bigger drive. Cut off by a time limit: re-run the same command to resume.
 - If the user also wants analysis, download first, then run the normal flow against the local file. Do not analyze or build a `.docx` when the user asked for the file only.
 
 Audio language, MP4 behavior and failure handling are in `references/downloads.md`.

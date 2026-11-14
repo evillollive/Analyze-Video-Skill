@@ -12,6 +12,20 @@ The format check and the download use one request to the site: the details from 
 
 The script prints the title, channel, duration, and selected streams before downloading. If the best available stream is below 720p, stop and ask whether the user wants to accept it; only after approval retry with `--allow-low-quality`. After downloading, report actual stream codecs, resolution, fps, and video bitrate measured from the downloaded packets, plus the short decode-test result. Do not use yt-dlp's estimated `~` sizes or bitrates to choose a format.
 
+### YouTube Premium streams
+
+YouTube gives Premium accounts a second, higher-bitrate encode of many videos, listed as "1080p Premium" (usually VP9, sometimes AV1 or HLS only). These streams appear only when the request carries a Premium account's cookies. When one exists at the best available resolution and frame rate, best copy uses it instead of the regular stream, and prints which one it chose; the result JSON has `premium_stream: true`. Among Premium streams it prefers HTTPS over HLS, then VP9 over AV1, then bitrate. A Premium stream at a lower resolution never replaces a higher-resolution regular one, and MP4 copies ignore Premium streams unless they are H.264. YouTube's list of Premium formats can change from one request to the next, so a re-run may get a different one.
+
+Do not compare bitrates across codecs or protocols to judge quality. HLS (`m3u8`) bitrates and `~` sizes are nominal ceilings: a stream listed at 4000k measured about 1.5 Mbps. AV1 needs roughly a third less bitrate than VP9 for the same picture, and VP9 less than H.264.
+
+### Keeping and playing the copy
+
+Best copy keeps the original streams, so the file needs no re-encode for keeping or playback; re-encoding could only lose quality. The script prints a one-line `playback_note`. MKV files and VP9, AV1 or Opus streams play in VLC, IINA, Plex and Infuse, but not in QuickTime or the Apple TV app. If the user needs QuickTime, an MP4 copy (H.264 + AAC) is the route, which may mean a lower bitrate or a re-encode; ask first. Editing apps may need a separate edit copy.
+
+### Free space
+
+Before downloading, best copy estimates the size and checks that the temp folder has about twice that free (the separate video and audio files plus the merged file), and that the destination can hold the result. It stops with the numbers if not. Point `--temp-dir` at a bigger drive that is not synced by a cloud service. A full disk part way through can also corrupt files yt-dlp rewrites, such as a cookies file.
+
 If the user also wants analysis, first download the local file, then run the normal analysis flow against that file. Do not analyze or build a `.docx` when the user asked for the file only.
 
 ## Caption options
@@ -44,7 +58,18 @@ python3 "${SKILL_DIR}/scripts/process.py" \
   --cookies "/path/to/cookies.txt"
 ```
 
-`--cookies-from-browser` only works when yt-dlp runs on the same operating system as the browser.
+`--cookies-from-browser` only works when yt-dlp runs on the same operating system as the browser. On macOS, Chrome's cookies are encrypted with the login keychain and Safari's need Full Disk Access for the terminal, so it can fail even there.
+
+### When the browser can't be read: export a cookies file
+
+If yt-dlp runs somewhere other than the browser (a VM, a container, a remote machine), or reading the browser fails, ask the user to export a cookies file:
+
+1. Install a browser extension that exports cookies in Netscape `cookies.txt` format and runs locally (for Chrome, "Get cookies.txt LOCALLY"; for Firefox, "cookies.txt"). Avoid look-alike extensions that send cookies to a server.
+2. In the window signed in to the right account, open the site (for example youtube.com) and check the account; for Premium streams, YouTube's logo reads "YouTube Premium".
+3. Export the cookies for that site, choosing Netscape format, into a folder the download can read.
+4. Pass the file with `--cookies <path>`.
+
+The file gives access to the user's account, so say so. `download.py --best` hands yt-dlp a private copy (yt-dlp rewrites the file it is given and can leave it empty) and deletes the copy afterward. When the downloads are done, offer to delete the user's exported file.
 
 ## Low-resolution results
 
@@ -68,7 +93,7 @@ When the download succeeds, these yt-dlp messages need no action. Mention them t
 ## Download failures
 
 - **Interrupted download**: re-run the exact same command. A download killed partway through resumes from the bytes already on disk rather than starting over, so a timed-out or dropped transfer does not re-fetch the whole video. Use `--force` only when the partial data should be discarded.
-- **Download blocked by login, age gate, bot check, members-only, or private access**: explain the specific access issue. Public YouTube attempts use JS-enabled `default,web_safari,tv` clients first, then try `android,ios,web` and yt-dlp's defaults. A detected SABR-only or unexpectedly capped 360p result is retried with another client; if still degraded, stop and explain instead of silently accepting it. Every attempt uses `--ignore-no-formats-error` so gated media formats do not prevent subtitle writes. If access still fails and the user can view the video and authorizes it, retry with `--cookies-from-browser <browser>` or `--cookies <file>`. Otherwise ask for a local file. `--cookies-from-browser` only works when yt-dlp runs on the same OS as the browser.
+- **Download blocked by login, age gate, bot check, members-only, or private access**: explain the specific access issue. Best copy says "The site blocked the download (bot check)" when the site returned only storyboard images. Data-center and cloud IP addresses get YouTube's bot check even for public videos; see `environments.md`. Public YouTube attempts use JS-enabled `default,web_safari,tv` clients first, then try `android,ios,web` and yt-dlp's defaults. A detected SABR-only or unexpectedly capped 360p result is retried with another client; if still degraded, stop and explain instead of silently accepting it. Every attempt uses `--ignore-no-formats-error` so gated media formats do not prevent subtitle writes. If access still fails and the user can view the video and authorizes it, retry with `--cookies-from-browser <browser>` or `--cookies <file>`. Otherwise ask for a local file. `--cookies-from-browser` only works when yt-dlp runs on the same OS as the browser.
 - **Rate limited**: wait before retrying. User-authorized browser cookies may help if the content is accessible in their browser.
 - **Geo restricted**: ask for a local file or another source the user can access from this environment.
 - **yt-dlp "No supported JavaScript runtime" warning**: YouTube's android/ios clients may now be SABR-limited and return only 360p. Run `setup.py` to install/check Deno or use the installed Node.js runtime, then retry. Do not deliver a detected degraded stream without asking first.

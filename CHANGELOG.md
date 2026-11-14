@@ -4,6 +4,16 @@ All notable changes to `/analyze-video` are documented here.
 
 ## [Unreleased]
 
+### Added
+- **YouTube Premium streams in best copy.** With cookies from a Premium account, YouTube offers a higher-bitrate encode of many videos ("1080p Premium"). yt-dlp's bitrate sort could miss it: it picked a regular H.264 stream over a Premium AV1 one, and skipped a Premium stream offered only over HLS. Best copy now uses a Premium stream whenever one exists at the best resolution and frame rate, preferring HTTPS over HLS, then VP9 over AV1, then bitrate, and prints which one it chose. A Premium stream at a lower resolution never replaces a higher-resolution one. The result JSON has `premium_stream`. Found on real Premium downloads, where Premium VP9 came out at 2.2 to 2.7 Mbps against about 1.7 Mbps for the best regular stream.
+- **Free-space check before a best-copy download.** The download is estimated and the temp folder must have about twice that free (separate streams plus the merged file). Before, a small disk filled part way through with "No space left on device".
+- **Playback note.** After a best-copy download, the script prints and returns `playback_note`: the file holds the original streams, so it needs no re-encode to keep or play, and it names the players that open it (VLC, IINA, Plex, Infuse; not QuickTime for MKV, VP9, AV1 or Opus).
+- **Docs: exporting a cookies file** when yt-dlp can't read the browser (VMs, containers, macOS keychain), and **running in shells that cut commands off** or kill background jobs, and **small sandbox disks**.
+
+### Fixed
+- **The user's cookies file could be emptied.** yt-dlp rewrites the cookies file it is given when it exits, and a crash or a full disk left it at zero bytes. Best copy now hands yt-dlp a private copy and deletes the copy afterward.
+- **A bot check was reported as an audio problem.** When YouTube blocked the request, yt-dlp returned only storyboard images and best copy said "No original audio stream satisfies the requested MKV codec requirements". It now says the site blocked the download and why, and suggests cookies or a local file.
+
 ## [1.13.0] - 2026-11-13
 
 Best-quality copies can now be audio only, and three problems with best-copy downloads are fixed, including one that stopped most single-language YouTube videos from downloading at all.
