@@ -1118,10 +1118,11 @@ def _is_premium(fmt: dict) -> bool:
 def _prefer_premium(info: dict, container: str) -> dict | None:
     """A Premium video stream at least as good as the selected one, or None.
 
-    YouTube Premium accounts get a second, higher-bitrate encode of the same
-    video ("1080p Premium"). yt-dlp's sort ranks streams by bitrate, which can
-    pick a regular H.264 stream over a Premium AV1 one, and ranks HTTPS above
-    HLS, which skips a Premium stream offered only over HLS. A Premium stream
+    YouTube makes a second, higher-bitrate "Premium" encode of many videos. It
+    is often offered over HLS to anyone, and Premium accounts' cookies add
+    HTTPS versions. yt-dlp's sort ranks HTTPS above HLS, which skips the HLS
+    one, and then by bitrate, which can pick a regular H.264 stream over a
+    Premium AV1 one. A Premium stream
     is taken only at the selected stream's resolution and frame rate or
     better, so a lower-resolution Premium stream never replaces a 4K one.
     Within the candidates, HTTPS beats HLS (HLS bitrates are nominal), then VP9
