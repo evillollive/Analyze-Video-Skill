@@ -4,6 +4,10 @@ All notable changes to `/analyze-video` are documented here.
 
 ## [Unreleased]
 
+## [1.13.0] - 2026-11-13
+
+Best-quality copies can now be audio only, and four problems with best-copy downloads are fixed, including one that stopped most single-language YouTube videos from downloading at all.
+
 ### Added
 - **Audio-only best-copy downloads.** `download.py --best --container audio` saves the original audio track as served (usually m4a or opus) with no re-encode, for music and voiceover references. `--container mp3` converts to mp3 when asked. Audio-only downloads skip the 720p check and report the measured audio codec, bitrate, sample rate and channels, plus a short decode test.
 
