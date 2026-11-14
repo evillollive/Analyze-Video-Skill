@@ -6,7 +6,7 @@
 
 **Paste a video link. Get a timestamped Word report with screenshots, captions, and concrete visual analysis.**
 
-`/analyze-video` is a skill for any AI coding agent that can run shell commands (Claude Code, Codex, and others). It turns YouTube, Vimeo, TikTok, X, Twitch, and local videos into polished `.docx` reports. It uses [yt-dlp](https://github.com/yt-dlp/yt-dlp), ffmpeg, contact sheets, optional Whisper transcription, and a guarded, token-efficient frame-selection workflow. Need only the subtitles? It can also download SRT, VTT, or plain-text captions without the report.
+`/analyze-video` is a skill for any AI coding agent that can run shell commands (Claude Code, Codex, and others). It turns YouTube, Vimeo, TikTok, X, Twitch, and local videos into polished `.docx` reports. It uses [yt-dlp](https://github.com/yt-dlp/yt-dlp), ffmpeg, contact sheets, optional Whisper transcription, and a guarded, token-efficient frame-selection workflow. Need only the subtitles? It can also download SRT, VTT, or plain-text captions without the report, or save a verified best-quality copy of the video or just its audio.
 
 ![Preview of analyze-video contact sheet and generated report](docs/assets/demo-preview.svg)
 
@@ -15,6 +15,7 @@
 - **Video to report:** drop in a URL or local file and get a structured Word document.
 - **Screenshots included:** reports embed selected frames with descriptive captions, one per row or two-up side by side.
 - **Timestamped analysis:** transcript evidence and visuals are organized by time range.
+- **Best-quality copies:** save a verified local copy as MKV or edit-friendly MP4, or just the original audio track, with no re-encoding.
 - **Open Filmmaker Toolkit export:** optionally package timestamped analysis and frame references as an `.oft.json` project.
 - **Token efficient:** contact sheets let the AI scan the whole video before reading only the important frames.
 - **Long-video ready:** runs can resume, reuse extracted frames, reuse cached downloads, and emit progress files.
@@ -70,6 +71,8 @@ python3 scripts/download.py --best \
 
 The command reports the selected streams before downloading, verifies the final codecs/resolution/fps and measured video bitrate with ffprobe, and runs a short decode test. It asks for explicit approval before downloading a result below 720p. MP4 never re-encodes video; if compatible H.264/AAC streams are unavailable, the command stops with an explanation.
 
+Partial files and merges stay in `--temp-dir` until the download finishes, and only the finished file is moved to `--out-dir`, so point `--temp-dir` at a folder that is not synced by a cloud service (Dropbox, iCloud, OneDrive).
+
 For audio only, use `--container audio` to save the original audio track as served (usually m4a or opus) with no re-encode, or `--container mp3` to convert to mp3 (lossy). Audio-only downloads report the measured codec, bitrate, sample rate and channels, and skip the 720p check.
 
 ## The clever bits
@@ -77,10 +80,6 @@ For audio only, use `--container audio` to save the original audio track as serv
 ### Contact sheets save tokens
 
 Every frame the AI reads costs tokens. Instead of reading 100+ frames individually, the skill tiles frames into contact sheets. The AI scans those overviews, picks the frames that actually matter, and only reads those at full resolution.
-
-### Unified workflow
-
-`/watch` and `/analyze-video` are merged into one skill flow. One command handles setup, processing, frame selection, analysis, validation, and docx output.
 
 ### Accessible by default
 
@@ -92,9 +91,9 @@ Big videos used to time out and restart from zero. Now the skill picks up where 
 
 ## Install in 60 seconds
 
-Download the latest `analyze-video.skill` from the [releases page](https://github.com/evillollive/Analyze-Video-Skill/releases/latest), then install it through the Claude skill/plugin flow you use.
+Download the latest `analyze-video.skill` from the [releases page](https://github.com/evillollive/Analyze-Video-Skill/releases/latest) and add it through your agent's skill settings (in Claude, upload it as a skill). The `.skill` file is a zip of the skill folder, so agents that load skills from a folder can use the unzipped `analyze-video/` directly.
 
-For Claude Code plugin usage from this repository:
+To run it from a clone of this repository (Claude Code and Codex read the plugin files here):
 
 ```bash
 git clone https://github.com/evillollive/Analyze-Video-Skill.git
@@ -138,6 +137,10 @@ Make a doc from these three videos with screenshots.
 
 ```text
 Just look at the 2:30 to 3:15 section of this clip.
+```
+
+```text
+Save just the audio from this video to my Downloads folder.
 ```
 
 ## Manual script workflow
@@ -233,7 +236,7 @@ The download cache manages itself: at the end of each run it evicts entries olde
 python3 scripts/setup.py --clear-cache
 ```
 
-If a download is interrupted — a runner timeout, a dropped connection, or `Ctrl-C` — re-running the exact same command picks up where it stopped instead of re-fetching the whole video. Pass `--force` to discard the partial data and start the download over.
+If a download is interrupted (a runner timeout, a dropped connection, or `Ctrl-C`), re-running the exact same command picks up where it stopped instead of re-fetching the whole video. Pass `--force` to discard the partial data and start the download over.
 
 Downloads are also sized to what the pipeline actually uses. Frames are rendered at `--resolution` pixels wide (512 by default) and embedded in the document at roughly 640 pixels, so any source pixels beyond that are downloaded and then thrown away by the scaler. `process.py` caps the source **width** yt-dlp selects at `max(854, --resolution)`, which on a 16:9 video means a 480p stream instead of 720p: roughly half to a third of the bytes, with no visible change to the frames or the document. Capping on width rather than height is what keeps portrait video honest, since a 9:16 clip needs a taller stream to reach the same frame width. Sites that do not report format widths are unaffected. Pass `--download-max-width 0` to fetch the best available stream, or a specific pixel width to set your own budget; a cached download made under a narrower budget is never reused for a wider request.
 
