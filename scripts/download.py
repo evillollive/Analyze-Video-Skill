@@ -1451,7 +1451,11 @@ def download_best_copy(
     format_ids = "+".join(str(fmt["format_id"]) for fmt in requested_formats if fmt.get("format_id"))
     if not format_ids:
         raise SystemExit("yt-dlp did not identify the selected format IDs")
-    template = str(out_dir / "%(title)s [%(id)s].%(ext)s")
+    # A relative template plus -P home/temp makes yt-dlp write partial files
+    # and run merges in temp_dir, then move only the finished file into
+    # out_dir. An absolute template makes yt-dlp ignore -P entirely, so
+    # partial files would land in out_dir (a problem for synced folders).
+    template = "%(title)s [%(id)s].%(ext)s"
     download_cmd = [
         yt.find() or ytdlp, "--no-playlist", "--no-progress", "--no-overwrites",
         "-f", format_ids, "-S", "res,fps,proto:https,br,codec:h264",
@@ -1461,6 +1465,7 @@ def download_best_copy(
     elif not audio_only:
         download_cmd += ["--merge-output-format", container]
     download_cmd += [
+        "-P", str(out_dir),
         "-P", f"temp:{temp_dir}",
         "-o", template,
         "--print", "after_move:filepath",

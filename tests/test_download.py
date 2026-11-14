@@ -516,6 +516,24 @@ class TestBestCopyAsksOnce:
         assert "https://example.com/v" not in commands[0]
         assert not list((tmp_path / "s").glob(".best-info-*.json")), "saved details are cleaned up"
 
+    def test_partial_files_go_to_the_temp_folder(self, tmp_path, monkeypatch):
+        """An absolute -o makes yt-dlp ignore -P, so partials landed in out_dir."""
+        final = self._setup(tmp_path, monkeypatch)
+        commands = []
+
+        def run(cmd, capture_output=True, text=True):
+            commands.append(cmd)
+            final.write_bytes(b"v")
+            return _subprocess.CompletedProcess(cmd, 0, f"{final}\n", "")
+
+        monkeypatch.setattr("download.subprocess.run", run)
+        download_best_copy("https://example.com/v", tmp_path, temp_dir=tmp_path / "s")
+        cmd = commands[0]
+        paths = [cmd[i + 1] for i, part in enumerate(cmd) if part == "-P"]
+        assert str(tmp_path.resolve()) in paths
+        assert f"temp:{(tmp_path / 's').resolve()}" in paths
+        assert not Path(cmd[cmd.index("-o") + 1]).is_absolute()
+
     def test_falls_back_to_the_url_when_saved_details_fail(self, tmp_path, monkeypatch):
         final = self._setup(tmp_path, monkeypatch)
         commands = []
